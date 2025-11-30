@@ -93,6 +93,12 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 DATA_DIR = Path(os.getenv("DATA_DIR", _DEFAULT_DATA_DIR))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+STATE_DIR = DATA_DIR / 'state'
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+STRATEGIES_DIR = DATA_DIR / 'strategies'
+STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
+
 # Logs directory (read from .env, default: ~/.local/state/r2d2/)
 LOGS_DIR = Path(os.getenv("LOGS", _DEFAULT_LOGS_DIR))
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -102,7 +108,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 # Active strategies storage file (read from .env)
 active_strategies_filename = os.getenv("ACTIVE_STRATEGIES_FILE", "active_strategies.json")
-ACTIVE_STRATEGIES_FILE = DATA_DIR / active_strategies_filename
+ACTIVE_STRATEGIES_FILE = STATE_DIR / active_strategies_filename
 
 # CORS settings based on environment
 if ENVIRONMENT == "production":

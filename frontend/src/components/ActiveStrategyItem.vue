@@ -1,13 +1,16 @@
 <template>
   <div 
     class="active-strategy-item"
-    :class="{ 'is-running': strategy.isRunning }"
+    :class="{ 
+      'is-running': strategy.isRunning,
+      'is-active': isActive
+    }"
   >
-    <div class="strategy-info">
+    <div class="strategy-info" @click="handleItemClick">
       <div class="strategy-name">{{ strategy.name }}</div>
       <div class="strategy-id">{{ strategy.strategy_id }}</div>
     </div>
-    <div class="strategy-actions">
+    <div class="strategy-actions" @click.stop>
       <button 
         class="action-btn edit-btn"
         @click="$emit('edit', strategy.active_strategy_id)"
@@ -60,6 +63,10 @@ export default {
     strategy: {
       type: Object,
       required: true
+    },
+    isActive: {
+      type: Boolean,
+      default: false
     }
   },
   components: {
@@ -69,7 +76,12 @@ export default {
     ExclamationTriangleIcon,
     TrashIcon
   },
-  emits: ['edit', 'start', 'stop', 'toggle-trading', 'delete']
+  emits: ['edit', 'start', 'stop', 'toggle-trading', 'delete', 'select'],
+  methods: {
+    handleItemClick() {
+      this.$emit('select', this.strategy.active_strategy_id)
+    }
+  }
 }
 </script>
 
@@ -82,13 +94,44 @@ export default {
   margin-bottom: 8px;
   background-color: #ffffff;
   border: 1px solid #e0e0e0;
+  border-left: 3px solid transparent;
   border-radius: 4px;
-  transition: background-color 0.2s;
+  transition: background-color 0.2s, border-color 0.2s;
+  cursor: pointer;
+}
+
+.active-strategy-item:hover {
+  background-color: #f5f5f5;
 }
 
 .active-strategy-item.is-running {
   background-color: #e8f5e9;
   border-color: #4caf50;
+  border-left-color: #4caf50;
+}
+
+.active-strategy-item.is-running:hover {
+  background-color: #d4edda;
+}
+
+.active-strategy-item.is-active {
+  background-color: #e3f2fd;
+  border-left-color: #2196f3;
+  border-color: #90caf9;
+}
+
+.active-strategy-item.is-active:hover {
+  background-color: #bbdefb;
+}
+
+.active-strategy-item.is-active.is-running {
+  background-color: #c8e6c9;
+  border-left-color: #2196f3;
+  border-color: #81c784;
+}
+
+.active-strategy-item.is-active.is-running:hover {
+  background-color: #a5d6a7;
 }
 
 .strategy-info {

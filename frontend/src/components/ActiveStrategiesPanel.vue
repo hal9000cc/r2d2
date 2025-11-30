@@ -14,11 +14,13 @@
         v-for="strategy in activeStrategies"
         :key="strategy.active_strategy_id"
         :strategy="strategy"
+        :is-active="activeStrategyId === strategy.active_strategy_id"
         @edit="handleEdit"
         @start="handleStart"
         @stop="handleStop"
         @toggle-trading="handleToggleTrading"
         @delete="handleDelete"
+        @select="handleSelect"
       />
     </div>
     
@@ -28,6 +30,7 @@
       :is-new="isNewStrategy"
       :timeframes="timeframes"
       :sources="sources"
+      :strategies="strategies"
       @close="closeEditModal"
       @save="handleSaveStrategy"
     />
@@ -53,8 +56,10 @@ export default {
       isEditModalOpen: false,
       selectedStrategy: null,
       isNewStrategy: false,
+      activeStrategyId: null, // ID of currently active/selected strategy
       timeframes: [], // Cached list of timeframes
-      sources: [] // Cached list of sources
+      sources: [], // Cached list of sources
+      strategies: [] // Cached list of strategies
     }
   },
   mounted() {
@@ -64,6 +69,10 @@ export default {
     async loadStrategies() {
       try {
         this.activeStrategies = await activeStrategiesApi.getActiveStrategies()
+        // Select first strategy if available and none is selected
+        if (this.activeStrategies.length > 0 && this.activeStrategyId === null) {
+          this.activeStrategyId = this.activeStrategies[0].active_strategy_id
+        }
       } catch (error) {
         alert(`Failed to load strategies: ${error.message}`)
       }
@@ -112,6 +121,16 @@ export default {
           this.sources = []
         }
       }
+      
+      // Load strategies if not cached
+      if (this.strategies.length === 0) {
+        try {
+          this.strategies = await activeStrategiesApi.getStrategies()
+        } catch (error) {
+          console.error('Failed to load strategies:', error)
+          this.strategies = []
+        }
+      }
     },
     closeEditModal() {
       this.isEditModalOpen = false
@@ -134,6 +153,10 @@ export default {
         } else {
           // Add new
           this.activeStrategies.push(updatedStrategy)
+          // Select newly added strategy if no strategy is selected
+          if (this.activeStrategyId === null) {
+            this.activeStrategyId = updatedStrategy.active_strategy_id
+          }
         }
         this.closeEditModal()
       } catch (error) {
@@ -147,10 +170,26 @@ export default {
       
       try {
         await activeStrategiesApi.deleteStrategy(id)
+        // Find index of deleted strategy
+        const deletedIndex = this.activeStrategies.findIndex(
+          s => s.active_strategy_id === id
+        )
         // Remove from list
         this.activeStrategies = this.activeStrategies.filter(
           s => s.active_strategy_id !== id
         )
+        
+        // If deleted strategy was active, select another one
+        if (this.activeStrategyId === id) {
+          if (this.activeStrategies.length > 0) {
+            // Select next strategy, or first if deleted was last
+            const nextIndex = deletedIndex < this.activeStrategies.length ? deletedIndex : 0
+            this.activeStrategyId = this.activeStrategies[nextIndex].active_strategy_id
+          } else {
+            // No strategies left
+            this.activeStrategyId = null
+          }
+        }
       } catch (error) {
         alert(`Failed to delete strategy: ${error.message}`)
       }
@@ -196,6 +235,10 @@ export default {
       } catch (error) {
         alert(`Failed to toggle trading: ${error.message}`)
       }
+    },
+    handleSelect(id) {
+      // Set active strategy (always select, no toggle)
+      this.activeStrategyId = id
     }
   }
 }

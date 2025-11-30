@@ -96,7 +96,7 @@ def load_file() -> List[Dict[str, Any]]:
         raise IOError(f"Failed to load active strategies: {str(e)}")
 
 
-def get() -> List[Dict[str, Any]]:
+def get_list() -> List[Dict[str, Any]]:
     """
     Get list of active strategies from memory cache
     
@@ -126,7 +126,7 @@ def keep(active_strategies: List[Dict[str, Any]]) -> None:
         raise RuntimeError(f"Failed to keep active strategies: {str(e)}") from e
 
 
-def get_by_id(active_strategy_id: int) -> Optional[Dict[str, Any]]:
+def get(active_strategy_id: int) -> Optional[Dict[str, Any]]:
     """
     Get single active strategy by ID
     
@@ -139,43 +139,17 @@ def get_by_id(active_strategy_id: int) -> Optional[Dict[str, Any]]:
     return strategies.get(active_strategy_id)
 
 
-def update(active_strategy_id: int, strategy: Dict[str, Any]) -> Dict[str, Any]:
+def put(strategy: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Update active strategy
-    
-    Args:
-        active_strategy_id: Strategy ID
-        strategy: Strategy dictionary
-        
-    Returns:
-        Updated strategy dictionary
-        
-    Raises:
-        KeyError: If strategy not found
-    """
-    if active_strategy_id not in strategies:
-        raise KeyError(f"Strategy with ID {active_strategy_id} not found")
-    
-    # Ensure active_strategy_id matches
-    strategy["active_strategy_id"] = active_strategy_id
-    strategies[active_strategy_id] = strategy
-    
-    # Save to file
-    save_file(list(strategies.values()))
-    
-    return strategy.copy()
-
-
-def add(strategy: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Add new active strategy
+    Add or update active strategy
     
     Args:
         strategy: Strategy dictionary (must have active_strategy_id)
         
     Returns:
-        Added strategy dictionary
+        Added or updated strategy dictionary
     """
+    strategy['name'] = f'{strategy["strategy_id"]} ({strategy['source']}:{strategy['symbol']} {strategy['timeframe']})'
     active_strategy_id = strategy["active_strategy_id"]
     strategies[active_strategy_id] = strategy
     
@@ -214,6 +188,7 @@ def new_id() -> int:
     global next_id
     next_id += 1
     return next_id
+
 
 def new_strategy() -> Dict[str, Any]:
     """

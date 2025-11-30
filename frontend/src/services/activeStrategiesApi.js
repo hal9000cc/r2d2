@@ -81,6 +81,11 @@ export const activeStrategiesApi = {
   // Get list of symbols for a specific source
   async getSourceSymbols(source) {
     return request(`/api/v1/strategies/sources/${source}/symbols`)
+  },
+
+  // Get list of available strategies
+  async getStrategies() {
+    return request('/api/v1/strategies/strategies')
   }
 }
 

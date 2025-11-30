@@ -1,14 +1,14 @@
 from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Any
 import ccxt
-from app.core.active_strategy import (
-    get as active_strategy_get_all,
-    get_by_id as active_strategy_get_by_id,
-    add as active_strategy_add,
-    update as active_strategy_update,
+from app.core.active_strategies import (
+    get_list as active_strategy_get_all,
+    get as active_strategy_get_by_id,
+    put as active_strategy_put,
     delete as active_strategy_delete,
     new_strategy as active_strategy_new
 )
+from app.core.strategies import get_list as get_strategies_list
 from app.services.quotes.timeframe import Timeframe
 
 router = APIRouter(prefix="/api/v1/strategies", tags=["strategies"])
@@ -86,6 +86,14 @@ async def get_source_symbols(source: str):
         raise HTTPException(status_code=500, detail=f"Failed to load symbols for source '{source}': {str(e)}")
 
 
+@router.get("/strategies", response_model=List[str])
+async def get_strategies():
+    """
+    Get list of available strategy identifiers from Python files in STRATEGIES_DIR
+    """
+    return get_strategies_list()
+
+
 @router.get("", response_model=List[Dict[str, Any]])
 async def get_active_strategies():
     """
@@ -136,7 +144,7 @@ async def start_strategy(strategy_id: int):
     
     # Update isRunning to True
     strategy["isRunning"] = True
-    return active_strategy_update(strategy_id, strategy)
+    return active_strategy_put(strategy)
 
 
 @router.post("/{strategy_id}/stop", response_model=Dict[str, Any])
@@ -151,7 +159,7 @@ async def stop_strategy(strategy_id: int):
     
     # Update isRunning to False
     strategy["isRunning"] = False
-    return active_strategy_update(strategy_id, strategy)
+    return active_strategy_put(strategy)
 
 
 @router.post("/{strategy_id}/toggle-trading", response_model=Dict[str, Any])
@@ -166,7 +174,7 @@ async def toggle_trading(strategy_id: int):
     
     # Toggle isTrading
     strategy["isTrading"] = not strategy.get("isTrading", False)
-    return active_strategy_update(strategy_id, strategy)
+    return active_strategy_put(strategy)
 
 
 @router.put("/{strategy_id}", response_model=Dict[str, Any])
@@ -178,9 +186,6 @@ async def update_strategy(strategy_id: int, strategy_data: Dict[str, Any]):
     # Ensure active_strategy_id matches
     strategy_data["active_strategy_id"] = strategy_id
     
-    try:
-        return active_strategy_update(strategy_id, strategy_data)
-    except KeyError:
-        # Strategy doesn't exist, create new one
-        return active_strategy_add(strategy_data)
+    # put will add or update the strategy
+    return active_strategy_put(strategy_data)
 

@@ -4,7 +4,7 @@ This module contains initialization logic that runs when the backend starts.
 """
 
 from app.core.logger import setup_logging, get_logger
-from app.core.active_strategy import startup as startup_active_strategies, shutdown as shutdown_active_strategies
+from app.core.active_strategies import startup as startup_active_strategies, shutdown as shutdown_active_strategies
 from app.core.config import (
     REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD,
     REDIS_QUOTE_REQUEST_LIST, REDIS_QUOTE_RESPONSE_PREFIX,

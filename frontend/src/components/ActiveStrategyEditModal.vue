@@ -27,21 +27,19 @@
             <div class="form-group">
               <label>Strategy ID <span class="required">*</span></label>
               <input 
-                type="text" 
+                type="text"
                 v-model="formData.strategy_id"
                 class="form-input"
+                :class="{ 'invalid': formData.strategy_id && !isStrategyIdValid }"
+                list="strategies-list"
+                placeholder="Type to search strategy..."
                 required
+                autocomplete="off"
+                @input="handleStrategyIdInput"
               />
-            </div>
-            
-            <div class="form-group">
-              <label>Name <span class="required">*</span></label>
-              <input 
-                type="text" 
-                v-model="formData.name"
-                class="form-input"
-                required
-              />
+              <datalist id="strategies-list">
+                <option v-for="strategy in strategies" :key="strategy" :value="strategy"></option>
+              </datalist>
             </div>
             
             <div class="form-group">
@@ -174,6 +172,10 @@ export default {
     sources: {
       type: Array,
       default: () => []
+    },
+    strategies: {
+      type: Array,
+      default: () => []
     }
   },
   emits: ['close', 'save'],
@@ -185,7 +187,6 @@ export default {
       formData: {
         active_strategy_id: null,
         strategy_id: '',
-        name: '',
         source: '',
         symbol: '',
         timeframe: '',
@@ -213,10 +214,14 @@ export default {
       // Source is valid only if it exists in the sources list
       return this.formData.source && this.sources.includes(this.formData.source)
     },
+    isStrategyIdValid() {
+      // Strategy ID is valid only if it exists in the strategies list
+      return this.formData.strategy_id && this.strategies.includes(this.formData.strategy_id)
+    },
     isSymbolValid() {
       // Symbol is valid only if:
       // 1. Source is valid
-      // 2. Symbol exists in the list for selected source
+      // 2. Symbol exists in the list for selected source (case insensitive)
       if (!this.isSourceValid || !this.formData.symbol) {
         return false
       }
@@ -225,7 +230,8 @@ export default {
       if (symbols.length === 0) {
         return true
       }
-      return symbols.includes(this.formData.symbol)
+      // Case-insensitive check
+      return symbols.some(s => s.toLowerCase() === this.formData.symbol.toLowerCase())
     }
   },
   mounted() {
@@ -244,7 +250,6 @@ export default {
           this.formData = {
             active_strategy_id: newStrategy.active_strategy_id,
             strategy_id: newStrategy.strategy_id || '',
-            name: newStrategy.name || '',
             source: newStrategy.source || '',
             symbol: newStrategy.symbol || '',
             timeframe: newStrategy.timeframe || '',
@@ -313,8 +318,9 @@ export default {
         alert('Strategy ID is required')
         return false
       }
-      if (!this.formData.name.trim()) {
-        alert('Name is required')
+      // Validate that strategy_id exists in the list
+      if (!this.strategies.includes(this.formData.strategy_id)) {
+        alert(`Strategy ID "${this.formData.strategy_id}" is not valid. Please select from the list.`)
         return false
       }
       if (!this.formData.source.trim()) {
@@ -330,10 +336,10 @@ export default {
         alert('Symbol is required')
         return false
       }
-      // Validate that symbol exists in the list for selected source
+      // Validate that symbol exists in the list for selected source (case insensitive)
       if (this.formData.source) {
         const symbols = this.getSymbolsForSource(this.formData.source)
-        if (symbols.length > 0 && !symbols.includes(this.formData.symbol)) {
+        if (symbols.length > 0 && !symbols.some(s => s.toLowerCase() === this.formData.symbol.toLowerCase())) {
           alert(`Symbol "${this.formData.symbol}" is not valid for source "${this.formData.source}". Please select from the list.`)
           return false
         }
@@ -430,6 +436,35 @@ export default {
       if (matchingSymbols.length === 1) {
         this.$nextTick(() => {
           this.formData.symbol = matchingSymbols[0]
+        })
+      } else {
+        // If exact match found (case insensitive), use the original case from list
+        const exactMatch = symbols.find(symbol => 
+          symbol.toLowerCase() === searchText
+        )
+        if (exactMatch) {
+          this.$nextTick(() => {
+            this.formData.symbol = exactMatch
+          })
+        }
+      }
+    },
+    handleStrategyIdInput(event) {
+      const inputValue = event.target.value
+      if (!inputValue) {
+        return
+      }
+      
+      // Filter strategies that start with input value (case insensitive)
+      const searchText = inputValue.toLowerCase()
+      const matchingStrategies = this.strategies.filter(strategy => 
+        strategy.toLowerCase().startsWith(searchText)
+      )
+      
+      // Auto-select if only one matching strategy remains
+      if (matchingStrategies.length === 1) {
+        this.$nextTick(() => {
+          this.formData.strategy_id = matchingStrategies[0]
         })
       }
     }
