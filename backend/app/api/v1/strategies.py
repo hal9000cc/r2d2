@@ -9,7 +9,7 @@ from app.core.active_strategy import (
     delete as active_strategy_delete,
     new_strategy as active_strategy_new
 )
-from app.core.timeframe import Timeframe
+from app.services.quotes.timeframe import Timeframe
 
 router = APIRouter(prefix="/api/v1/strategies", tags=["strategies"])
 

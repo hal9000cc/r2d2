@@ -19,13 +19,13 @@ ENV_FILE = CONFIG_DIR / ".env"
 ENV_EXAMPLE_FILE = CONFIG_DIR / ".env.example"
 
 # Initialize configuration directory
-def _init_config_dir():
+def init_config_dir():
     """Initialize configuration directory with .env and .env.example files if needed"""
     if not ENV_FILE.exists():
         # Create both .env and .env.example files
-        _create_env_files()
+        create_env_files()
 
-def _create_env_files():
+def create_env_files():
     """Create .env and .env.example files with default values"""
     # Base content with all configuration parameters
     base_content = f"""# Backend configuration
@@ -81,7 +81,7 @@ ACTIVE_STRATEGIES_FILE=active_strategies.json
         f.write(env_content)
 
 # Initialize config directory on import
-_init_config_dir()
+init_config_dir()
 
 # Load environment variables from .env file
 load_dotenv(ENV_FILE)
