@@ -46,13 +46,21 @@ class Client:
             cls._instance = super(Client, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, redis_host='localhost', redis_port=6379, redis_db=0, redis_password=None, request_list='quotes:requests', response_prefix='quotes:responses', timeout=30):
+    def __init__(self, redis_params: Optional[Dict] = None, request_list: str = 'quotes:requests', response_prefix: str = 'quotes:responses', timeout: int = 30):
         if not Client._initialized:
+            # Default Redis parameters
+            redis_params = redis_params or {}
+            self.redis_host = redis_params.get('host', 'localhost')
+            self.redis_port = redis_params.get('port', 6379)
+            self.redis_db = redis_params.get('db', 0)
+            self.redis_password = redis_params.get('password', None)
+            
+            # Initialize Redis client
             self.redis_client = redis.Redis(
-                host=redis_host,
-                port=redis_port,
-                db=redis_db,
-                password=redis_password,
+                host=self.redis_host,
+                port=self.redis_port,
+                db=self.redis_db,
+                password=self.redis_password,
                 decode_responses=False  # Keep binary for numpy arrays
             )
             self.request_list = request_list
@@ -70,7 +78,7 @@ class Client:
         else:
             return f"quotes:{source}:{symbol}:{timeframe}:{start_str}"
 
-    def get_quotes(self, source: str, symbol: str, timeframe: Timeframe, history_start: datetime, history_end: Optional[datetime] = None) -> Dict[str, np.ndarray]:
+    def get_quotes(self, source: str, symbol: str, timeframe: Timeframe, history_start: datetime, history_end: Optional[datetime] = None, timeout: int = 30) -> Dict[str, np.ndarray]:
         """
         Get quotes data from Redis via service.
         
@@ -108,7 +116,7 @@ class Client:
         
         # Wait for response from service
         response_list = f"{self.response_prefix}:{request_id}"
-        result = self.redis_client.brpop(response_list, timeout=self.timeout)
+        result = self.redis_client.brpop(response_list, timeout=timeout if timeout > 0 else self.timeout)
         
         if result is None:
             raise R2D2QuotesExceptionDataNotReceived(symbol, history_start, history_end)
@@ -406,8 +414,8 @@ class QuotesBackTest(Quotes):
         self.history_start = parse_datetime(history_start)
         self.history_end = parse_datetime(history_end)
 
-        self.client = Client(timeout=timeout)
-        self._quotes_data = self.client.get_quotes(self.source, self.symbol, self.timeframe, self.history_start, self.history_end)
+        self.client = Client()
+        self._quotes_data = self.client.get_quotes(self.source, self.symbol, self.timeframe, self.history_start, self.history_end, timeout)
 
     @property
     def close(self):

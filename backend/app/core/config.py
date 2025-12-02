@@ -10,6 +10,8 @@ BASE_DIR = Path(__file__).parent.parent.parent
 CONFIG_DIR = Path.home() / ".config" / "r2d2"
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+DEFAULT_REDIS_PORT = 7379
+
 # Default paths
 _DEFAULT_DATA_DIR = str(Path.home() / ".local" / "share" / "r2d2")
 _DEFAULT_LOGS_DIR = str(Path.home() / ".local" / "state" / "r2d2")
@@ -50,7 +52,7 @@ CLICKHOUSE_DATABASE=quotes
 
 # Redis configuration
 REDIS_HOST=localhost
-REDIS_PORT=6379
+REDIS_PORT={DEFAULT_REDIS_PORT} # Must be free, because r2d2 starts separate redis server
 REDIS_DB=0
 REDIS_PASSWORD=
 REDIS_QUOTE_REQUEST_LIST=quotes:requests
@@ -104,7 +106,7 @@ LOGS_DIR = Path(os.getenv("LOGS", _DEFAULT_LOGS_DIR))
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Log level (read from .env, default: INFO)
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
 
 # Active strategies storage file (read from .env)
 active_strategies_filename = os.getenv("ACTIVE_STRATEGIES_FILE", "active_strategies.json")
@@ -142,7 +144,7 @@ CLICKHOUSE_DATABASE = os.getenv("CLICKHOUSE_DATABASE", "quotes")
 
 # Redis configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PORT = int(os.getenv("REDIS_PORT", DEFAULT_REDIS_PORT))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
 REDIS_QUOTE_REQUEST_LIST = os.getenv("REDIS_QUOTE_REQUEST_LIST", "quotes:requests")

@@ -1,13 +1,12 @@
 """
-Module for managing strategy files.
-Strategies are stored as Python files in STRATEGIES_DIR.
+Back testing and live trading
 """
-from pathlib import Path
+
 from typing import List
 from app.core.config import STRATEGIES_DIR
 
 
-def get_list() -> List[str]:
+def strategies_get_list() -> List[str]:
     """
     Get list of strategy identifiers from Python files in STRATEGIES_DIR.
     

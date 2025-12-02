@@ -86,6 +86,11 @@ export const activeStrategiesApi = {
   // Get list of available strategies
   async getStrategies() {
     return request('/api/v1/strategies/strategies')
+  },
+
+  // Get messages for a strategy
+  async getMessages(strategyId) {
+    return request(`/api/v1/strategies/${strategyId}/messages`)
   }
 }
 

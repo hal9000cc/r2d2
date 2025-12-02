@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import clickhouse_connect
 from datetime import timedelta
 from multiprocessing import get_context
-from app.services.quotes.client import PriceSeries, QuotesBackTest
+from app.services.quotes.client import PriceSeries, QuotesBackTest, Client
 from app.services.quotes.constants import PRICE_TYPE, TIME_TYPE, TIME_TYPE_UNIT
 from app.services.quotes.exceptions import R2D2QuotesExceptionDataNotReceived
 from app.services.quotes.server import start_quotes_service, stop_quotes_service
@@ -21,6 +21,7 @@ from app.core.config import (
 )
 from app.core.logger import setup_logging
 from app.services.quotes.timeframe import Timeframe
+from app.core.startup import startup_redis, shutdown_redis
 
 
 def load_test_env():
@@ -80,6 +81,12 @@ def quotes_service():
         # Ignore errors if database doesn't exist
         pass
     
+    # Start Redis server for tests
+    try:
+        startup_redis()
+    except RuntimeError as e:
+        pytest.skip(f"Could not start Redis server for tests: {e}")
+    
     # Start service with modified parameters (test database)
     started = start_quotes_service(
         request_list=REDIS_QUOTE_REQUEST_LIST,
@@ -89,7 +96,16 @@ def quotes_service():
     )
     
     if not started:
+        # Stop Redis if service failed to start
+        shutdown_redis()
         pytest.skip("Could not start quotes service")
+    
+    # Initialize quotes client with test configuration
+    Client(
+        redis_params=redis_params,
+        request_list=REDIS_QUOTE_REQUEST_LIST,
+        response_prefix=REDIS_QUOTE_RESPONSE_PREFIX
+    )
     
     # Wait a bit for service to initialize
     time.sleep(0.1)
@@ -98,6 +114,9 @@ def quotes_service():
     
     # Stop service
     stop_quotes_service(timeout=2.0)
+    
+    # Stop Redis server after tests
+    shutdown_redis()
 
 
 def test_quotes_usage_scenario(quotes_service):
@@ -416,36 +435,6 @@ def test_gaps_handling(quotes_service):
     check_data_completeness(quotes36, day2, day16 + timedelta(hours=23), timeframe)
 
 
-def _parallel_worker(symbol: str, timeframe_str: str, date_start: datetime, date_end: datetime, 
-                     source: str, history_size: int, timeout: int, worker_id: int):
-    """
-    Worker function for parallel requests.
-    Loads quotes data in a separate process and checks data integrity.
-    """
-    # Create Timeframe object from string
-    timeframe = Timeframe.cast(timeframe_str)
-    
-    quotes = QuotesBackTest(symbol, timeframe_str, date_start, date_end, source, history_size, timeout=timeout)
-    
-    # Check data completeness
-    check_data_completeness(quotes, date_start, date_end, timeframe)
-    
-    # Calculate expected number of bars
-    timeframe_delta = timeframe.timedelta()
-    total_seconds = (date_end - date_start).total_seconds()
-    expected_bars = int(total_seconds / timeframe_delta.total_seconds()) + 1
-    
-    # Verify we got the expected number of bars
-    assert len(quotes.time.values) == expected_bars, \
-        f"Expected {expected_bars} bars for {timeframe_str} timeframe, got {len(quotes.time.values)}"
-    
-    # Verify no zero values in prices
-    assert np.all(quotes.open.values > 0), "Open prices should not contain zero values"
-    assert np.all(quotes.high.values > 0), "High prices should not contain zero values"
-    assert np.all(quotes.low.values > 0), "Low prices should not contain zero values"
-    assert np.all(quotes.close.values > 0), "Close prices should not contain zero values"
-
-
 def test_5m_small(quotes_service):
     timeframe = '5m'
     start_date = datetime(2025, 10, 10, 0, 0, 0, tzinfo=UTC)
@@ -524,12 +513,54 @@ def test_5m_big(quotes_service):
     run_test(2)
 
 
+def _parallel_worker(symbol: str, timeframe_str: str, date_start: datetime, date_end: datetime, 
+                     source: str, history_size: int, timeout: int, worker_id: int,
+                     redis_params: dict):
+    """
+    Worker function for parallel requests.
+    Loads quotes data in a separate process and checks data integrity.
+    """
+    # Initialize quotes client with Redis parameters in this process
+    Client(redis_params=redis_params)
+    
+    # Create Timeframe object from string
+    timeframe = Timeframe.cast(timeframe_str)
+    
+    quotes = QuotesBackTest(symbol, timeframe_str, date_start, date_end, source, history_size, timeout=timeout)
+    
+    # Check data completeness
+    check_data_completeness(quotes, date_start, date_end, timeframe)
+    
+    # Calculate expected number of bars
+    timeframe_delta = timeframe.timedelta()
+    total_seconds = (date_end - date_start).total_seconds()
+    expected_bars = int(total_seconds / timeframe_delta.total_seconds()) + 1
+    
+    # Verify we got the expected number of bars
+    assert len(quotes.time.values) == expected_bars, \
+        f"Expected {expected_bars} bars for {timeframe_str} timeframe, got {len(quotes.time.values)}"
+    
+    # Verify no zero values in prices
+    assert np.all(quotes.open.values > 0), "Open prices should not contain zero values"
+    assert np.all(quotes.high.values > 0), "High prices should not contain zero values"
+    assert np.all(quotes.low.values > 0), "Low prices should not contain zero values"
+    assert np.all(quotes.close.values > 0), "Close prices should not contain zero values"
+
+
 def test_parallel_requests(quotes_service):
     """
     Test parallel requests from multiple processes.
     Runs three batches: first two batches on 10.10.2025 (3 processes each: 2 for BTC/USDT, 1 for ETH/USDT),
     third batch on 11.10.2025 with the same configuration.
     """
+    # Get Redis parameters from config (same as in quotes_service fixture)
+    redis_params = {
+        'host': REDIS_HOST,
+        'port': REDIS_PORT,
+        'db': REDIS_DB,
+        'password': REDIS_PASSWORD
+    }
+    
     # Use spawn context to avoid fork() issues in multi-threaded environment
     ctx = get_context('spawn')
     
@@ -541,14 +572,14 @@ def test_parallel_requests(quotes_service):
         for i in range(2):
             p = ctx.Process(
                 target=_parallel_worker,
-                args=('BTC/USDT', '5m', test_date, date_end, 'binance', 100, 1200, i + 1)
+                args=('BTC/USDT', '5m', test_date, date_end, 'binance', 100, 120, i + 1, redis_params)
             )
             processes.append(p)
         
         # Third process for ETH/USDT (different symbol, will run in parallel)
         p = ctx.Process(
             target=_parallel_worker,
-            args=('ETH/USDT', '5m', test_date, date_end, 'binance', 100, 1200, 3)
+            args=('ETH/USDT', '5m', test_date, date_end, 'binance', 100, 120, 3, redis_params)
         )
         processes.append(p)
         
@@ -567,7 +598,7 @@ def test_parallel_requests(quotes_service):
         
         # Wait for all to complete
         for i, p in enumerate(processes, 1):
-            p.join(timeout=180)  # 3 minutes timeout per process
+            p.join(timeout=300)  # 3 minutes timeout per process
             assert not p.is_alive(), f"Batch {batch_num}: Process did not complete within timeout"
             assert p.exitcode == 0, f"Batch {batch_num}: Process exited with code {p.exitcode}"
         

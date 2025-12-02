@@ -13,7 +13,7 @@
       >
         <ChartPanel />
       </ResizablePanel>
-      <MessagesPanel />
+      <MessagesPanel :active-strategy-id="activeStrategyId" />
     </div>
     <ResizablePanel
       direction="horizontal"
@@ -24,7 +24,7 @@
       storage-key="active-strategies-panel-width"
       @resize="handleActiveStrategiesResize"
     >
-      <ActiveStrategiesPanel />
+      <ActiveStrategiesPanel @active-strategy-changed="handleActiveStrategyChanged" />
     </ResizablePanel>
   </div>
 </template>
@@ -50,7 +50,8 @@ export default {
       chartHeight: null,
       chartMaxHeight: null,
       activeStrategiesWidth: 250,
-      activeStrategiesMaxWidth: null
+      activeStrategiesMaxWidth: null,
+      activeStrategyId: null
     }
   },
   mounted() {
@@ -116,6 +117,9 @@ export default {
     },
     handleActiveStrategiesResize(size) {
       this.activeStrategiesWidth = size
+    },
+    handleActiveStrategyChanged(strategyId) {
+      this.activeStrategyId = strategyId
     }
   }
 }

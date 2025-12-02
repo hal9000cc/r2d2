@@ -78,6 +78,10 @@ def setup_logging():
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
     
+    # Set logging level for ccxt library to INFO (to avoid debug messages)
+    ccxt_logger = logging.getLogger('ccxt')
+    ccxt_logger.setLevel(logging.INFO)
+    
     # Log initialization
     logger.info(f"Log level: {LOG_LEVEL}")
     logger.info(f"Log file: {log_file}")

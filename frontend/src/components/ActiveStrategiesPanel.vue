@@ -50,6 +50,7 @@ export default {
     ActiveStrategyItem,
     ActiveStrategyEditModal
   },
+  emits: ['active-strategy-changed'],
   data() {
     return {
       activeStrategies: [],
@@ -72,6 +73,8 @@ export default {
         // Select first strategy if available and none is selected
         if (this.activeStrategies.length > 0 && this.activeStrategyId === null) {
           this.activeStrategyId = this.activeStrategies[0].active_strategy_id
+          // Emit event to parent
+          this.$emit('active-strategy-changed', this.activeStrategyId)
         }
       } catch (error) {
         alert(`Failed to load strategies: ${error.message}`)
@@ -239,6 +242,8 @@ export default {
     handleSelect(id) {
       // Set active strategy (always select, no toggle)
       this.activeStrategyId = id
+      // Emit event to parent
+      this.$emit('active-strategy-changed', id)
     }
   }
 }

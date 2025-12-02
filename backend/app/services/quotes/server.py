@@ -692,41 +692,51 @@ async def run_quotes_service(
     
     try:
         while stop_event is None or not stop_event.is_set():
-            # Blocking pop from request list (async I/O)
-            result = await asyncio.to_thread(
-                server.redis_client.brpop,
-                request_list,
-                timeout=timeout if timeout > 0 else 1
-            )
-            
-            if result is None:
-                # Timeout reached, check stop event and continue waiting
-                if stop_event and stop_event.is_set():
-                    break
-                continue
-            
-            _, request_bytes = result
-            
             try:
-                # Parse request using MessagePack
-                request_data = msgpack.unpackb(request_bytes, raw=False)
-                request_id = request_data.get('request_id')
+                # Blocking pop from request list (async I/O)
+                result = await asyncio.to_thread(
+                    server.redis_client.brpop,
+                    request_list,
+                    timeout=timeout if timeout > 0 else 1
+                )
                 
-                if not request_id:
-                    logger.error("Request missing request_id, skipping")
+                if result is None:
+                    # Timeout reached, check stop event and continue waiting
+                    if stop_event and stop_event.is_set():
+                        break
                     continue
                 
-                # Start async processing (creates task for parallel processing)
-                asyncio.create_task(
-                    process_request_async(server, request_data, request_id, response_prefix, response_ttl)
-                )
-                logger.debug(f"Started async processing for request {request_id}")
+                _, request_bytes = result
                 
+                try:
+                    # Parse request using MessagePack
+                    request_data = msgpack.unpackb(request_bytes, raw=False)
+                    request_id = request_data.get('request_id')
+                    
+                    if not request_id:
+                        logger.error("Request missing request_id, skipping")
+                        continue
+                    
+                    # Start async processing (creates task for parallel processing)
+                    asyncio.create_task(
+                        process_request_async(server, request_data, request_id, response_prefix, response_ttl)
+                    )
+                    logger.debug(f"Started async processing for request {request_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Error parsing request: {e}", exc_info=True)
+                    
             except Exception as e:
-                logger.error(f"Error parsing request: {e}", exc_info=True)
+                # Catch any exceptions in the main loop to prevent service from crashing
+                logger.error(f"Error in quotes service main loop: {e}", exc_info=True)
+                # Wait a bit before retrying to avoid tight error loop
+                await asyncio.sleep(1)
                 
     except KeyboardInterrupt:
-        logger.info("Quotes service stopped")
+        logger.info("Quotes service stopped by keyboard interrupt")
+    except Exception as e:
+        logger.error(f"Quotes service crashed with exception: {e}", exc_info=True)
+        raise  # Re-raise to ensure thread exits
     finally:
         if stop_event:
             stop_event.clear()
@@ -765,17 +775,21 @@ def start_quotes_service(
 
     def service_wrapper():
         # Run async function in event loop
-        asyncio.run(run_quotes_service(
-            request_list=request_list,
-            response_prefix=response_prefix,
-            redis_params=redis_params,
-            clickhouse_params=clickhouse_params,
-            timeout=timeout,
-            response_ttl=response_ttl,
-            stop_event=_stop_event
-        ))
+        try:
+            asyncio.run(run_quotes_service(
+                request_list=request_list,
+                response_prefix=response_prefix,
+                redis_params=redis_params,
+                clickhouse_params=clickhouse_params,
+                timeout=timeout,
+                response_ttl=response_ttl,
+                stop_event=_stop_event
+            ))
+        except Exception as e:
+            logger.critical(f"Quotes service thread crashed: {e}", exc_info=True)
+            # Thread will exit, but we log the error for debugging
     
-    _service_thread = threading.Thread(target=service_wrapper, daemon=True)
+    _service_thread = threading.Thread(target=service_wrapper, daemon=False)
     _service_thread.start()
     logger.info("Quotes service thread started")
     return True
