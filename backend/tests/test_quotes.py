@@ -42,7 +42,7 @@ def load_test_env():
         os.environ.setdefault('CLICKHOUSE_DATABASE', 'quotes_test')
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module", autouse=True)
 def quotes_service():
     """Fixture to start and stop quotes service for tests."""
     # Load environment variables

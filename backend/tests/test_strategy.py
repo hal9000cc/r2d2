@@ -16,7 +16,10 @@ import talib
 def app_startup():
     """
     Fixture to initialize application services once for all tests in this module.
+    Uses production database (not test database).
+    Services are started independently from quotes_service.
     """
+    # Start services with production configuration
     startup()
     
     # Initialize quotes client with correct Redis connection parameters
@@ -29,6 +32,7 @@ def app_startup():
     Client(redis_params=redis_params)
     
     yield
+    
     # Cleanup: shutdown application services
     shutdown()
 
