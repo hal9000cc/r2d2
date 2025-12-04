@@ -8,7 +8,9 @@ import uuid
 from .timeframe import Timeframe
 from .exceptions import R2D2QuotesExceptionDataNotReceived
 from .constants import TIME_TYPE
+from app.core.logger import get_logger
 
+logger = get_logger(__name__)
 
 DEFAULT_HISTORY_SIZE = 1000
 
@@ -67,6 +69,7 @@ class Client:
             self.response_prefix = response_prefix
             self.timeout = timeout
             Client._initialized = True
+            logger.debug(f"Quotes client initialized with Redis connection parameters: host {self.redis_host}, port {self.redis_port}, db {self.redis_db}")
 
     def get_redis_key(self, source: str, symbol: str, timeframe: Timeframe, history_start: datetime, history_end: Optional[datetime] = None) -> str:
         """Generate Redis key for quotes data with human-readable dates."""
@@ -113,11 +116,14 @@ class Client:
         # Send request to service using MessagePack
         request_bytes = msgpack.packb(request, use_bin_type=True)
         self.redis_client.lpush(self.request_list, request_bytes)
+        logger.debug(f"Request sent to service {len(request_bytes)} bytes")
         
         # Wait for response from service
         response_list = f"{self.response_prefix}:{request_id}"
+        logger.debug(f"Waiting for response from service: {response_list}")
         result = self.redis_client.brpop(response_list, timeout=timeout if timeout > 0 else self.timeout)
-        
+        logger.debug(f"Response from service {len(result)} records")
+
         if result is None:
             raise R2D2QuotesExceptionDataNotReceived(symbol, history_start, history_end)
         

@@ -6,7 +6,10 @@ import numpy as np
 from datetime import datetime
 from app.services.tasks.tasks import Task
 from app.services.tasks.strategy import StrategyBacktest, OrderSide
-from app.core.startup import startup
+from app.core.startup import startup, shutdown
+from app.services.quotes.client import Client
+from app.core.config import REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD
+import talib
 
 
 @pytest.fixture(scope='module')
@@ -15,8 +18,19 @@ def app_startup():
     Fixture to initialize application services once for all tests in this module.
     """
     startup()
+    
+    # Initialize quotes client with correct Redis connection parameters
+    redis_params = {
+        'host': REDIS_HOST,
+        'port': REDIS_PORT,
+        'db': REDIS_DB,
+        'password': REDIS_PASSWORD
+    }
+    Client(redis_params=redis_params)
+    
     yield
-    # Cleanup if needed (shutdown is handled by pytest)
+    # Cleanup: shutdown application services
+    shutdown()
 
 
 class MovingAverageCrossoverStrategy(StrategyBacktest):
@@ -38,28 +52,17 @@ class MovingAverageCrossoverStrategy(StrategyBacktest):
         Called when a new bar is received.
         Implements moving average crossover logic.
         """
-        if self.close is None or len(self.close) < self.ma_slow_period:
-            # Not enough data yet
+        close_prices = self.close
+
+        if len(close_prices) < self.ma_slow_period:
             return
         
-        # Calculate moving averages using TA-Lib
-        import talib
-        
-        # Get close prices as numpy array
-        # self.close is already a numpy array from run()
-        close_prices = self.close
-        
-        # Calculate MAs for all available data
-        self.ma_fast = talib.SMA(close_prices, timeperiod=self.ma_fast_period)
-        self.ma_slow = talib.SMA(close_prices, timeperiod=self.ma_slow_period)
-        
-        # Need at least ma_slow_period + 1 bars to have valid MA values
-        # and at least 2 valid MA values to detect crossover
         if len(close_prices) < self.ma_slow_period + 1:
             return
         
-        # Get last valid MA values (skip NaN values at the beginning)
-        # Find first non-NaN index for slow MA
+        self.ma_fast = talib.SMA(close_prices, timeperiod=self.ma_fast_period)
+        self.ma_slow = talib.SMA(close_prices, timeperiod=self.ma_slow_period)
+        
         valid_slow_indices = ~np.isnan(self.ma_slow)
         if not np.any(valid_slow_indices) or np.sum(valid_slow_indices) < 2:
             return
@@ -111,7 +114,7 @@ def test_moving_average_crossover_strategy(app_startup):
         dateStart="2025-01-01T00:00:00",
         dateEnd="2025-04-01T00:00:00",
         parameters={
-            "ma_fast": 20,
+            "ma_fast": 80,
             "ma_slow": 100
         }
     )

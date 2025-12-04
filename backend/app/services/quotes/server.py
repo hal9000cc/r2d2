@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # Global variables for service management
 _service_thread: Optional[threading.Thread] = None
 _stop_event: Optional[threading.Event] = None
+_ready_event: Optional[threading.Event] = None
 
 
 class QuotesServer:
@@ -690,6 +691,11 @@ async def run_quotes_service(
     
     logger.info(f"Quotes service started. Listening on list: {request_list}")
     
+    # Signal that service is ready to process requests
+    global _ready_event
+    if _ready_event:
+        _ready_event.set()
+    
     try:
         while stop_event is None or not stop_event.is_set():
             try:
@@ -749,7 +755,9 @@ def start_quotes_service(
     redis_params: Optional[Dict] = None,
     clickhouse_params: Optional[Dict] = None,
     timeout: int = 0,
-    response_ttl: int = 300
+    response_ttl: int = 300,
+    wait_ready: bool = True,
+    ready_timeout: float = 30.0
 ) -> bool:
     """
     Start quotes service in a separate thread.
@@ -761,17 +769,20 @@ def start_quotes_service(
         clickhouse_params: Dictionary with ClickHouse connection parameters (host, port, username, password, database)
         timeout: BRPOP timeout in seconds
         response_ttl: TTL for response lists in seconds
+        wait_ready: If True, wait for service to be ready before returning
+        ready_timeout: Maximum time to wait for service to be ready (seconds)
     
     Returns:
         True if service started successfully, False if already running
     """
-    global _service_thread, _stop_event
+    global _service_thread, _stop_event, _ready_event
     
     if _service_thread is not None and _service_thread.is_alive():
         logger.warning("Quotes service is already running")
         return False
     
     _stop_event = threading.Event()
+    _ready_event = threading.Event()
 
     def service_wrapper():
         # Run async function in event loop
@@ -792,6 +803,15 @@ def start_quotes_service(
     _service_thread = threading.Thread(target=service_wrapper, daemon=False)
     _service_thread.start()
     logger.info("Quotes service thread started")
+    
+    # Wait for service to be ready if requested
+    if wait_ready:
+        if _ready_event.wait(timeout=ready_timeout):
+            logger.info("Quotes service is ready to process requests")
+        else:
+            logger.warning(f"Quotes service did not become ready within {ready_timeout} seconds")
+            # Don't return False here - service might still start, just log warning
+    
     return True
 
 
@@ -822,6 +842,7 @@ def stop_quotes_service(timeout: float = 5.0) -> bool:
     
     _service_thread = None
     _stop_event = None
+    _ready_event = None
     logger.info("Quotes service stopped")
     return True
 
