@@ -128,3 +128,20 @@ def test_moving_average_crossover_strategy(app_startup):
     # Basic assertions - strategy should have processed data
     assert strategy.close is not None, "Close prices should be loaded"
     assert len(strategy.close) > 0, "Should have at least some price data"
+    
+    # Check that global deal is closed (symbol_balance == 0)
+    assert strategy.global_deal.symbol_balance == 0, "Global deal should be closed (symbol_balance == 0)"
+    
+    # Check that current deal is None
+    assert strategy.current_deal is None, "Current deal should be None after run()"
+    
+    # Check that all deals in the list are closed
+    for deal in strategy.deals:
+        assert deal.exit_time is not None, f"Deal should have exit_time set"
+        assert deal.exit_price is not None, f"Deal should have exit_price set"
+        assert deal.symbol_balance == 0, f"Deal should have symbol_balance == 0 (got {deal.symbol_balance})"
+    
+    # Check that sum of all closed deals' balance equals global deal's balance
+    total_deals_balance = sum(deal.balance for deal in strategy.deals)
+    assert abs(total_deals_balance - strategy.global_deal.balance) < 1e-10, \
+        f"Sum of closed deals' balance ({total_deals_balance}) should equal global deal's balance ({strategy.global_deal.balance})"

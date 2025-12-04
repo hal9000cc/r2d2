@@ -291,6 +291,8 @@ class StrategyBacktest(Strategy):
             self.current_deal.close(self.current_time, self.price, self.fee)
             self.deals.append(self.current_deal)
             self.current_deal = None
+
+        self.global_deal.close(self.current_time, self.price, self.fee)
     
     def on_bar(self):
         pass
