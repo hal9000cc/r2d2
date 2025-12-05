@@ -90,48 +90,48 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px;
-  margin-bottom: 8px;
-  background-color: #ffffff;
-  border: 1px solid #e0e0e0;
+  padding: var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color-light);
   border-left: 3px solid transparent;
-  border-radius: 4px;
-  transition: background-color 0.2s, border-color 0.2s;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition-base), border-color var(--transition-base);
   cursor: pointer;
 }
 
 .active-strategy-item:hover {
-  background-color: #f5f5f5;
+  background-color: var(--bg-hover);
 }
 
 .active-strategy-item.is-running {
-  background-color: #e8f5e9;
-  border-color: #4caf50;
-  border-left-color: #4caf50;
+  background-color: var(--color-success-light);
+  border-color: var(--color-success);
+  border-left-color: var(--color-success);
 }
 
 .active-strategy-item.is-running:hover {
-  background-color: #d4edda;
+  background-color: var(--color-success-lighter);
 }
 
 .active-strategy-item.is-active {
-  background-color: #e3f2fd;
-  border-left-color: #2196f3;
-  border-color: #90caf9;
+  background-color: var(--color-info-light);
+  border-left-color: var(--color-info);
+  border-color: var(--color-info-lighter);
 }
 
 .active-strategy-item.is-active:hover {
-  background-color: #bbdefb;
+  background-color: var(--color-info-lighter);
 }
 
 .active-strategy-item.is-active.is-running {
-  background-color: #c8e6c9;
-  border-left-color: #2196f3;
-  border-color: #81c784;
+  background-color: var(--color-success-light);
+  border-left-color: var(--color-info);
+  border-color: var(--color-success);
 }
 
 .active-strategy-item.is-active.is-running:hover {
-  background-color: #a5d6a7;
+  background-color: var(--color-success-lighter);
 }
 
 .strategy-info {
@@ -140,23 +140,23 @@ export default {
 }
 
 .strategy-name {
-  font-weight: 600;
-  font-size: 14px;
-  color: #333;
-  margin-bottom: 4px;
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  margin-bottom: var(--spacing-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .strategy-id {
-  font-size: 12px;
-  color: #666;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
 }
 
 .strategy-actions {
   display: flex;
-  gap: 4px;
+  gap: var(--spacing-xs);
   flex-shrink: 0;
 }
 
@@ -164,88 +164,88 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: var(--button-height-sm);
+  height: var(--button-height-sm);
   padding: 0;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  background-color: #ffffff;
+  border: 1px solid var(--border-color-dark);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-primary);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--transition-base);
 }
 
 .action-btn:hover {
-  background-color: #f5f5f5;
-  border-color: #bbb;
+  background-color: var(--bg-hover);
+  border-color: var(--border-color);
 }
 
 .action-btn .icon {
   width: 16px;
   height: 16px;
-  color: #666;
+  color: var(--text-tertiary);
 }
 
 .action-btn:hover .icon {
-  color: #333;
+  color: var(--text-primary);
 }
 
 .edit-btn:hover {
-  background-color: #e3f2fd;
-  border-color: #2196f3;
+  background-color: var(--color-info-light);
+  border-color: var(--color-info);
 }
 
 .edit-btn:hover .icon {
-  color: #2196f3;
+  color: var(--color-info);
 }
 
 .start-btn:hover {
-  background-color: #e8f5e9;
-  border-color: #4caf50;
+  background-color: var(--color-success-light);
+  border-color: var(--color-success);
 }
 
 .start-btn:hover .icon {
-  color: #4caf50;
+  color: var(--color-success);
 }
 
 .stop-btn:hover {
-  background-color: #fff3e0;
-  border-color: #ff9800;
+  background-color: var(--color-warning-light);
+  border-color: var(--color-warning);
 }
 
 .stop-btn:hover .icon {
-  color: #ff9800;
+  color: var(--color-warning);
 }
 
 .trading-btn.is-trading {
-  background-color: #ffebee;
-  border-color: #f44336;
+  background-color: var(--color-danger-light);
+  border-color: var(--color-danger);
 }
 
 .trading-btn.is-trading .trading-icon {
-  color: #f44336;
+  color: var(--color-danger);
 }
 
 .trading-btn:hover.is-trading {
-  background-color: #ffcdd2;
+  background-color: var(--color-danger-lighter);
 }
 
 .trading-btn .icon-text {
-  font-size: 14px;
-  font-weight: 600;
-  color: #666;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-tertiary);
 }
 
 .trading-btn:hover .icon-text {
-  color: #333;
+  color: var(--text-primary);
 }
 
 .delete-btn:hover {
-  background-color: #ffebee;
-  border-color: #f44336;
+  background-color: var(--color-danger-light);
+  border-color: var(--color-danger);
 }
 
 .delete-btn:hover .icon {
-  color: #f44336;
+  color: var(--color-danger);
 }
 </style>
 

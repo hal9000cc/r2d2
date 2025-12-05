@@ -253,9 +253,9 @@ export default {
 .active-strategies-panel {
   width: 100%;
   height: 100%;
-  padding: 10px;
-  border-left: 1px solid #ddd;
-  background-color: #f8f9fa;
+  padding: var(--spacing-sm);
+  border-left: 1px solid var(--border-color-dark);
+  background-color: var(--bg-secondary);
   overflow-y: auto;
   min-width: 200px;
   display: flex;
@@ -266,44 +266,44 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: var(--spacing-sm);
   flex-shrink: 0;
 }
 
 .active-strategies-panel h3 {
   margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: #333;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
 .add-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: var(--button-height-sm);
+  height: var(--button-height-sm);
   padding: 0;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  background-color: #ffffff;
+  border: 1px solid var(--border-color-dark);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-primary);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--transition-base);
 }
 
 .add-btn:hover {
-  background-color: #e8f5e9;
-  border-color: #4caf50;
+  background-color: var(--color-success-light);
+  border-color: var(--color-success);
 }
 
 .add-btn .icon {
   width: 18px;
   height: 18px;
-  color: #666;
+  color: var(--text-tertiary);
 }
 
 .add-btn:hover .icon {
-  color: #4caf50;
+  color: var(--color-success);
 }
 
 .active-strategies-content {
@@ -312,10 +312,10 @@ export default {
 }
 
 .empty-state {
-  padding: 20px;
+  padding: var(--spacing-xl);
   text-align: center;
-  color: #999;
-  font-size: 14px;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
 }
 </style>
 

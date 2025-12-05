@@ -1,30 +1,29 @@
 <template>
-  <div class="chart-panel">
-    <h3>Chart</h3>
+  <div class="balance-chart">
+    <h3>Balance Chart</h3>
     <div class="chart-content">
-      <p>Chart panel placeholder</p>
+      <p>Balance chart will be displayed here</p>
     </div>
   </div>
 </template>
 
 <script>
 export default {
-  name: 'ChartPanel'
+  name: 'BalanceChart'
 }
 </script>
 
 <style scoped>
-.chart-panel {
+.balance-chart {
   width: 100%;
   height: 100%;
   padding: var(--spacing-sm);
-  border-bottom: 1px solid var(--border-color-dark);
   background-color: var(--bg-primary);
   overflow: auto;
   min-height: 150px;
 }
 
-.chart-panel h3 {
+.balance-chart h3 {
   margin: 0 0 var(--spacing-sm) 0;
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);

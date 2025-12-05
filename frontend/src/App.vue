@@ -1,35 +1,21 @@
 <template>
   <div id="app">
-    <MainLayout />
+    <AppLayout />
   </div>
 </template>
 
 <script>
-import MainLayout from './components/MainLayout.vue'
+import AppLayout from './components/AppLayout.vue'
 
 export default {
   name: 'App',
   components: {
-    MainLayout
+    AppLayout
   }
 }
 </script>
 
 <style>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-#app {
-  width: 100vw;
-  height: 100vh;
-  overflow: hidden;
-  font-family: Avenir, Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  color: #2c3e50;
-}
+/* Global styles are imported from assets/styles.css */
 </style>
 

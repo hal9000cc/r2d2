@@ -64,11 +64,12 @@ export default {
   },
   methods: {
     calculateSizes() {
-      // Calculate available height (viewport height - results panel height ~10vh)
+      // Calculate available height (viewport height - navbar height 60px - results panel height ~10vh)
       const viewportHeight = window.innerHeight
+      const navbarHeight = 60 // NavBar height
       const resultsPanelHeight = viewportHeight * 0.1 // 10vh
       const messagesMinHeight = 100 // Minimum height for Messages panel
-      const availableHeight = viewportHeight - resultsPanelHeight
+      const availableHeight = viewportHeight - navbarHeight - resultsPanelHeight
       
       // Calculate max height for Chart (available height - min Messages height)
       this.chartMaxHeight = availableHeight - messagesMinHeight
@@ -129,8 +130,8 @@ export default {
 .main-layout {
   display: flex;
   flex-direction: row;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
 }
 
@@ -140,7 +141,7 @@ export default {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  height: 100vh;
+  height: 100%;
 }
 </style>
 

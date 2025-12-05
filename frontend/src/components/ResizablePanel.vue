@@ -170,12 +170,14 @@ export default {
 .resize-handle {
   position: absolute;
   z-index: 10;
-  background-color: transparent;
-  transition: background-color 0.2s;
+  background-color: var(--border-color);
+  opacity: 0.3;
+  transition: background-color var(--transition-base), opacity var(--transition-base);
 }
 
 .resize-handle:hover {
-  background-color: rgba(0, 123, 255, 0.3);
+  background-color: rgba(37, 99, 235, 0.3);
+  opacity: 1;
 }
 
 .resize-handle-horizontal {

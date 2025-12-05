@@ -159,40 +159,40 @@ export default {
 .messages-panel {
   flex: 1;
   min-height: 100px;
-  padding: 10px;
-  background-color: #ffffff;
+  padding: var(--spacing-sm);
+  background-color: var(--bg-primary);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
 .messages-panel h3 {
-  margin: 0 0 10px 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: #333;
+  margin: 0 0 var(--spacing-sm) 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
   flex-shrink: 0;
 }
 
 .messages-content {
   flex: 1;
   overflow-y: auto;
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   font-family: 'Courier New', monospace;
 }
 
 .empty-state {
-  padding: 20px;
+  padding: var(--spacing-xl);
   text-align: center;
-  color: #999;
-  font-size: 12px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
 }
 
 .message-item {
   display: flex;
-  gap: 8px;
-  padding: 4px 8px;
-  border-bottom: 1px solid #f0f0f0;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-bottom: 1px solid var(--bg-tertiary);
   align-items: baseline;
 }
 
@@ -201,14 +201,14 @@ export default {
 }
 
 .message-time {
-  color: #666;
+  color: var(--text-tertiary);
   font-size: 11px;
   min-width: 80px;
   flex-shrink: 0;
 }
 
 .message-level {
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   font-size: 10px;
   min-width: 50px;
   flex-shrink: 0;
@@ -216,40 +216,40 @@ export default {
 }
 
 .message-text {
-  color: #333;
+  color: var(--text-primary);
   flex: 1;
 }
 
 .message-info .message-level {
-  color: #2196f3;
+  color: var(--color-info);
 }
 
 .message-warning .message-level {
-  color: #ff9800;
+  color: var(--color-warning);
 }
 
 .message-error .message-level {
-  color: #f44336;
+  color: var(--color-danger);
 }
 
 .message-debug .message-level {
-  color: #9e9e9e;
+  color: var(--text-muted);
 }
 
 .message-info {
-  background-color: #e3f2fd;
+  background-color: var(--color-info-light);
 }
 
 .message-warning {
-  background-color: #fff3e0;
+  background-color: var(--color-warning-light);
 }
 
 .message-error {
-  background-color: #ffebee;
+  background-color: var(--color-danger-light);
 }
 
 .message-debug {
-  background-color: #f5f5f5;
+  background-color: var(--bg-tertiary);
 }
 </style>
 

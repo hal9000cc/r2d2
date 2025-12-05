@@ -24,62 +24,28 @@
               />
             </div>
             
-            <div class="form-group">
-              <label>Strategy ID <span class="required">*</span></label>
-              <input 
-                type="text"
-                v-model="formData.strategy_id"
-                class="form-input"
-                :class="{ 'invalid': formData.strategy_id && !isStrategyIdValid }"
-                list="strategies-list"
-                placeholder="Type to search strategy..."
-                required
-                autocomplete="off"
-                @input="handleStrategyIdInput"
-              />
-              <datalist id="strategies-list">
-                <option v-for="strategy in strategies" :key="strategy" :value="strategy"></option>
-              </datalist>
-            </div>
+            <StrategyInput
+              v-model="formData.strategy_id"
+              input-id="modal-strategy"
+              :required="true"
+              @valid="isStrategyIdValid = $event"
+            />
             
-            <div class="form-group">
-              <label>Source <span class="required">*</span></label>
-              <input 
-                type="text"
-                v-model="formData.source"
-                class="form-input"
-                :class="{ 'invalid': formData.source && !isSourceValid }"
-                list="sources-list"
-                placeholder="Type to search source..."
-                required
-                autocomplete="off"
-                @focus="isSourceInputFocused = true"
-                @blur="isSourceInputFocused = false"
-                @input="handleSourceInput"
-              />
-              <datalist id="sources-list">
-                <option v-for="source in sources" :key="source" :value="source"></option>
-              </datalist>
-            </div>
+            <SourceInput
+              v-model="formData.source"
+              input-id="modal-source"
+              :required="true"
+              @valid="isSourceValid = $event"
+            />
             
-            <div class="form-group">
-              <label>Symbol <span class="required">*</span></label>
-              <input 
-                type="text"
-                v-model="formData.symbol"
-                class="form-input"
-                :class="{ 'invalid': formData.symbol && !isSymbolValid }"
-                list="symbols-list"
-                placeholder="Type to search symbol..."
-                :disabled="!isSourceValid"
-                required
-                autocomplete="off"
-                @input="handleSymbolInput"
-              />
-              <datalist id="symbols-list">
-                <option v-for="symbol in getSymbolsForSource(formData.source)" :key="symbol" :value="symbol"></option>
-              </datalist>
-            </div>
+            <SymbolInput
+              v-model="formData.symbol"
+              :source="formData.source"
+              :is-source-valid="isSourceValid"
+              input-id="modal-symbol"
+              :required="true"
+              @valid="isSymbolValid = $event"
+            />
             
             <div class="form-group">
               <label>Timeframe <span class="required">*</span></label>
@@ -149,6 +115,9 @@
 <script>
 import { XMarkIcon } from '@heroicons/vue/24/outline'
 import { activeStrategiesApi } from '../services/activeStrategiesApi'
+import SourceInput from './SourceInput.vue'
+import SymbolInput from './SymbolInput.vue'
+import StrategyInput from './StrategyInput.vue'
 
 export default {
   name: 'ActiveStrategyEditModal',
@@ -180,7 +149,10 @@ export default {
   },
   emits: ['close', 'save'],
   components: {
-    XMarkIcon
+    XMarkIcon,
+    SourceInput,
+    SymbolInput,
+    StrategyInput
   },
   data() {
     return {
@@ -196,43 +168,12 @@ export default {
         dateEnd: ''
       },
       savedDateEnd: '', // Store dateEnd when Real Trading is enabled
-      isSourceInputFocused: false, // Track if source input is focused
-      symbolsCache: {} // Cache symbols by source: { source: [symbols] }
+      isSourceValid: false,
+      isSymbolValid: false,
+      isStrategyIdValid: false
     }
   },
   computed: {
-    filteredSources() {
-      if (!this.formData.source) {
-        return this.sources
-      }
-      const searchText = this.formData.source.toLowerCase()
-      return this.sources.filter(source => 
-        source.toLowerCase().startsWith(searchText)
-      )
-    },
-    isSourceValid() {
-      // Source is valid only if it exists in the sources list
-      return this.formData.source && this.sources.includes(this.formData.source)
-    },
-    isStrategyIdValid() {
-      // Strategy ID is valid only if it exists in the strategies list
-      return this.formData.strategy_id && this.strategies.includes(this.formData.strategy_id)
-    },
-    isSymbolValid() {
-      // Symbol is valid only if:
-      // 1. Source is valid
-      // 2. Symbol exists in the list for selected source (case insensitive)
-      if (!this.isSourceValid || !this.formData.symbol) {
-        return false
-      }
-      const symbols = this.getSymbolsForSource(this.formData.source)
-      // If symbols are not loaded yet, consider it valid (will be validated on submit)
-      if (symbols.length === 0) {
-        return true
-      }
-      // Case-insensitive check
-      return symbols.some(s => s.toLowerCase() === this.formData.symbol.toLowerCase())
-    }
   },
   mounted() {
     // Add ESC key handler
@@ -290,11 +231,6 @@ export default {
         if (newSource !== oldSource) {
           this.formData.symbol = ''
         }
-        // Load symbols only if source is a valid source from the list
-        // This prevents requests when user is typing
-        if (newSource && this.sources.includes(newSource) && !this.symbolsCache[newSource]) {
-          this.loadSymbolsForSource(newSource)
-        }
       }
     }
   },
@@ -327,8 +263,8 @@ export default {
         alert('Source is required')
         return false
       }
-      // Validate that source exists in the list
-      if (!this.sources.includes(this.formData.source)) {
+      // Validate that source is valid
+      if (!this.isSourceValid) {
         alert(`Source "${this.formData.source}" is not valid. Please select from the list.`)
         return false
       }
@@ -336,13 +272,10 @@ export default {
         alert('Symbol is required')
         return false
       }
-      // Validate that symbol exists in the list for selected source (case insensitive)
-      if (this.formData.source) {
-        const symbols = this.getSymbolsForSource(this.formData.source)
-        if (symbols.length > 0 && !symbols.some(s => s.toLowerCase() === this.formData.symbol.toLowerCase())) {
-          alert(`Symbol "${this.formData.symbol}" is not valid for source "${this.formData.source}". Please select from the list.`)
-          return false
-        }
+      // Validate that symbol is valid
+      if (!this.isSymbolValid) {
+        alert(`Symbol "${this.formData.symbol}" is not valid for source "${this.formData.source}". Please select from the list.`)
+        return false
       }
       if (!this.formData.timeframe.trim()) {
         alert('Timeframe is required')
@@ -379,94 +312,6 @@ export default {
       if (event.key === 'Escape' && this.isOpen) {
         this.handleCancel()
       }
-    },
-    handleSourceInput(event) {
-      const inputValue = event.target.value
-      if (!inputValue) {
-        return
-      }
-      
-      // Filter sources that start with input value (case insensitive)
-      const searchText = inputValue.toLowerCase()
-      const matchingSources = this.sources.filter(source => 
-        source.toLowerCase().startsWith(searchText)
-      )
-      
-      // Auto-select if only one matching source remains
-      if (matchingSources.length === 1) {
-        this.$nextTick(() => {
-          this.formData.source = matchingSources[0]
-        })
-      }
-    },
-    async loadSymbolsForSource(source) {
-      if (!source || this.symbolsCache[source]) {
-        return
-      }
-      
-      try {
-        const symbols = await activeStrategiesApi.getSourceSymbols(source)
-        this.symbolsCache[source] = symbols
-      } catch (error) {
-        console.error(`Failed to load symbols for source ${source}:`, error)
-        this.symbolsCache[source] = []
-      }
-    },
-    getSymbolsForSource(source) {
-      return this.symbolsCache[source] || []
-    },
-    handleSymbolInput(event) {
-      const inputValue = event.target.value
-      if (!inputValue || !this.formData.source) {
-        return
-      }
-      
-      const symbols = this.getSymbolsForSource(this.formData.source)
-      if (symbols.length === 0) {
-        return
-      }
-      
-      // Filter symbols that start with input value (case insensitive)
-      const searchText = inputValue.toLowerCase()
-      const matchingSymbols = symbols.filter(symbol => 
-        symbol.toLowerCase().startsWith(searchText)
-      )
-      
-      // Auto-select if only one matching symbol remains
-      if (matchingSymbols.length === 1) {
-        this.$nextTick(() => {
-          this.formData.symbol = matchingSymbols[0]
-        })
-      } else {
-        // If exact match found (case insensitive), use the original case from list
-        const exactMatch = symbols.find(symbol => 
-          symbol.toLowerCase() === searchText
-        )
-        if (exactMatch) {
-          this.$nextTick(() => {
-            this.formData.symbol = exactMatch
-          })
-        }
-      }
-    },
-    handleStrategyIdInput(event) {
-      const inputValue = event.target.value
-      if (!inputValue) {
-        return
-      }
-      
-      // Filter strategies that start with input value (case insensitive)
-      const searchText = inputValue.toLowerCase()
-      const matchingStrategies = this.strategies.filter(strategy => 
-        strategy.toLowerCase().startsWith(searchText)
-      )
-      
-      // Auto-select if only one matching strategy remains
-      if (matchingStrategies.length === 1) {
-        this.$nextTick(() => {
-          this.formData.strategy_id = matchingStrategies[0]
-        })
-      }
     }
   }
 }
@@ -483,48 +328,48 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-modal);
 }
 
 .modal-content {
-  background: white;
-  border-radius: 8px;
+  background: var(--bg-primary);
+  border-radius: var(--radius-lg);
   width: 90%;
   max-width: 500px;
   max-height: 90vh;
   overflow-y: auto;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-md);
 }
 
 .modal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 20px;
-  border-bottom: 1px solid #e0e0e0;
+  padding: var(--spacing-xl);
+  border-bottom: 1px solid var(--border-color-light);
 }
 
 .modal-header h3 {
   margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #333;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
 .close-btn {
   background: none;
   border: none;
   cursor: pointer;
-  padding: 4px;
+  padding: var(--spacing-xs);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #666;
-  transition: color 0.2s;
+  color: var(--text-tertiary);
+  transition: color var(--transition-base);
 }
 
 .close-btn:hover {
-  color: #333;
+  color: var(--text-primary);
 }
 
 .close-btn .icon {
@@ -533,37 +378,37 @@ export default {
 }
 
 .modal-body {
-  padding: 20px;
+  padding: var(--spacing-xl);
 }
 
 .form-group {
-  margin-bottom: 16px;
+  margin-bottom: var(--spacing-lg);
 }
 
 .form-group > label:not(.checkbox-label) {
   display: block;
-  margin-bottom: 6px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #333;
+  margin-bottom: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
 }
 
 .required {
-  color: #f44336;
+  color: var(--color-danger);
 }
 
 .form-input {
   width: 100%;
-  padding: 8px 12px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 14px;
-  transition: border-color 0.2s;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--border-color-dark);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  transition: border-color var(--transition-base);
 }
 
 .form-input:focus {
   outline: none;
-  border-color: #2196f3;
+  border-color: var(--color-info);
 }
 
 .form-select {
@@ -571,14 +416,14 @@ export default {
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23333' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 12px center;
+  background-position: right var(--spacing-md) center;
   padding-right: 36px;
 }
 
 .form-input.disabled,
 .form-input:disabled {
-  background-color: #f5f5f5;
-  color: #999;
+  background-color: var(--bg-tertiary);
+  color: var(--text-muted);
   cursor: not-allowed;
 }
 
@@ -599,12 +444,12 @@ export default {
 }
 
 .form-input.invalid {
-  border-color: #dc3545;
-  box-shadow: 0 0 0 0.2rem rgba(220, 53, 69, 0.25);
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 0.2rem rgba(244, 67, 54, 0.25);
 }
 
 .checkbox-group {
-  margin-top: 8px;
+  margin-top: var(--spacing-sm);
   display: flex;
   justify-content: flex-end;
   align-items: flex-end;
@@ -613,16 +458,16 @@ export default {
 .checkbox-container {
   display: flex;
   justify-content: flex-end;
-  gap: 24px;
+  gap: var(--spacing-xl);
   align-items: flex-end;
 }
 
 .checkbox-label {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--spacing-sm);
   cursor: pointer;
-  font-weight: normal;
+  font-weight: var(--font-weight-normal);
   margin-bottom: 0;
   user-select: none;
 }
@@ -641,58 +486,58 @@ export default {
 .checkbox-text {
   display: block;
   line-height: 1.5;
-  font-size: 14px;
+  font-size: var(--font-size-sm);
   white-space: nowrap;
 }
 
 .modal-footer {
   display: flex;
   justify-content: flex-end;
-  gap: 12px;
-  padding: 20px;
-  border-top: 1px solid #e0e0e0;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xl);
+  border-top: 1px solid var(--border-color-light);
 }
 
 .btn {
-  padding: 8px 16px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 14px;
-  font-weight: 500;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  border: 1px solid var(--border-color-dark);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--transition-base);
 }
 
 .btn-cancel {
-  background-color: #ffffff;
-  color: #666;
+  background-color: var(--bg-primary);
+  color: var(--text-tertiary);
 }
 
 .btn-cancel:hover {
-  background-color: #f5f5f5;
-  border-color: #bbb;
+  background-color: var(--bg-hover);
+  border-color: var(--border-color);
 }
 
 .btn-ok {
-  background-color: #2196f3;
-  color: white;
-  border-color: #2196f3;
+  background-color: var(--color-info);
+  color: var(--text-inverse);
+  border-color: var(--color-info);
 }
 
 .btn-ok:hover {
-  background-color: #1976d2;
-  border-color: #1976d2;
+  background-color: var(--color-info-hover);
+  border-color: var(--color-info-hover);
 }
 
 /* Transition animations */
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity 0.3s;
+  transition: opacity var(--transition-slow);
 }
 
 .modal-enter-active .modal-content,
 .modal-leave-active .modal-content {
-  transition: transform 0.3s, opacity 0.3s;
+  transition: transform var(--transition-slow), opacity var(--transition-slow);
 }
 
 .modal-enter-from,
