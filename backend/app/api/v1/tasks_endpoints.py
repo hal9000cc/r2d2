@@ -1,97 +1,10 @@
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from typing import List, Dict, Any
-import ccxt
 import asyncio
 from datetime import datetime
-import json
 from app.services.tasks.tasks import TaskList
-from app.services.tasks import strategies_get_list as strategies_get_list
-from app.services.quotes.timeframe import Timeframe
 
-router = APIRouter(prefix="/api/v1/strategies", tags=["strategies"])
-
-# Get TaskList singleton instance
-task_list = TaskList()
-
-
-def _get_timeframes_list() -> List[str]:
-    """
-    Get list of timeframes from Timeframe class.
-    Selects all attributes that start with 't' and have numeric type.
-    Returns names without 't' prefix (e.g., '1m' instead of 't1m'),
-    sorted by value in ascending order.
-    """
-    timeframes = []
-    for attr_name in dir(Timeframe):
-        if attr_name.startswith('t') and not attr_name.startswith('__'):
-            attr_value = getattr(Timeframe, attr_name)
-            if isinstance(attr_value, (int, float)):
-                # Store tuple (value, name) for sorting by value
-                timeframes.append((attr_value, attr_name[1:]))
-    # Sort by value (first element of tuple) and return only names
-    return [name for _, name in sorted(timeframes, key=lambda x: x[0])]
-
-
-@router.get("/timeframes", response_model=List[str])
-async def get_timeframes():
-    """
-    Get list of available timeframes
-    """
-    return _get_timeframes_list()
-
-
-@router.get("/sources", response_model=List[str])
-async def get_sources():
-    """
-    Get list of available sources (exchanges) from ccxt
-    """
-    # Get list of all available exchanges from ccxt
-    return sorted(ccxt.exchanges)
-
-
-# Cache for symbols by source
-source_symbols: Dict[str, List[str]] = {}
-
-
-@router.get("/sources/{source}/symbols", response_model=List[str])
-async def get_source_symbols(source: str):
-    """
-    Get list of symbols for a specific source (exchange)
-    Symbols are cached per source to avoid repeated API calls
-    """
-    # Check cache first
-    if source in source_symbols:
-        return source_symbols[source]
-    
-    try:
-        # Create exchange instance
-        exchange_class = getattr(ccxt, source)
-        exchange = exchange_class({
-            'enableRateLimit': True,
-        })
-        
-        # Load markets to get symbols
-        markets = exchange.load_markets()
-        
-        # Extract unique symbols
-        symbols = sorted(list(set(markets.keys())))
-        
-        # Cache the result
-        source_symbols[source] = symbols
-        
-        return symbols
-    except AttributeError:
-        raise HTTPException(status_code=404, detail=f"Source '{source}' not found in ccxt")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load symbols for source '{source}': {str(e)}")
-
-
-@router.get("/strategies", response_model=List[str])
-async def get_strategies():
-    """
-    Get list of available strategy identifiers from Python files in STRATEGIES_DIR
-    """
-    return strategies_get_list()
+router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
 
 @router.get("", response_model=List[Dict[str, Any]])
@@ -99,8 +12,8 @@ async def get_active_strategies():
     """
     Get list of active strategies
     """
-    tasks = task_list.get_tasks()
-    return [task.to_dict() for task in tasks]
+    tasks = TaskList._instance.list()
+    return [task.model_dump() for task in tasks]
 
 
 @router.get("/{strategy_id}", response_model=Dict[str, Any])
@@ -111,14 +24,14 @@ async def get_active_strategy(strategy_id: int):
     """
     # If strategy_id == 0, return empty strategy with new ID
     if strategy_id == 0:
-        task = task_list.new_task()
-        return task.to_dict()
+        task = TaskList._instance.new()
+        return task.model_dump()
     
-    task = task_list.get_task(strategy_id)
+    task = TaskList._instance.load(strategy_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
     
-    return task.to_dict()
+    return task.model_dump()
 
 
 @router.delete("/{strategy_id}", response_model=List[Dict[str, Any]])
@@ -128,9 +41,9 @@ async def delete_strategy(strategy_id: int):
     Returns updated list of strategies
     """
     try:
-        task_list.delete_task(strategy_id)
-        tasks = task_list.get_tasks()
-        return [task.to_dict() for task in tasks]
+        TaskList._instance.delete(strategy_id)
+        tasks = TaskList._instance.list()
+        return [task.model_dump() for task in tasks]
     except KeyError:
         raise HTTPException(status_code=404, detail="Strategy not found")
 
@@ -141,14 +54,14 @@ async def start_strategy(strategy_id: int):
     Start strategy
     Returns updated strategy object
     """
-    task = task_list.get_task(strategy_id)
+    task = TaskList._instance.load(strategy_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
     
     # Update isRunning to True
     task.isRunning = True
-    updated_task = task_list.put_task(task)
-    return updated_task.to_dict()
+    updated_task = task.save()
+    return updated_task.model_dump()
 
 
 @router.post("/{strategy_id}/stop", response_model=Dict[str, Any])
@@ -157,14 +70,14 @@ async def stop_strategy(strategy_id: int):
     Stop strategy
     Returns updated strategy object
     """
-    task = task_list.get_task(strategy_id)
+    task = TaskList._instance.load(strategy_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
     
     # Update isRunning to False
     task.isRunning = False
-    updated_task = task_list.put_task(task)
-    return updated_task.to_dict()
+    updated_task = task.save()
+    return updated_task.model_dump()
 
 
 @router.post("/{strategy_id}/toggle-trading", response_model=Dict[str, Any])
@@ -173,14 +86,14 @@ async def toggle_trading(strategy_id: int):
     Toggle trading for strategy
     Returns updated strategy object
     """
-    task = task_list.get_task(strategy_id)
+    task = TaskList._instance.load(strategy_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
     
     # Toggle isTrading
     task.isTrading = not task.isTrading
-    updated_task = task_list.put_task(task)
-    return updated_task.to_dict()
+    updated_task = task.save()
+    return updated_task.model_dump()
 
 
 @router.put("/{strategy_id}", response_model=Dict[str, Any])
@@ -189,16 +102,17 @@ async def update_strategy(strategy_id: int, strategy_data: Dict[str, Any]):
     Update active strategy
     Returns updated strategy object
     """
-    # Ensure active_strategy_id matches
-    strategy_data["active_strategy_id"] = strategy_id
+    # Ensure id matches
+    strategy_data["id"] = strategy_id
     
-    # Convert dict to Task object
+    # Convert dict to Task object using Pydantic
     from app.services.tasks.tasks import Task
-    task = Task.from_dict(strategy_data)
+    task = Task.model_validate(strategy_data)
+    task._list = TaskList._instance  # Set reference to list
     
-    # put_task will add or update the strategy
-    updated_task = task_list.put_task(task)
-    return updated_task.to_dict()
+    # save() will add or update the strategy
+    updated_task = task.save()
+    return updated_task.model_dump()
 
 
 # In-memory storage for messages (strategy_id -> list of messages)
@@ -252,7 +166,7 @@ async def get_messages(strategy_id: int):
         List of messages
     """
     # Check if task exists
-    task = task_list.get_task(strategy_id)
+    task = TaskList._instance.load(strategy_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
     
@@ -279,7 +193,7 @@ async def websocket_messages(websocket: WebSocket, strategy_id: int):
     await websocket.accept()
     
     # Check if task exists
-    task = task_list.get_task(strategy_id)
+    task = TaskList._instance.load(strategy_id)
     if task is None:
         await websocket.close(code=1008, reason="Strategy not found")
         return

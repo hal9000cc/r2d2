@@ -1,14 +1,10 @@
 <template>
   <div class="backtesting-nav-form">
-    <StrategyInput
-      v-model="formData.strategy"
-      input-id="backtesting-strategy"
-      :required="true"
-    />
     <SourceInput
       v-model="formData.source"
       input-id="backtesting-source"
       :required="true"
+      :disabled="disabled"
       @valid="isSourceValid = $event"
     />
     <SymbolInput
@@ -17,6 +13,7 @@
       :is-source-valid="isSourceValid"
       input-id="backtesting-symbol"
       :required="true"
+      :disabled="disabled"
     />
     <div class="form-group">
       <label for="dateFrom">Date From</label>
@@ -25,6 +22,7 @@
         v-model="formData.dateFrom"
         type="date"
         class="form-input"
+        :disabled="disabled"
       />
     </div>
     <div class="form-group">
@@ -34,34 +32,48 @@
         v-model="formData.dateTo"
         type="date"
         class="form-input"
+        :disabled="disabled"
       />
     </div>
-    <button class="start-btn" @click="handleStart">Start</button>
+    <button class="start-btn" :disabled="disabled" @click="handleStart">Start</button>
   </div>
 </template>
 
 <script>
 import SourceInput from './SourceInput.vue'
 import SymbolInput from './SymbolInput.vue'
-import StrategyInput from './StrategyInput.vue'
 
 export default {
   name: 'BacktestingNavForm',
   components: {
     SourceInput,
-    SymbolInput,
-    StrategyInput
+    SymbolInput
+  },
+  emits: ['start', 'form-data-changed'],
+  props: {
+    disabled: {
+      type: Boolean,
+      default: false
+    }
   },
   data() {
     return {
       formData: {
-        strategy: '',
         source: '',
         symbol: '',
         dateFrom: '',
         dateTo: ''
       },
       isSourceValid: false
+    }
+  },
+  watch: {
+    formData: {
+      handler() {
+        // Emit change event when form data changes
+        this.$emit('form-data-changed')
+      },
+      deep: true
     }
   },
   methods: {
@@ -101,11 +113,6 @@ export default {
   transition: border-color var(--transition-base);
 }
 
-.form-input:focus {
-  outline: none;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-}
 
 .start-btn {
   padding: var(--spacing-sm) var(--spacing-xl);
@@ -119,12 +126,17 @@ export default {
   margin-top: 1.25rem;
 }
 
-.start-btn:hover {
+.start-btn:hover:not(:disabled) {
   background-color: var(--color-primary-hover);
 }
 
-.start-btn:active {
+.start-btn:active:not(:disabled) {
   background-color: var(--color-primary-active);
+}
+
+.start-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>
 

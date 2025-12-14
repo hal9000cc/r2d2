@@ -12,6 +12,7 @@
       :list="datalistId"
       :placeholder="placeholder"
       :required="required"
+      :disabled="disabled"
       autocomplete="off"
       @input="handleInput"
       @focus="isFocused = true"
@@ -24,7 +25,7 @@
 </template>
 
 <script>
-import { activeStrategiesApi } from '../services/activeStrategiesApi'
+import { strategiesApi } from '../services/strategiesApi'
 
 export default {
   name: 'SourceInput',
@@ -44,6 +45,10 @@ export default {
     inputId: {
       type: String,
       default: 'source-input'
+    },
+    disabled: {
+      type: Boolean,
+      default: false
     }
   },
   emits: ['update:modelValue', 'change', 'valid'],
@@ -72,7 +77,7 @@ export default {
   methods: {
     async loadSources() {
       try {
-        this.sources = await activeStrategiesApi.getSources()
+        this.sources = await strategiesApi.getSources()
       } catch (error) {
         console.error('Failed to load sources:', error)
         this.sources = []
@@ -131,11 +136,6 @@ export default {
   transition: border-color var(--transition-base);
 }
 
-.form-input:focus {
-  outline: none;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-}
 
 .form-input.invalid {
   border-color: var(--color-danger);

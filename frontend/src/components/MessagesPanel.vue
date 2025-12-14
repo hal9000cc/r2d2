@@ -20,114 +20,33 @@
 </template>
 
 <script>
-import { activeStrategiesApi } from '../services/activeStrategiesApi'
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'
-const WS_BASE_URL = API_BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://')
-
 export default {
   name: 'MessagesPanel',
   props: {
-    activeStrategyId: {
-      type: Number,
-      default: null
+    messages: {
+      type: Array,
+      default: () => []
     }
   },
   data() {
     return {
-      messages: [],
-      websocket: null,
       messagesContainer: null
     }
   },
   watch: {
-    activeStrategyId: {
-      handler(newId, oldId) {
-        if (newId !== oldId) {
-          this.loadMessages(newId)
-        }
+    messages: {
+      handler() {
+        this.$nextTick(() => {
+          this.scrollToBottom()
+        })
       },
-      immediate: true
+      deep: true
     }
   },
   mounted() {
     this.messagesContainer = this.$refs.messagesContainer
   },
-  beforeUnmount() {
-    this.disconnectWebSocket()
-  },
   methods: {
-    async loadMessages(strategyId) {
-      if (!strategyId) {
-        this.messages = []
-        this.disconnectWebSocket()
-        return
-      }
-
-      try {
-        // Disconnect old WebSocket
-        this.disconnectWebSocket()
-
-        // Load initial messages via HTTP
-        this.messages = await activeStrategiesApi.getMessages(strategyId)
-        this.scrollToBottom()
-
-        // Connect to WebSocket for real-time updates
-        this.connectWebSocket(strategyId)
-      } catch (error) {
-        console.error('Failed to load messages:', error)
-        this.messages = []
-      }
-    },
-    connectWebSocket(strategyId) {
-      if (!strategyId) return
-
-      const wsUrl = `${WS_BASE_URL}/api/v1/strategies/${strategyId}/messages`
-      
-      try {
-        this.websocket = new WebSocket(wsUrl)
-
-        this.websocket.onopen = () => {
-          console.log('WebSocket connected for strategy', strategyId)
-        }
-
-        this.websocket.onmessage = (event) => {
-          try {
-            const message = JSON.parse(event.data)
-            const wasAtBottom = this.isAtBottom()
-            this.messages.push(message)
-            // Keep only last 200 messages
-            if (this.messages.length > 200) {
-              this.messages = this.messages.slice(-200)
-            }
-            this.$nextTick(() => {
-              // Only scroll if user was at bottom
-              if (wasAtBottom) {
-                this.scrollToBottom()
-              }
-            })
-          } catch (error) {
-            console.error('Failed to parse WebSocket message:', error)
-          }
-        }
-
-        this.websocket.onerror = (error) => {
-          console.error('WebSocket error:', error)
-        }
-
-        this.websocket.onclose = () => {
-          console.log('WebSocket disconnected for strategy', strategyId)
-        }
-      } catch (error) {
-        console.error('Failed to connect WebSocket:', error)
-      }
-    },
-    disconnectWebSocket() {
-      if (this.websocket) {
-        this.websocket.close()
-        this.websocket = null
-      }
-    },
     formatTime(timestamp) {
       if (!timestamp) return ''
       const date = new Date(timestamp)
@@ -148,7 +67,10 @@ export default {
     },
     scrollToBottom() {
       if (this.messagesContainer) {
-        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight
+        const wasAtBottom = this.isAtBottom()
+        if (wasAtBottom) {
+          this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight
+        }
       }
     }
   }

@@ -13,7 +13,7 @@
       >
         <ChartPanel />
       </ResizablePanel>
-      <MessagesPanel :active-strategy-id="activeStrategyId" />
+      <MessagesPanelSocket />
     </div>
     <ResizablePanel
       direction="horizontal"
@@ -24,7 +24,7 @@
       storage-key="active-strategies-panel-width"
       @resize="handleActiveStrategiesResize"
     >
-      <ActiveStrategiesPanel @active-strategy-changed="handleActiveStrategyChanged" />
+      <ActiveStrategiesPanel />
     </ResizablePanel>
   </div>
 </template>
@@ -33,7 +33,7 @@
 import ResizablePanel from './ResizablePanel.vue'
 import ResultsPanel from './ResultsPanel.vue'
 import ChartPanel from './ChartPanel.vue'
-import MessagesPanel from './MessagesPanel.vue'
+import MessagesPanelSocket from './MessagesPanelSocket.vue'
 import ActiveStrategiesPanel from './ActiveStrategiesPanel.vue'
 
 export default {
@@ -42,7 +42,7 @@ export default {
     ResizablePanel,
     ResultsPanel,
     ChartPanel,
-    MessagesPanel,
+    MessagesPanelSocket,
     ActiveStrategiesPanel
   },
   data() {
@@ -50,8 +50,7 @@ export default {
       chartHeight: null,
       chartMaxHeight: null,
       activeStrategiesWidth: 250,
-      activeStrategiesMaxWidth: null,
-      activeStrategyId: null
+      activeStrategiesMaxWidth: null
     }
   },
   mounted() {
@@ -118,9 +117,6 @@ export default {
     },
     handleActiveStrategiesResize(size) {
       this.activeStrategiesWidth = size
-    },
-    handleActiveStrategyChanged(strategyId) {
-      this.activeStrategyId = strategyId
     }
   }
 }

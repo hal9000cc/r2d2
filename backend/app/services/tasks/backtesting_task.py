@@ -1,5 +1,5 @@
 """
-Task management with Redis storage.
+Backtesting task management with Redis storage.
 """
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Type
@@ -10,9 +10,9 @@ from app.core.logger import get_logger
 logger = get_logger(__name__)
 
 
-class Task(Objects2Redis):
+class BacktestingTask(Objects2Redis):
     """
-    Task class representing an active strategy task.
+    Backtesting task class representing a backtesting strategy task.
     Inherits from Objects2Redis for Redis storage with Pydantic validation.
     """
     
@@ -22,7 +22,6 @@ class Task(Objects2Redis):
     symbol: str = ""
     timeframe: str = ""
     isRunning: bool = False
-    isTrading: bool = False
     dateStart: str = Field(
         default_factory=lambda: (datetime.now() + timedelta(days=-30)).isoformat()
     )
@@ -40,15 +39,15 @@ class Task(Objects2Redis):
     
     def get_key(self) -> str:
         """
-        Returns secondary key for the task (strategy_id).
-        Used for indexing and searching tasks by strategy.
+        Returns secondary key for the backtesting task (strategy_id).
+        Used for indexing and searching backtesting tasks by strategy.
         """
         return self.strategy_id if self.strategy_id else ""
 
 
-class TaskList(Objects2RedisList[Task]):
+class BacktestingTaskList(Objects2RedisList[BacktestingTask]):
     """
-    Singleton class for managing tasks in Redis.
+    Singleton class for managing backtesting tasks in Redis.
     Inherits from Objects2RedisList.
     """
     _instance = None
@@ -56,20 +55,24 @@ class TaskList(Objects2RedisList[Task]):
     
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(TaskList, cls).__new__(cls)
+            cls._instance = super(BacktestingTaskList, cls).__new__(cls)
         return cls._instance
     
     def __init__(self, redis_params: Optional[Dict] = None):
-        if not TaskList._initialized:
-            if redis_params is None:
-                raise ValueError("TaskList must be initialized with redis_params on first call")
+        # If already initialized, just return (allow multiple calls without params)
+        if BacktestingTaskList._initialized:
+            return
+            
+        # First initialization requires redis_params
+        if redis_params is not None:
             super().__init__(redis_params)
-            TaskList._initialized = True
+            BacktestingTaskList._initialized = True
     
     def list_key(self) -> str:
-        """Returns the prefix for task keys in Redis"""
-        return "tasks"
+        """Returns the prefix for backtesting task keys in Redis"""
+        return "backtesting_tasks"
     
-    def object_class(self) -> Type[Task]:
-        """Returns the Task class"""
-        return Task
+    def object_class(self) -> Type[BacktestingTask]:
+        """Returns the BacktestingTask class"""
+        return BacktestingTask
+

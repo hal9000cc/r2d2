@@ -173,3 +173,29 @@ body {
   background-color: var(--bg-tertiary);
 }
 
+/* Form input focus style */
+.form-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+/* Disabled form input style */
+.form-input:disabled,
+.form-input.disabled {
+  background-color: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* Disabled button style */
+button.disabled,
+button:disabled {
+  background-color: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+
+

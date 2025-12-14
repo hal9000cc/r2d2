@@ -10,9 +10,11 @@ import threading
 import signal
 import os
 import socket
+import atexit
 
 from app.core.logger import setup_logging, get_logger
 from app.services.tasks.tasks import TaskList
+from app.services.tasks.backtesting_task import BacktestingTaskList
 from app.core.config import (
     REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD,
     REDIS_QUOTE_REQUEST_LIST, REDIS_QUOTE_RESPONSE_PREFIX,
@@ -77,9 +79,13 @@ def startup_redis():
             redis_args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+            text=True
+            # Note: NOT using preexec_fn=os.setsid
+            # This allows Redis to be child process that will be terminated with parent
         )
+        
+        # Register cleanup to ensure Redis is stopped on exit
+        atexit.register(shutdown_redis)
         
         # Wait a bit and check if process is still running
         time.sleep(1.0)  # Give Redis more time to start
@@ -156,22 +162,16 @@ def shutdown_redis():
         if _redis_process.poll() is None:  # Process is still running
             logger.info("Stopping Redis server...")
             # Send SIGTERM
-            if hasattr(os, 'setsid'):
-                os.killpg(os.getpgid(_redis_process.pid), signal.SIGTERM)
-            else:
-                _redis_process.terminate()
+            _redis_process.terminate()
             
-            # Wait for process to terminate (max 10 seconds)
+            # Wait for process to terminate (max 5 seconds)
             try:
-                _redis_process.wait(timeout=10)
+                _redis_process.wait(timeout=5)
                 logger.info("Redis server stopped successfully")
             except subprocess.TimeoutExpired:
                 # Force kill if it doesn't stop
                 logger.warning("Redis server did not stop gracefully, forcing shutdown...")
-                if hasattr(os, 'setsid'):
-                    os.killpg(os.getpgid(_redis_process.pid), signal.SIGKILL)
-                else:
-                    _redis_process.kill()
+                _redis_process.kill()
                 _redis_process.wait()
                 logger.info("Redis server force stopped")
         
@@ -223,16 +223,20 @@ def startup():
     startup_redis()
     
     # Initialize TaskList (connects to Redis)
-    task_list = TaskList()
-    task_list.startup()
-    
-    # Initialize quotes client with configuration
     redis_params = {
         'host': REDIS_HOST,
         'port': REDIS_PORT,
         'db': REDIS_DB,
         'password': REDIS_PASSWORD
     }
+    task_list = TaskList(redis_params=redis_params)
+    task_list.startup()
+    
+    # Initialize BacktestingTaskList (connects to Redis)
+    backtesting_task_list = BacktestingTaskList(redis_params=redis_params)
+    backtesting_task_list.startup()
+    
+    # Initialize quotes client with configuration
     Client(
         redis_params=redis_params,
         request_list=REDIS_QUOTE_REQUEST_LIST,
@@ -260,6 +264,10 @@ def shutdown():
     # Shutdown TaskList
     task_list = TaskList()
     task_list.shutdown()
+    
+    # Shutdown BacktestingTaskList
+    backtesting_task_list = BacktestingTaskList()
+    backtesting_task_list.shutdown()
     
     # Stop Redis server
     shutdown_redis()

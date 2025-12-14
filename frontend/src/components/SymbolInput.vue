@@ -11,7 +11,7 @@
       :class="['form-input', { 'invalid': modelValue && !isValid }]"
       :list="datalistId"
       :placeholder="placeholder"
-      :disabled="!isSourceValid"
+      :disabled="disabled || !isSourceValid"
       :required="required"
       autocomplete="off"
       @input="handleInput"
@@ -23,7 +23,7 @@
 </template>
 
 <script>
-import { activeStrategiesApi } from '../services/activeStrategiesApi'
+import { strategiesApi } from '../services/strategiesApi'
 
 export default {
   name: 'SymbolInput',
@@ -51,6 +51,10 @@ export default {
     inputId: {
       type: String,
       default: 'symbol-input'
+    },
+    disabled: {
+      type: Boolean,
+      default: false
     }
   },
   emits: ['update:modelValue', 'change', 'valid'],
@@ -84,8 +88,9 @@ export default {
   watch: {
     source: {
       handler(newSource, oldSource) {
-        // Clear symbol when source changes
-        if (newSource !== oldSource) {
+        // Clear symbol when source changes (but only if source actually changed and is not empty)
+        // Don't clear if we're just setting the same source or if oldSource was empty (initial load)
+        if (newSource !== oldSource && oldSource !== undefined && oldSource !== '') {
           this.$emit('update:modelValue', '')
           this.$emit('change', '')
         }
@@ -121,7 +126,7 @@ export default {
       }
       
       try {
-        const symbols = await activeStrategiesApi.getSourceSymbols(source)
+        const symbols = await strategiesApi.getSourceSymbols(source)
         this.symbolsCache[source] = symbols
       } catch (error) {
         console.error(`Failed to load symbols for source ${source}:`, error)
@@ -197,18 +202,6 @@ export default {
   font-size: var(--font-size-sm);
   min-width: 120px;
   transition: border-color var(--transition-base);
-}
-
-.form-input:focus {
-  outline: none;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-}
-
-.form-input:disabled {
-  background-color: var(--bg-tertiary);
-  color: var(--text-muted);
-  cursor: not-allowed;
 }
 
 .form-input.invalid {

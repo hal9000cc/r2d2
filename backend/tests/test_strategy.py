@@ -4,6 +4,7 @@ Test for StrategyBacktest with moving average crossover strategy.
 import pytest
 import numpy as np
 from datetime import datetime
+from typing import Dict, Tuple, Any
 from app.services.tasks.tasks import Task
 from app.services.tasks.strategy import StrategyBacktest, OrderSide
 from app.core.startup import startup, shutdown
@@ -45,11 +46,25 @@ class MovingAverageCrossoverStrategy(StrategyBacktest):
     
     def __init__(self, task: Task):
         super().__init__(task)
-        self.ma_fast_period = task.parameters.get('ma_fast', 20)
-        self.ma_slow_period = task.parameters.get('ma_slow', 100)
+        self.ma_fast_period = task.parameters['ma_fast']
+        self.ma_slow_period = task.parameters['ma_slow']
         self.ma_fast = None
         self.ma_slow = None
         self.position = None  # 'long', 'short', or None
+    
+    @staticmethod
+    def get_parameters_description() -> Dict[str, Tuple[Any, str]]:
+        """
+        Get parameters description of the strategy.
+        
+        Returns:
+            Dictionary where keys are parameter names (str) and values are tuples
+            of (default_value, description). Type is determined automatically from default_value.
+        """
+        return {
+            'ma_fast': (20, 'Fast moving average period'),
+            'ma_slow': (100, 'Slow moving average period')
+        }
     
     def on_bar(self):
         """
@@ -107,7 +122,7 @@ def test_moving_average_crossover_strategy(app_startup):
     """
     # Create task with test parameters
     task = Task(
-        active_strategy_id=1,
+        id=1,
         strategy_id="ma_crossover",
         name="Moving Average Crossover Test",
         source="binance",

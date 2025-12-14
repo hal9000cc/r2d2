@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Optional, Union, List, Tuple
+from typing import Optional, Union, List, Tuple, Dict, Any
 import numpy as np
 import weakref
 from app.services.quotes.client import QuotesBackTest
@@ -113,6 +113,23 @@ class Strategy(ABC):
     def on_bar(self):
         """
         Called when a new bar is received.
+        """
+        pass
+
+    @staticmethod
+    @abstractmethod
+    def get_parameters_description() -> Dict[str, Tuple[Any, str]]:
+        """
+        Get parameters description of the strategy.
+        
+        Returns:
+            Dictionary where keys are parameter names (str) and values are tuples
+            of (default_value, description). Type is determined automatically from default_value.
+            For example:
+            {
+                'fast_ma': (10, 'Fast moving average period'),
+                'slow_ma': (20, 'Slow moving average period')
+            }
         """
         pass
 

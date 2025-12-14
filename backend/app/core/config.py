@@ -98,7 +98,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 STATE_DIR = DATA_DIR / 'state'
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-STRATEGIES_DIR = DATA_DIR / 'strategies'
+# Strategies directory (read from .env, default: DATA_DIR/strategies)
+STRATEGIES_DIR = Path(os.getenv("STRATEGIES_DIR", str(DATA_DIR / 'strategies')))
 STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Logs directory (read from .env, default: ~/.local/state/r2d2/)

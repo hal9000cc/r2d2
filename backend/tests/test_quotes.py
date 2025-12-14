@@ -131,7 +131,7 @@ def test_quotes_usage_scenario(quotes_service):
     """
     
     timeout = 10
-
+    
     # QuotesBackTest should raise an exception with invalid parameters
     with pytest.raises(R2D2QuotesExceptionDataNotReceived) as e:
         quotes = QuotesBackTest('badsymbol/usdt', '1d', '2024-01-01', '2025-01-31', 'binance', 100, timeout=timeout)
