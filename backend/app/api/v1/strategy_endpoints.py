@@ -9,12 +9,12 @@ from app.services.strategies import (
     save_strategy as save_strategy_service,
     load_strategy as load_strategy_service,
     get_strategy_parameters_description as get_strategy_parameters_description_service,
+    validate_relative_path,
     ParameterDescription,
     StrategyModel,
     StrategySaveResponse
 )
 from app.services.strategies.exceptions import (
-    StrategyNameError,
     StrategyNotFoundError,
     StrategyFileError
 )
@@ -37,35 +37,43 @@ class FileListResponse(BaseModel):
 
 @router.get("/files/list", response_model=FileListResponse)
 async def list_files(
-    path: Optional[str] = Query(None, description="Full path to directory (empty for root)"),
+    path: Optional[str] = Query(None, description="Relative path from STRATEGIES_DIR (empty for root)"),
     mask: Optional[str] = Query(None, description="File mask filter (e.g., '*.py')")
 ):
     """
     List files and directories in the specified path
     
     Args:
-        path: Full path to directory. If None or empty, uses STRATEGIES_DIR root
+        path: Relative path from STRATEGIES_DIR. If None or empty, uses STRATEGIES_DIR root
         mask: Optional file mask filter (e.g., '*.py' for Python files only)
         
     Returns:
-        FileListResponse with current path, parent path, and list of items
+        FileListResponse with current path (relative), parent path (relative), and list of items
     """
-    # Determine target directory
+    # Convert relative path to absolute for file operations
     if path:
-        target_dir = Path(path)
-        # Security check: ensure path is within STRATEGIES_DIR
+        # path is a directory path, not a file path, so we don't validate it with validate_relative_path
+        # (which requires .py extension). Instead, just check for path traversal.
+        normalized_path = path.replace('\\', '/').strip('/')
+        if '..' in normalized_path:
+            raise HTTPException(
+                status_code=400,
+                detail="Path cannot contain '..'. Path traversal is not allowed."
+            )
+        
+        # Build absolute path from relative
+        target_dir = STRATEGIES_DIR / path
+        target_dir = target_dir.resolve()
+        
+        # Security check: ensure resolved path is within STRATEGIES_DIR
+        strategies_dir_resolved = STRATEGIES_DIR.resolve()
         try:
-            # Resolve both paths to absolute paths to handle symlinks and relative paths
-            target_dir_resolved = target_dir.resolve()
-            strategies_dir_resolved = STRATEGIES_DIR.resolve()
-            # Check if target_dir is a subdirectory of STRATEGIES_DIR
-            if not str(target_dir_resolved).startswith(str(strategies_dir_resolved)):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Access denied: Path must be within strategies directory"
-                )
-        except (OSError, ValueError) as e:
-            raise HTTPException(status_code=400, detail=f"Invalid path: {str(e)}")
+            target_dir.relative_to(strategies_dir_resolved)
+        except ValueError:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access denied: Path must be within strategies directory"
+            )
     else:
         target_dir = STRATEGIES_DIR
     
@@ -76,10 +84,14 @@ async def list_files(
     if not target_dir.is_dir():
         raise HTTPException(status_code=400, detail=f"Path is not a directory: {path}")
     
-    # Get parent path
+    # Get parent path (relative)
     parent_path = None
     if target_dir != STRATEGIES_DIR and target_dir.parent != target_dir:
-        parent_path = str(target_dir.parent)
+        try:
+            parent_relative = target_dir.parent.resolve().relative_to(STRATEGIES_DIR.resolve())
+            parent_path = str(parent_relative).replace('\\', '/')
+        except ValueError:
+            parent_path = None
     
     # List items
     directories = []
@@ -105,31 +117,21 @@ async def list_files(
     except PermissionError:
         raise HTTPException(status_code=403, detail=f"Permission denied: {path}")
     
-    # Return paths as-is (normalized with forward slashes)
-    # Frontend will convert to Windows-style for display if needed
-    current_path_str = str(target_dir)
-    parent_path_str = str(parent_path) if parent_path else None
+    # Return relative paths
+    try:
+        current_relative = target_dir.resolve().relative_to(STRATEGIES_DIR.resolve())
+        current_path_str = str(current_relative).replace('\\', '/')
+        # Normalize: if path is "." (root), return empty string
+        if current_path_str == '.' or current_path_str == './':
+            current_path_str = ""
+    except ValueError:
+        current_path_str = ""
     
     return FileListResponse(
         current_path=current_path_str,
-        parent_path=parent_path_str,
+        parent_path=parent_path,
         items=items
     )
-
-
-@router.get("/directory")
-async def get_strategies_directory() -> str:
-    """
-    Get the strategies directory path
-    
-    Returns:
-        Path to the strategies directory (with trailing separator)
-    """
-    path_str = str(STRATEGIES_DIR)
-    # Ensure trailing separator
-    if not path_str.endswith('/'):
-        path_str += '/'
-    return path_str
 
 
 def convert_parameters_to_model(params_dict: Optional[Dict[str, Tuple[Any, str, str]]]) -> Optional[Dict[str, ParameterDescription]]:
@@ -157,54 +159,76 @@ def convert_parameters_to_model(params_dict: Optional[Dict[str, Tuple[Any, str, 
 
 
 @router.post("/new", response_model=StrategyModel)
-async def new_strategy(name: str, file_path: Optional[str] = Query(None, description="Optional file path relative to STRATEGIES_DIR (without .py extension)")):
+async def new_strategy(name: str, file_path: Optional[str] = Query(None, description="Relative file path from STRATEGIES_DIR (with .py extension)")):
     """
-    Create a new strategy with given name and optional file path
+    Create a new strategy with given name and file path
     
     Args:
-        name: Strategy name (used for class name)
-        file_path: Optional file path relative to STRATEGIES_DIR (without .py extension).
-                   If provided, this path will be used for file location instead of name.
+        name: Strategy name (used for class name, can contain any characters)
+        file_path: Relative file path from STRATEGIES_DIR (with .py extension).
+                   Must be provided - name cannot be used for file path.
         
     Returns:
-        Strategy JSON with name, text, and parameters description
+        Strategy JSON with name, file_path, text, and parameters description
     """
     try:
-        strategy_name, strategy_text = create_strategy(name, file_path)
-        params_dict, errors = get_strategy_parameters_description_service(strategy_name, strategy_text)
+        # file_path is required
+        if not file_path:
+            raise HTTPException(
+                status_code=400,
+                detail="file_path is required. Strategy name cannot be used as file path."
+            )
+        
+        # Validate relative path (must end with .py)
+        validate_relative_path(file_path)
+        
+        relative_path, strategy_text = create_strategy(name, file_path)
+        # Extract strategy name from path (filename without .py extension)
+        # relative_path is guaranteed to end with .py (validated by validate_relative_path)
+        path_segments = relative_path.replace('\\', '/').split('/')
+        filename_with_ext = path_segments[-1] if path_segments else relative_path
+        strategy_name = filename_with_ext[:-3]  # Remove .py extension
+        
+        params_dict, errors = get_strategy_parameters_description_service(relative_path, strategy_text)
         parameters_description = convert_parameters_to_model(params_dict)
         return StrategyModel(
-            name=strategy_name, 
+            name=strategy_name,  # Strategy name (extracted from path)
+            file_path=relative_path,  # Relative path to file
             text=strategy_text,
             parameters_description=parameters_description,
             loading_errors=errors
         )
-    except StrategyNameError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except StrategyFileError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class StrategySaveRequest(BaseModel):
+    """Request model for saving strategy (only file_path and text are required)"""
+    file_path: str  # Relative path to strategy file (from STRATEGIES_DIR, with .py extension)
+    text: str  # Strategy Python code
+
+
 @router.post("/save", response_model=StrategySaveResponse)
-async def save_strategy(strategy: StrategyModel):
+async def save_strategy(strategy: StrategySaveRequest):
     """
     Save strategy to file
     
     Args:
-        strategy: Strategy JSON with name and text
+        strategy: Strategy JSON with file_path (relative path with .py extension) and text
     
     Returns:
         Response with syntax errors (if any)
     """
     try:
-        syntax_errors = save_strategy_service(strategy.name, strategy.text)
+        # Validate relative path (must end with .py)
+        validate_relative_path(strategy.file_path)
+        
+        syntax_errors = save_strategy_service(strategy.file_path, strategy.text)
         return StrategySaveResponse(
             success=True,
             message="Strategy saved successfully",
             syntax_errors=syntax_errors
         )
-    except StrategyNameError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except StrategyFileError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -212,27 +236,28 @@ async def save_strategy(strategy: StrategyModel):
 @router.get("/load/{name}", response_model=StrategyModel)
 async def load_strategy(name: str):
     """
-    Load strategy from file by name
+    Load strategy from file by relative path
     
     Args:
-        name: Strategy name (filename without .py extension, can include subdirectories)
+        name: Relative path to strategy file (with .py extension, can include subdirectories)
         
     Returns:
-        Strategy JSON with name, text, and parameters description
+        Strategy JSON with name, file_path, text, and parameters description
     """
     try:
-        strategy_name, strategy_text, strategy_filename = load_strategy_service(name)
-        params_dict, errors = get_strategy_parameters_description_service(strategy_name, strategy_text)
+        # Validate relative path (must end with .py)
+        validate_relative_path(name)
+        
+        strategy_name, file_path, strategy_text = load_strategy_service(name)
+        params_dict, errors = get_strategy_parameters_description_service(file_path, strategy_text)
         parameters_description = convert_parameters_to_model(params_dict)
         return StrategyModel(
-            name=strategy_name,
+            name=strategy_name,  # Strategy name (extracted from path)
+            file_path=file_path,  # Relative path to file
             text=strategy_text,
-            filename=strategy_filename,
             parameters_description=parameters_description,
             loading_errors=errors
         )
-    except StrategyNameError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except StrategyNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except StrategyFileError as e:

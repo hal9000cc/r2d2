@@ -57,9 +57,6 @@ REDIS_DB=0
 REDIS_PASSWORD=
 REDIS_QUOTE_REQUEST_LIST=quotes:requests
 REDIS_QUOTE_RESPONSE_PREFIX=quotes:responses
-
-# Active strategies storage
-ACTIVE_STRATEGIES_FILE=active_strategies.json
 """
     
     # Generate .env content by commenting all parameter lines but keeping default values visible
@@ -108,10 +105,6 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Log level (read from .env, default: INFO)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
-
-# Active strategies storage file (read from .env)
-active_strategies_filename = os.getenv("ACTIVE_STRATEGIES_FILE", "active_strategies.json")
-ACTIVE_STRATEGIES_FILE = STATE_DIR / active_strategies_filename
 
 # CORS settings based on environment
 if ENVIRONMENT == "production":

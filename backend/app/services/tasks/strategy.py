@@ -2,10 +2,15 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Optional, Union, List, Tuple, Dict, Any
 import numpy as np
+import time
 import weakref
 from app.services.quotes.client import QuotesBackTest
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE, TIME_TYPE
 from app.services.tasks.tasks import Task
+from app.core.growing_data2redis import GrowingData2Redis
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class OrderSide(Enum):
@@ -28,8 +33,8 @@ class Deal:
         self.fees: PRICE_TYPE = 0.0  # Total fees paid for the deal
         
         # Internal state
-        self.symbol_balance: VOLUME_TYPE = 0.0  # Current symbol balance (can go negative)
-        self.balance: PRICE_TYPE = initial_balance  # Current cash balance
+        self._symbol_balance: VOLUME_TYPE = 0.0  # Current symbol balance (can go negative)
+        self._balance: PRICE_TYPE = initial_balance  # Current cash balance
     
     def buy(self, volume: VOLUME_TYPE, price: PRICE_TYPE, fee: PRICE_TYPE):
         """
@@ -41,13 +46,13 @@ class Deal:
             fee: Fee rate (as fraction, e.g., 0.001 for 0.1%)
         """
         fees = volume * price * fee
-        self.symbol_balance += volume
-        self.balance -= fees + volume * price
+        self._symbol_balance += volume
+        self._balance -= fees + volume * price
         self.fees += fees
         
         # Update max_volume (maximum absolute value of symbol_balance)
-        if self.max_volume < abs(self.symbol_balance):
-            self.max_volume = abs(self.symbol_balance)
+        if self.max_volume < abs(self._symbol_balance):
+            self.max_volume = abs(self._symbol_balance)
     
     def sell(self, volume: VOLUME_TYPE, price: PRICE_TYPE, fee: PRICE_TYPE):
         """
@@ -59,13 +64,13 @@ class Deal:
             fee: Fee rate (as fraction, e.g., 0.001 for 0.1%)
         """
         fees = volume * price * fee
-        self.symbol_balance -= volume
-        self.balance += volume * price - fees
+        self._symbol_balance -= volume
+        self._balance += volume * price - fees
         self.fees += fees
         
         # Update max_volume (maximum absolute value of symbol_balance)
-        if self.max_volume < abs(self.symbol_balance):
-            self.max_volume = abs(self.symbol_balance)
+        if self.max_volume < abs(self._symbol_balance):
+            self.max_volume = abs(self._symbol_balance)
     
     def close(self, exit_time: np.datetime64, exit_price: PRICE_TYPE, fee: PRICE_TYPE):
         """
@@ -77,17 +82,27 @@ class Deal:
             fee: Fee rate (as fraction, e.g., 0.001 for 0.1%)
         """
         # Close the position: if in long (symbol_balance > 0), sell; if in short (symbol_balance < 0), buy
-        if self.symbol_balance > 0:
+        if self._symbol_balance > 0:
             # We are in long position, need to sell
-            self.sell(self.symbol_balance, exit_price, fee)
-        elif self.symbol_balance < 0:
+            self.sell(self._symbol_balance, exit_price, fee)
+        elif self._symbol_balance < 0:
             # We are in short position, need to buy
-            self.buy(abs(self.symbol_balance), exit_price, fee)
+            self.buy(abs(self._symbol_balance), exit_price, fee)
         
         self.exit_time = exit_time
         self.exit_price = exit_price
         # Profit is the balance after closing (with fees already accounted for)
-        self.profit = self.balance
+        self.profit = self._balance
+    
+    def has_zero_balance(self) -> bool:
+        """
+        Check if the position has zero balance (symbol_balance == 0).
+        This means the position is balanced (no open position).
+        
+        Returns:
+            True if balance is zero, False otherwise
+        """
+        return self._symbol_balance == 0
 
 
 class Order:
@@ -96,9 +111,16 @@ class Order:
 
 
 class Strategy(ABC):
-    def __init__(self, task: Task):
+    def __init__(self, task: Task, results_save_period: float = 1.0):
+        """
+        Initialize strategy.
         
+        Args:
+            task: Task instance
+            results_save_period: Period for saving results in seconds (default: 1.0)
+        """
         self.task = task
+        self.results_save_period = results_save_period
 
         self.time: Optional[np.ndarray] = None  # dtype: TIME_TYPE
         self.open: Optional[np.ndarray] = None  # dtype: PRICE_TYPE
@@ -106,8 +128,28 @@ class Strategy(ABC):
         self.low: Optional[np.ndarray] = None  # dtype: PRICE_TYPE
         self.close: Optional[np.ndarray] = None  # dtype: PRICE_TYPE
         self.volume: Optional[np.ndarray] = None  # dtype: VOLUME_TYPE
-        
-        # self._orders: List[weakref.ref] = []
+
+    def init_stats(self):
+        """
+        Initialize statistics.
+        """
+        self.total_deals = 0
+        self.short_deals = 0
+        self.long_deals = 0
+        self.total_profit = 0
+        self.total_fees = 0
+
+    def update_stats(self, deal: Deal):
+        """
+        Update statistics.
+        """
+        self.total_deals += 1
+        if deal.side == OrderSide.SHORT:
+            self.short_deals += 1
+        else:
+            self.long_deals += 1
+        self.total_profit += deal.profit
+        self.total_fees += deal.fees
 
     @abstractmethod
     def on_bar(self):
@@ -171,6 +213,25 @@ class StrategyBacktest(Strategy):
         super().__init__(task)
         self.__quotes = QuotesBackTest(task.symbol, task.timeframe, task.dateStart, task.dateEnd, task.source)
         self.fee = 0.001
+        
+        # Initialize data uploader
+        redis_client = task.get_redis_client()
+        redis_key = f"backtesting_tasks:result:{task.id}"
+        property_names = [
+            "total_deals",
+            "short_deals",
+            "long_deals",
+            "total_profit",
+            "total_fees",
+            "deals"
+        ]
+        self._data_uploader = GrowingData2Redis(
+            redis_client=redis_client,
+            redis_key=redis_key,
+            source_object=self,
+            property_names=property_names
+        )
+        
         self.__reset()
 
     def __reset(self):
@@ -196,6 +257,11 @@ class StrategyBacktest(Strategy):
         # Current deal (None initially, created on first buy/sell)
         self.current_deal: Optional[Deal] = None
 
+        self.init_stats()
+        
+        # Reset data uploader
+        self._data_uploader.reset()
+
     def __buy(self, volume: VOLUME_TYPE):
         """
         Execute a buy operation on both current and global deals.
@@ -213,10 +279,12 @@ class StrategyBacktest(Strategy):
         self.current_deal.buy(volume, self.price, self.fee)
         self.global_deal.buy(volume, self.price, self.fee)
         
-        # Check if current deal is closed (symbol_balance == 0)
-        if self.current_deal.symbol_balance == 0:
+        # Check if position is balanced (symbol_balance == 0)
+        # If so, finalize the deal and move it to completed deals
+        if self.current_deal.has_zero_balance():
             self.current_deal.close(self.current_time, self.price, self.fee)
             self.deals.append(self.current_deal)
+            self.update_stats(self.current_deal)
             self.current_deal = None
 
     def __sell(self, volume: VOLUME_TYPE):
@@ -236,10 +304,12 @@ class StrategyBacktest(Strategy):
         self.current_deal.sell(volume, self.price, self.fee)
         self.global_deal.sell(volume, self.price, self.fee)
         
-        # Check if current deal is closed (symbol_balance == 0)
-        if self.current_deal.symbol_balance == 0:
+        # Check if position is balanced (symbol_balance == 0)
+        # If so, finalize the deal and move it to completed deals
+        if self.current_deal.has_zero_balance():
             self.current_deal.close(self.current_time, self.price, self.fee)
             self.deals.append(self.current_deal)
+            self.update_stats(self.current_deal)
             self.current_deal = None
 
     def order(
@@ -281,7 +351,10 @@ class StrategyBacktest(Strategy):
         """
         Run backtest strategy.
         Loads market data and iterates through bars, calling on_bar for each bar.
+        Periodically saves results based on results_save_period.
         """
+
+        last_save_time =  time.time()
 
         all_time = self.__quotes.time.values
         all_open = self.__quotes.open.values
@@ -303,13 +376,40 @@ class StrategyBacktest(Strategy):
             self.price = all_close[i]
             
             self.on_bar()
+            
+            # Check if it's time to save results
+            current_time = time.time()
+            if current_time - last_save_time >= self.results_save_period:
+                self.save_results()
+                last_save_time = current_time
 
         if self.current_deal is not None:
             self.current_deal.close(self.current_time, self.price, self.fee)
             self.deals.append(self.current_deal)
+            self.update_stats(self.current_deal)
             self.current_deal = None
 
         self.global_deal.close(self.current_time, self.price, self.fee)
+        
+        # Finalize data upload
+        try:
+            self._data_uploader.finish()
+        except Exception as e:
+            logger.error(f"Failed to finish data upload to Redis: {e}", exc_info=True)
+            raise
+    
+    def save_results(self) -> None:
+        """
+        Save results periodically during backtesting.
+        Uploads changes to Redis.
+        """
+        try:
+            self._data_uploader.send_changes()
+        except Exception as e:
+            logger.error(f"Failed to save results to Redis: {e}", exc_info=True)
+            raise
     
     def on_bar(self):
         pass
+
+    

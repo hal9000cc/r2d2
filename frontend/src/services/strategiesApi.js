@@ -43,10 +43,10 @@ export const strategiesApi = {
   },
 
   // Save strategy
-  async saveStrategy(name, text) {
+  async saveStrategy(filePath, text) {
     return request('/api/v1/strategies/save', {
       method: 'POST',
-      body: JSON.stringify({ name, text })
+      body: JSON.stringify({ file_path: filePath, text })
     })
   },
 
@@ -61,10 +61,6 @@ export const strategiesApi = {
     })
   },
 
-  // Get strategies directory path
-  async getStrategiesDirectory() {
-    return request('/api/v1/strategies/directory')
-  },
 
   // List files and directories
   async listFiles(path = null, mask = null) {

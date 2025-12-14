@@ -80,22 +80,6 @@ async def stop_strategy(strategy_id: int):
     return updated_task.model_dump()
 
 
-@router.post("/{strategy_id}/toggle-trading", response_model=Dict[str, Any])
-async def toggle_trading(strategy_id: int):
-    """
-    Toggle trading for strategy
-    Returns updated strategy object
-    """
-    task = TaskList._instance.load(strategy_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
-    # Toggle isTrading
-    task.isTrading = not task.isTrading
-    updated_task = task.save()
-    return updated_task.model_dump()
-
-
 @router.put("/{strategy_id}", response_model=Dict[str, Any])
 async def update_strategy(strategy_id: int, strategy_data: Dict[str, Any]):
     """

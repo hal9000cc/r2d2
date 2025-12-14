@@ -32,7 +32,7 @@
                 v-model="strategyFile"
                 type="text"
                 class="form-input"
-                placeholder="path/strategy_name"
+                placeholder="strategy_name or path/to/strategy_name"
                 required
               />
               <span class="file-extension">.py</span>
@@ -95,7 +95,6 @@ export default {
     return {
       strategyName: '',
       strategyFile: '',
-      defaultFolder: 'path/',
       isSynced: true,
       isCreating: false,
       error: null,
@@ -107,20 +106,10 @@ export default {
       if (newValue) {
         // Reset form when modal opens
         this.strategyName = ''
+        this.strategyFile = ''
         this.isSynced = true
         this.error = null
         this.isCreating = false
-        
-        // Load strategies directory path from backend
-        try {
-          this.defaultFolder = await strategiesApi.getStrategiesDirectory()
-          this.strategyFile = this.defaultFolder
-        } catch (error) {
-          console.error('Failed to load strategies directory:', error)
-          // Fallback to default if request fails
-          this.defaultFolder = 'path/'
-          this.strategyFile = this.defaultFolder
-        }
         
         // Focus input field after DOM update
         this.$nextTick(() => {
@@ -132,14 +121,42 @@ export default {
     },
     strategyName(newValue) {
       // Sync file path if synced mode is active
+      // strategyFile stores relative path WITHOUT .py extension (for display in input)
       if (this.isSynced) {
-        this.strategyFile = this.defaultFolder + newValue
+        // Extract directory part from current path (if any)
+        const currentPath = this.strategyFile || ''
+        const lastSeparator = Math.max(
+          currentPath.lastIndexOf('/'),
+          currentPath.lastIndexOf('\\')
+        )
+        
+        if (lastSeparator >= 0) {
+          // Path contains directory - preserve directory, update only filename
+          const directory = currentPath.substring(0, lastSeparator + 1)
+          this.strategyFile = directory + newValue
+        } else {
+          // Path is just filename - update entire path
+          this.strategyFile = newValue
+        }
       }
     },
     strategyFile(newValue) {
-      // Check if file path matches expected pattern
-      const expectedPath = this.defaultFolder + this.strategyName
-      this.isSynced = (newValue === expectedPath)
+      // Check if file path (without .py) ends with strategy name
+      // Sync works if path is just filename OR path ends with /filename matching strategy name
+      const pathWithoutExt = newValue.endsWith('.py') ? newValue.slice(0, -3) : newValue
+      const lastSeparator = Math.max(
+        pathWithoutExt.lastIndexOf('/'),
+        pathWithoutExt.lastIndexOf('\\')
+      )
+      
+      if (lastSeparator >= 0) {
+        // Path contains directory - check if filename matches strategy name
+        const filename = pathWithoutExt.substring(lastSeparator + 1)
+        this.isSynced = (filename === this.strategyName)
+      } else {
+        // Path is just filename - check if it matches strategy name
+        this.isSynced = (pathWithoutExt === this.strategyName)
+      }
     }
   },
   methods: {
@@ -152,28 +169,25 @@ export default {
       this.showFileBrowser = true
     },
     handleFileSelected(filePath) {
-      // filePath already comes without .py extension from FileBrowserModal
-      this.strategyFile = filePath
+      // filePath comes as relative path with .py extension from FileBrowserModal
+      // Remove .py extension for display in input field
+      const pathWithoutExt = filePath.endsWith('.py') ? filePath.slice(0, -3) : filePath
+      this.strategyFile = pathWithoutExt
       
       // Extract filename from path and fill strategy name if empty
       if (!this.strategyName.trim()) {
         const lastSeparator = Math.max(
-          filePath.lastIndexOf('/'),
-          filePath.lastIndexOf('\\')
+          pathWithoutExt.lastIndexOf('/'),
+          pathWithoutExt.lastIndexOf('\\')
         )
-        let fileName = lastSeparator >= 0 
-          ? filePath.substring(lastSeparator + 1)
-          : filePath
-        // Remove .py extension if present (shouldn't be, but just in case)
-        if (fileName.endsWith('.py')) {
-          fileName = fileName.slice(0, -3)
-        }
+        const fileName = lastSeparator >= 0 
+          ? pathWithoutExt.substring(lastSeparator + 1)
+          : pathWithoutExt
         this.strategyName = fileName
       }
       
-      // Update sync state - if path matches expected pattern, enable sync
-      const expectedPath = this.defaultFolder + this.strategyName
-      this.isSynced = (this.strategyFile === expectedPath)
+      // Update sync state - if path (without .py) matches strategy name, enable sync
+      this.isSynced = (pathWithoutExt === this.strategyName)
     },
     async handleCreate() {
       if (!this.strategyName.trim() || this.isCreating) {
@@ -187,47 +201,30 @@ export default {
         const strategyName = this.strategyName.trim()
         const strategyFile = this.strategyFile.trim()
         
-        // Extract file path from strategyFile (remove .py if present)
-        let filePath = strategyFile.trim()
-        if (filePath.endsWith('.py')) {
-          filePath = filePath.slice(0, -3)
+        // Ensure strategyFile has .py extension
+        let relativePath = strategyFile.trim()
+        if (!relativePath.endsWith('.py')) {
+          relativePath = relativePath + '.py'
         }
         // Normalize path separators to forward slashes
-        filePath = filePath.replace(/\\/g, '/')
+        relativePath = relativePath.replace(/\\/g, '/')
+        // Remove leading/trailing slashes
+        relativePath = relativePath.replace(/^\/+|\/+$/g, '')
         
-        // If path doesn't start with defaultFolder, prepend it to make it absolute
-        if (!filePath.startsWith(this.defaultFolder)) {
-          // Remove leading slashes from filePath
-          const cleanPath = filePath.replace(/^\/+/, '')
-          // Ensure defaultFolder ends with /
-          const baseFolder = this.defaultFolder.endsWith('/') ? this.defaultFolder : this.defaultFolder + '/'
-          filePath = baseFolder + cleanPath
-        }
-        
-        // Remove trailing slashes
-        filePath = filePath.replace(/\/+$/, '')
-        
-        // Extract relative path from absolute path for strategy identifier
-        let relativePath = filePath
-        if (relativePath.startsWith(this.defaultFolder)) {
-          relativePath = relativePath.substring(this.defaultFolder.length)
-          relativePath = relativePath.replace(/^\/+/, '')
-        }
-        
-        // Determine strategy identifier:
+        // Determine strategy file path (with .py extension):
         // - If path was manually edited (not synced) and is different from strategyName, use the relative path
-        // - Otherwise use strategyName
-        let strategyIdentifier = (!this.isSynced && relativePath && relativePath !== strategyName) ? relativePath : strategyName
+        // - Otherwise construct path from strategyName
+        let strategyFilePath = (!this.isSynced && relativePath && relativePath !== `${strategyName}.py`) ? relativePath : `${strategyName}.py`
         
         // 1. Check if strategy file exists, create only if it doesn't
         let strategyExists = false
         let existingStrategy = null
         try {
-          existingStrategy = await strategiesApi.loadStrategy(strategyIdentifier)
+          existingStrategy = await strategiesApi.loadStrategy(strategyFilePath)
           strategyExists = true
-          // Use the strategy name from loaded strategy (which contains the correct relative path)
-          if (existingStrategy && existingStrategy.name) {
-            strategyIdentifier = existingStrategy.name
+          // Use the file_path from loaded strategy
+          if (existingStrategy && existingStrategy.file_path) {
+            strategyFilePath = existingStrategy.file_path
           }
         } catch (loadError) {
           // Check if it's a 404 (not found) error
@@ -244,27 +241,25 @@ export default {
         }
         
         // Create strategy only if it doesn't exist
-        // Use absolute filePath if path was manually edited (not synced) and is different from strategyName
         if (!strategyExists) {
-          const pathToUse = (!this.isSynced && filePath && relativePath !== strategyName && filePath.length > 0) ? filePath : null
-          const createdStrategy = await strategiesApi.createStrategy(strategyName, pathToUse)
-          // Use the strategy name from API response (which contains the correct relative path)
-          if (createdStrategy && createdStrategy.name) {
-            strategyIdentifier = createdStrategy.name
+          const createdStrategy = await strategiesApi.createStrategy(strategyName, strategyFilePath)
+          // API returns file_path with .py extension
+          if (createdStrategy && createdStrategy.file_path) {
+            strategyFilePath = createdStrategy.file_path
           }
         }
         
         // 2. Create backtesting task with this strategy
-        // Use strategyIdentifier (relative path from STRATEGIES_DIR) as strategy_id
+        // file_name stores relative path (from STRATEGIES_DIR, with .py extension)
         const taskData = {
-          strategy_id: strategyIdentifier,
+          file_name: strategyFilePath,
           name: strategyName
         }
         const createdTask = await backtestingApi.createTask(taskData)
         
         // Emit events
-        // Use strategyIdentifier for loading the strategy
-        this.$emit('strategy-created', strategyIdentifier)
+        // Use strategyFilePath (with .py) for loading the strategy
+        this.$emit('strategy-created', strategyFilePath)
         this.$emit('task-created', createdTask)
         
         // Close modal

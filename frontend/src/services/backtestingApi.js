@@ -45,10 +45,10 @@ export const backtestingApi = {
   },
 
   /**
-   * Get list of unique strategy identifiers from all tasks
+   * Start backtesting for a task
    */
-  async getStrategies() {
-    const response = await axios.get(`${API_BASE_URL}/api/v1/backtesting/strategies`)
+  async startBacktest(taskId) {
+    const response = await axios.post(`${API_BASE_URL}/api/v1/backtesting/tasks/${taskId}/start`)
     return response.data
   }
 }

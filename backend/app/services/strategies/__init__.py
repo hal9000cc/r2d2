@@ -28,11 +28,11 @@ class ParameterDescription(BaseModel):
 
 class StrategyModel(BaseModel):
     """
-    Strategy model with name, text, parameters description, loading errors and filename
+    Strategy model with name, file path, text, parameters description and loading errors
     """
-    name: str
+    name: str  # Strategy name (can be arbitrary, not necessarily related to file path)
+    file_path: str  # Relative path to strategy file (from STRATEGIES_DIR, with .py extension)
     text: str
-    filename: str = ""  # Full path or filename of the strategy file
     parameters_description: Optional[Dict[str, ParameterDescription]] = None
     loading_errors: List[str] = []
 
@@ -47,57 +47,31 @@ class StrategySaveResponse(BaseModel):
     loading_errors: List[str] = []
 
 
-def validate_strategy_name(name: str) -> None:
+def validate_relative_path(relative_path: str) -> None:
     """
-    Validate strategy name for file system safety
+    Validate relative strategy file path for security and correctness.
+    This function validates that the relative path stays within STRATEGIES_DIR.
     
     Args:
-        name: Strategy name to validate
+        relative_path: Relative file path from STRATEGIES_DIR
         
     Raises:
-        StrategyNameError: If name is invalid
+        StrategyFileError: If path is invalid or would escape STRATEGIES_DIR
     """
-    if not name:
-        raise StrategyNameError("Strategy name cannot be empty")
-    
-    # Check for invalid characters
-    invalid_chars = r'[<>:"/\\|?*\x00-\x1f]'
-    if re.search(invalid_chars, name):
-        raise StrategyNameError(
-            "Strategy name contains invalid characters. Allowed: letters, numbers, spaces, hyphens, underscores"
-        )
-    
-    # Check for reserved names (Windows)
-    reserved_names = {'CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 
-                      'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 
-                      'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'}
-    if name.upper() in reserved_names:
-        raise StrategyNameError(f"Strategy name '{name}' is reserved")
-    
-    # Check for dots at the end (Windows issue)
-    if name.endswith('.'):
-        raise StrategyNameError("Strategy name cannot end with a dot")
-    
-    # Check for spaces at the end
-    if name.endswith(' '):
-        raise StrategyNameError("Strategy name cannot end with a space")
-
-
-def validate_strategy_file_path(file_path: str) -> None:
-    """
-    Validate strategy file path for security and correctness
-    
-    Args:
-        file_path: Absolute file path (without .py extension)
-        
-    Raises:
-        StrategyFileError: If path is invalid
-    """
-    if not file_path:
+    if not relative_path:
         raise StrategyFileError("File path cannot be empty")
     
     # Normalize path separators to forward slashes for processing
-    normalized_path = file_path.replace('\\', '/')
+    normalized_path = relative_path.replace('\\', '/')
+    
+    # Remove leading/trailing slashes
+    normalized_path = normalized_path.strip('/')
+    
+    # Check that path ends with .py extension
+    if not normalized_path.endswith('.py'):
+        raise StrategyFileError(
+            f"File path must end with .py extension. Received: '{relative_path}'"
+        )
     
     # Check for path traversal attempts (..)
     if '..' in normalized_path:
@@ -105,43 +79,14 @@ def validate_strategy_file_path(file_path: str) -> None:
             "File path cannot contain '..'. Path traversal is not allowed for security reasons."
         )
     
-    # Check that path is within STRATEGIES_DIR
-    try:
-        # Convert to Path object and resolve
-        path_obj = Path(file_path)
-        if not path_obj.is_absolute():
-            raise StrategyFileError(
-                f"File path must be absolute. Received: '{file_path}'"
-            )
-        
-        resolved_path = path_obj.resolve()
-        strategies_dir_resolved = STRATEGIES_DIR.resolve()
-        
-        # Check that resolved path is within STRATEGIES_DIR
-        try:
-            resolved_path.relative_to(strategies_dir_resolved)
-        except ValueError:
-            raise StrategyFileError(
-                f"File path must be within strategies directory '{STRATEGIES_DIR}'. "
-                f"Received path resolves to: '{resolved_path}'"
-            )
-    except (OSError, ValueError) as e:
-        raise StrategyFileError(f"Invalid file path: {str(e)}")
+    # Check for absolute path (should not start with / on Unix or drive letter on Windows)
+    if normalized_path.startswith('/') or (len(normalized_path) > 1 and normalized_path[1] == ':'):
+        raise StrategyFileError(
+            f"File path must be relative to strategies directory. Received: '{relative_path}'"
+        )
     
-    # Extract relative path from STRATEGIES_DIR for segment validation
-    try:
-        relative_path = resolved_path.relative_to(strategies_dir_resolved)
-        path_str = str(relative_path).replace('\\', '/')
-    except ValueError:
-        # Should not happen after the check above, but just in case
-        raise StrategyFileError("Failed to validate file path structure")
-    
-    # Remove .py extension if present for validation
-    if path_str.endswith('.py'):
-        path_str = path_str[:-3]
-    
-    # Split into segments
-    segments = [s for s in path_str.split('/') if s]
+    # Split into segments (path with .py extension)
+    segments = [s for s in normalized_path.split('/') if s]
     if not segments:
         raise StrategyFileError("File path must contain at least one non-empty segment")
     
@@ -162,14 +107,50 @@ def validate_strategy_file_path(file_path: str) -> None:
         if segment.upper() in reserved_names:
             raise StrategyFileError(f"File path segment '{segment}' is a reserved name")
         
-        # Check for dots/spaces at the end (Windows issue)
-        if segment.endswith('.') or segment.endswith(' '):
-            raise StrategyFileError(f"File path segment '{segment}' cannot end with a dot or space")
+        # Check for dots/spaces at the end (Windows issue) - but allow .py at the end of filename
+        if segment != segments[-1]:  # Not the last segment (filename)
+            if segment.endswith('.') or segment.endswith(' '):
+                raise StrategyFileError(f"File path segment '{segment}' cannot end with a dot or space")
     
-    # Validate filename (last segment)
+    # Validate filename (last segment must end with .py)
     filename = segments[-1]
     if not filename:
         raise StrategyFileError("File path must end with a valid filename")
+    
+    if not filename.endswith('.py'):
+        raise StrategyFileError("File path must end with .py extension")
+    
+    # Security check: verify that the resolved path stays within STRATEGIES_DIR
+    try:
+        # Build absolute path from relative (path already has .py extension)
+        absolute_path = STRATEGIES_DIR / normalized_path
+        absolute_path = absolute_path.resolve()
+        strategies_dir_resolved = STRATEGIES_DIR.resolve()
+        
+        # Check that resolved path is within STRATEGIES_DIR
+        try:
+            absolute_path.relative_to(strategies_dir_resolved)
+        except ValueError:
+            raise StrategyFileError(
+                f"File path would escape strategies directory. "
+                f"Resolved path: '{absolute_path}' is not within '{strategies_dir_resolved}'"
+            )
+    except (OSError, ValueError) as e:
+        raise StrategyFileError(f"Invalid file path: {str(e)}")
+
+
+def validate_strategy_file_path(file_path: str) -> None:
+    """
+    Validate strategy file path for security and correctness.
+    This is an alias for validate_relative_path for backward compatibility.
+    
+    Args:
+        file_path: Relative file path from STRATEGIES_DIR (with .py extension)
+        
+    Raises:
+        StrategyFileError: If path is invalid
+    """
+    validate_relative_path(file_path)
 
 
 def validate_python_syntax(text: str) -> List[str]:
@@ -204,56 +185,47 @@ def validate_python_syntax(text: str) -> List[str]:
 
 def create_strategy(name: str, file_path: Optional[str] = None) -> Tuple[str, str]:
     """
-    Create a new strategy file with given name or path
+    Create a new strategy file with given name and file path
     
     Args:
-        name: Strategy name (used for class name and as fallback filename)
-        file_path: Optional file path relative to STRATEGIES_DIR (without .py extension).
-                   If provided, this path will be used instead of name.
+        name: Strategy name (used for class name, can contain any characters)
+        file_path: Relative file path from STRATEGIES_DIR (with .py extension).
+                   Must be provided - name cannot be used for file path.
         
     Returns:
-        Tuple of (name, text) - strategy name and empty text
+        Tuple of (relative_path, text) - relative path (with .py extension) and empty text
         
     Raises:
-        StrategyNameError: If name is invalid
-        StrategyFileError: If file already exists or creation fails
+        StrategyFileError: If file_path is not provided, file already exists or creation fails
     """
-    # Validate strategy name (for class name)
-    validate_strategy_name(name)
+    # Check that name is not empty
+    if not name or not name.strip():
+        raise StrategyFileError("Strategy name cannot be empty")
     
-    # Use provided file_path or construct from name
-    if file_path:
-        # Validate the absolute file path
-        validate_strategy_file_path(file_path)
-        
-        # Convert to Path and add .py extension
-        target_path = Path(file_path)
-        if not target_path.suffix:
-            target_path = target_path.with_suffix('.py')
-        elif target_path.suffix != '.py':
-            raise StrategyFileError(f"File path must have .py extension or no extension. Got: '{target_path.suffix}'")
-        
-        # Ensure parent directories exist
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        strategy_file_path = target_path.resolve()
-        
-        # Use absolute path as strategy identifier (without .py extension)
-        strategy_identifier = str(strategy_file_path)
-        if strategy_identifier.endswith('.py'):
-            strategy_identifier = strategy_identifier[:-3]
-        # Normalize to forward slashes
-        strategy_identifier = strategy_identifier.replace('\\', '/')
-    else:
-        strategy_file_path = STRATEGIES_DIR / f"{name}.py"
-        strategy_file_path = strategy_file_path.resolve()
-        # Use absolute path as strategy identifier
-        strategy_identifier = str(strategy_file_path)
-        if strategy_identifier.endswith('.py'):
-            strategy_identifier = strategy_identifier[:-3]
-        strategy_identifier = strategy_identifier.replace('\\', '/')
+    # file_path is required - name cannot be used for file operations
+    # name can contain any characters (e.g., "Вася пупкин: дурак!"), so it cannot be used as path
+    if not file_path:
+        raise StrategyFileError(
+            "file_path is required. Strategy name cannot be used as file path."
+        )
+    
+    # Validate relative path (must end with .py)
+    validate_relative_path(file_path)
+    
+    # Use file_path as is (already has .py extension)
+    relative_path = file_path
+    
+    # Build absolute path for file operations (using relative_path with .py, not name!)
+    strategy_file_path = STRATEGIES_DIR / relative_path
+    strategy_file_path = strategy_file_path.resolve()
+    
+    strategy_identifier = relative_path
     
     if strategy_file_path.exists():
         raise StrategyFileError(f"Strategy file already exists: {strategy_file_path}")
+    
+    # Ensure parent directories exist
+    strategy_file_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Get template content
     template_file = Path(__file__).parent / 'strategy_template.py'
@@ -273,85 +245,86 @@ def create_strategy(name: str, file_path: Optional[str] = None) -> Tuple[str, st
     except Exception as e:
         raise StrategyFileError(f"Failed to create strategy file: {str(e)}")
     
-    # Return strategy identifier (file path without extension) and text
+    # Return relative path (with .py extension) and text
     return (strategy_identifier, template_text)
 
 
-def save_strategy(name: str, text: str) -> List[str]:
+def save_strategy(file_path: str, text: str) -> List[str]:
     """
     Save strategy to file
     
     Args:
-        name: Strategy name (relative path from STRATEGIES_DIR without .py extension)
+        file_path: Relative path to strategy file (from STRATEGIES_DIR, with .py extension)
         text: Strategy Python code
         
     Returns:
         List of syntax errors (empty if no errors)
         
     Raises:
-        StrategyNameError: If name is invalid
-        StrategyFileError: If save fails
+        StrategyFileError: If path is invalid or save fails
     """
-    validate_strategy_name(name)
+    validate_relative_path(file_path)
     
     # Validate Python syntax (but don't fail, just collect errors)
     syntax_errors = validate_python_syntax(text)
     
-    # Save file regardless of syntax errors
-    file_path = STRATEGIES_DIR / f"{name}.py"
+    # Save file regardless of syntax errors (file_path already has .py extension)
+    absolute_file_path = STRATEGIES_DIR / file_path
     try:
-        file_path.write_text(text, encoding='utf-8')
+        absolute_file_path.write_text(text, encoding='utf-8')
     except Exception as e:
         raise StrategyFileError(f"Failed to save strategy file: {str(e)}")
     
     return syntax_errors
 
 
-def load_strategy(name: str) -> Tuple[str, str, str]:
+def load_strategy(file_path: str) -> Tuple[str, str, str]:
     """
-    Load strategy from file by name or path
+    Load strategy from file by relative path
 
     Args:
-        name: Strategy name or path (filename without .py extension, can include subdirectories)
+        file_path: Relative path to strategy file (from STRATEGIES_DIR, with .py extension)
 
     Returns:
-        Tuple of (name, text, filename) - strategy identifier, code, and full filename path
+        Tuple of (name, file_path, text) - strategy name (extracted from path without .py), relative path (with .py), and code
 
     Raises:
-        StrategyNameError: If name is invalid
+        StrategyFileError: If path is invalid
         StrategyNotFoundError: If strategy file not found
-        StrategyFileError: If read fails
     """
-    # Validate only the filename part (last segment) for paths
-    # Extract filename from path if it contains slashes
-    if '/' in name or '\\' in name:
-        # For paths, validate only the filename part
-        filename = name.split('/')[-1].split('\\')[-1]
-        validate_strategy_name(filename)
-    else:
-        validate_strategy_name(name)
+    # Validate relative path (must end with .py)
+    validate_relative_path(file_path)
 
-    # Support both simple name and path (e.g., "path/to/strategy")
-    file_path = STRATEGIES_DIR / f"{name}.py"
+    # file_path already has .py extension
+    absolute_file_path = STRATEGIES_DIR / file_path
     
     # Security check: ensure path is within STRATEGIES_DIR
     try:
-        file_path_resolved = file_path.resolve()
+        file_path_resolved = absolute_file_path.resolve()
         strategies_dir_resolved = STRATEGIES_DIR.resolve()
         if not str(file_path_resolved).startswith(str(strategies_dir_resolved)):
-            raise StrategyNotFoundError(f"Strategy '{name}' not found")
+            raise StrategyNotFoundError(f"Strategy '{file_path}' not found")
     except (OSError, ValueError):
-        raise StrategyNotFoundError(f"Strategy '{name}' not found")
+        raise StrategyNotFoundError(f"Strategy '{file_path}' not found")
     
-    if not file_path.exists():
-        raise StrategyNotFoundError(f"Strategy '{name}' not found")
+    if not absolute_file_path.exists():
+        raise StrategyNotFoundError(f"Strategy '{file_path}' not found")
 
     try:
-        text = file_path.read_text(encoding='utf-8')
+        text = absolute_file_path.read_text(encoding='utf-8')
     except Exception as e:
         raise StrategyFileError(f"Failed to read strategy file: {str(e)}")
 
-    return (name, text, str(file_path))
+    # Extract strategy name from file path (filename without .py extension)
+    path_segments = file_path.replace('\\', '/').split('/')
+    filename_with_ext = path_segments[-1] if path_segments else file_path
+    # Remove .py extension from filename for strategy name
+    if filename_with_ext.endswith('.py'):
+        strategy_name = filename_with_ext[:-3]
+    else:
+        strategy_name = filename_with_ext
+
+    return (strategy_name, file_path, text)
 
 
 def get_strategy_parameters_description(name: str, text: str) -> Tuple[Optional[Dict[str, Tuple[Any, str, str]]], List[str]]:

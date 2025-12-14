@@ -24,9 +24,13 @@ export default {
     disabled: {
       type: Boolean,
       default: false
+    },
+    onSave: {
+      type: Function,
+      default: null
     }
   },
-  emits: ['update:modelValue'],
+  emits: ['update:modelValue', 'save'],
   data() {
     return {
       view: null
@@ -70,6 +74,20 @@ export default {
             EditorState.tabSize.of(4), // Set tab size to 4 spaces
             indentUnit.of('    '), // Set indent unit to 4 spaces (string, not number)
             keymap.of([indentWithTab]),
+            keymap.of([
+              {
+                key: 'Mod-s',
+                preventDefault: true,
+                run: () => {
+                  if (this.onSave) {
+                    this.onSave()
+                  } else {
+                    this.$emit('save')
+                  }
+                  return true
+                }
+              }
+            ]),
             EditorState.readOnly.of(newValue),
             EditorView.updateListener.of((update) => {
               if (update.docChanged && !newValue) {
@@ -90,6 +108,22 @@ export default {
       }
 
       try {
+        // Create save keymap
+        const saveKeymap = keymap.of([
+          {
+            key: 'Mod-s',
+            preventDefault: true,
+            run: () => {
+              if (this.onSave) {
+                this.onSave()
+              } else {
+                this.$emit('save')
+              }
+              return true
+            }
+          }
+        ])
+
         // Create editor state
         const extensions = [
           lineNumbers(),
@@ -98,6 +132,7 @@ export default {
           EditorState.tabSize.of(4), // Set tab size to 4 spaces
           indentUnit.of('    '), // Set indent unit to 4 spaces (string, not number)
           keymap.of([indentWithTab]), // Handle Tab for indentation
+          saveKeymap, // Handle Ctrl+S / Cmd+S for saving
           EditorState.readOnly.of(this.disabled), // Disable editing
           EditorView.updateListener.of((update) => {
             if (update.docChanged && !this.disabled) {

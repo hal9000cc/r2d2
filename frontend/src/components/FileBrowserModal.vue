@@ -122,7 +122,13 @@ export default {
       
       try {
         const response = await strategiesApi.listFiles(path, '*.py')
-        this.currentPath = response.current_path || ''
+        // Normalize current_path: remove "." for root directory, remove leading/trailing slashes
+        let currentPath = response.current_path || ''
+        if (currentPath === '.' || currentPath === './') {
+          currentPath = ''
+        }
+        currentPath = currentPath.replace(/^\.\/+|\/+$/g, '') // Remove leading "./" and trailing slashes
+        this.currentPath = currentPath
         // parent_path can be null or a string - keep it as is
         this.parentPath = response.parent_path
         this.items = response.items
@@ -146,15 +152,16 @@ export default {
           : item.name
         this.loadFiles(newPath)
       } else {
-        // Select file - return path without .py extension
-        const separator = this.currentPath && !this.currentPath.endsWith('/') ? '/' : ''
-        let filePath = this.currentPath
-          ? `${this.currentPath}${separator}${item.name}`
+        // Select file - return path with .py extension
+        // Normalize path: remove any leading "./" or "." 
+        let normalizedPath = this.currentPath || ''
+        normalizedPath = normalizedPath.replace(/^\.\/+/, '').replace(/^\.$/, '')
+        
+        const separator = normalizedPath && !normalizedPath.endsWith('/') ? '/' : ''
+        const filePath = normalizedPath
+          ? `${normalizedPath}${separator}${item.name}`
           : item.name
-        // Remove .py extension if present
-        if (filePath.endsWith('.py')) {
-          filePath = filePath.slice(0, -3)
-        }
+        // filePath already has .py extension from item.name
         this.$emit('file-selected', filePath)
         this.handleClose()
       }

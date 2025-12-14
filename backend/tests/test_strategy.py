@@ -123,13 +123,12 @@ def test_moving_average_crossover_strategy(app_startup):
     # Create task with test parameters
     task = Task(
         id=1,
-        strategy_id="ma_crossover",
+        file_name="ma_crossover.py",
         name="Moving Average Crossover Test",
         source="binance",
         symbol="BTC/USDT",
         timeframe="1h",
         isRunning=False,
-        isTrading=False,
         dateStart="2025-01-01T00:00:00",
         dateEnd="2025-04-01T00:00:00",
         parameters={

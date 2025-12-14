@@ -13,8 +13,7 @@ import socket
 import atexit
 
 from app.core.logger import setup_logging, get_logger
-from app.services.tasks.tasks import TaskList
-from app.services.tasks.backtesting_task import BacktestingTaskList
+from app.services.tasks.tasks import TaskList, BacktestingTaskList
 from app.core.config import (
     REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD,
     REDIS_QUOTE_REQUEST_LIST, REDIS_QUOTE_RESPONSE_PREFIX,
