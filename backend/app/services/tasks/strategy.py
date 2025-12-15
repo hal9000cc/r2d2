@@ -9,6 +9,7 @@ from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE, TIME_TYPE
 from app.services.tasks.tasks import Task
 from app.core.growing_data2redis import GrowingData2Redis
 from app.core.logger import get_logger
+from app.core.datetime_utils import parse_utc_datetime64
 
 logger = get_logger(__name__)
 
@@ -213,6 +214,9 @@ class StrategyBacktest(Strategy):
         super().__init__(task)
         self.__quotes = QuotesBackTest(task.symbol, task.timeframe, task.dateStart, task.dateEnd, task.source)
         self.fee = 0.001
+        self.progress: float = 0.0
+        self.date_start: Optional[np.datetime64] = None
+        self.date_end: Optional[np.datetime64] = None
         
         # Initialize data uploader
         redis_client = task.get_redis_client()
@@ -223,7 +227,8 @@ class StrategyBacktest(Strategy):
             "long_deals",
             "total_profit",
             "total_fees",
-            "deals"
+            "deals",
+            "progress",
         ]
         self._data_uploader = GrowingData2Redis(
             redis_client=redis_client,
@@ -246,6 +251,18 @@ class StrategyBacktest(Strategy):
 
         self.price = None
         self.current_time = self.__quotes.time.values[0]
+
+        # Initialize date range for progress calculation (must be valid)
+        try:
+            self.date_start = parse_utc_datetime64(self.task.dateStart)
+            self.date_end = parse_utc_datetime64(self.task.dateEnd)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to parse task dateStart/dateEnd for progress calculation: {e}"
+            ) from e
+
+        # Initialize progress to 0
+        self.progress = 0.0
 
         self.global_deal = Deal(
             side=None,
@@ -403,6 +420,14 @@ class StrategyBacktest(Strategy):
         Save results periodically during backtesting.
         Uploads changes to Redis.
         """
+        # Update progress based on current_time and date range
+        total_delta = self.date_end - self.date_start
+        current_delta = self.date_end - self.current_time
+        # Remaining progress from 100 down to 0
+        progress = float(current_delta / total_delta * 100.0)
+        # Clamp to [0, 100]
+        self.progress = max(0.0, min(100.0, progress))
+
         try:
             self._data_uploader.send_changes()
         except Exception as e:

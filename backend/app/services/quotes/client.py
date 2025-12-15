@@ -50,11 +50,17 @@ class Client:
 
     def __init__(self, redis_params: Optional[Dict] = None, request_list: str = 'quotes:requests', response_prefix: str = 'quotes:responses', timeout: int = 30):
         if not Client._initialized:
-            # Default Redis parameters
-            redis_params = redis_params or {}
-            self.redis_host = redis_params.get('host', 'localhost')
-            self.redis_port = redis_params.get('port', 6379)
-            self.redis_db = redis_params.get('db', 0)
+            if redis_params is None:
+                raise RuntimeError("Quotes Client must be initialized with redis_params on first call")
+
+            # Required Redis parameters
+            try:
+                self.redis_host = redis_params['host']
+                self.redis_port = redis_params['port']
+                self.redis_db = redis_params['db']
+            except KeyError as e:
+                raise RuntimeError(f"Missing required Redis parameter for Quotes Client: {e}") from e
+
             self.redis_password = redis_params.get('password', None)
             
             # Initialize Redis client
@@ -122,11 +128,12 @@ class Client:
         response_list = f"{self.response_prefix}:{request_id}"
         logger.debug(f"Waiting for response from service: {response_list}")
         result = self.redis_client.brpop(response_list, timeout=timeout if timeout > 0 else self.timeout)
-        logger.debug(f"Response from service {len(result)} records")
 
         if result is None:
             raise R2D2QuotesExceptionDataNotReceived(symbol, history_start, history_end)
         
+        logger.debug(f"Response from service {len(result)} records")
+
         _, response_bytes = result
         
         # Deserialize MessagePack response

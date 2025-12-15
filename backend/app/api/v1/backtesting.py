@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from typing import List, Dict, Any
 import importlib.util
 import sys
@@ -7,8 +7,10 @@ from app.services.tasks.tasks import BacktestingTaskList, Task
 from app.services.tasks.strategy import StrategyBacktest
 from app.services.strategies import validate_relative_path, load_strategy
 from app.services.strategies.exceptions import StrategyFileError, StrategyNotFoundError
-from app.core.config import STRATEGIES_DIR
-from app.core.logger import get_logger
+from app.services.quotes.client import Client
+from app.core.config import REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD
+from app.core.logger import get_logger, setup_logging
+from app.core.growing_data2redis import GrowingData2Redis, PacketType
 
 logger = get_logger(__name__)
 
@@ -263,89 +265,35 @@ def serialize_deal(deal) -> Dict[str, Any]:
 @router.post("/tasks/{task_id}/start", response_model=Dict[str, Any])
 async def start_backtesting(task_id: int):
     """
-    Start backtesting for a task.
+    Start backtesting for a task in background worker.
+    
+    This endpoint:
+    - Validates the task via start_backtesting_worker
+    - Clears previous backtesting results in Redis
+    - Starts a separate process to run backtesting
+    - Does not wait for completion and does not return backtesting results
     
     Args:
         task_id: Task ID
         
     Returns:
-        Dictionary with backtesting results including deals, global_deal, and statistics
+        Dictionary with success flag and task_id
         
     Raises:
-        HTTPException: If task not found, strategy file not found, or execution fails
+        HTTPException: If task validation fails or worker cannot be started
     """
-    # Load task
-    task = task_list.load(task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    # Check if task is already running
-    if task.isRunning:
-        raise HTTPException(status_code=409, detail="Task is already running")
-    
-    # Validate required fields
-    if not task.file_name:
-        raise HTTPException(status_code=400, detail="Task file_name is required")
-    if not task.source:
-        raise HTTPException(status_code=400, detail="Task source is required")
-    if not task.symbol:
-        raise HTTPException(status_code=400, detail="Task symbol is required")
-    if not task.timeframe:
-        raise HTTPException(status_code=400, detail="Task timeframe is required")
-    if not task.dateStart:
-        raise HTTPException(status_code=400, detail="Task dateStart is required")
-    if not task.dateEnd:
-        raise HTTPException(status_code=400, detail="Task dateEnd is required")
-    
     try:
-        # Load strategy class
-        strategy_class = load_strategy_class(task.file_name)
-        
-        # Create strategy instance
-        strategy = strategy_class(task)
-        
-        # Run backtesting
-        strategy.run()
-        
-        # Serialize results
-        deals = [serialize_deal(deal) for deal in strategy.deals]
-        global_deal = serialize_deal(strategy.global_deal)
-        
-        # Calculate statistics
-        total_deals = len(deals)
-        winning_deals = sum(1 for deal in deals if deal.get('profit', 0) > 0)
-        losing_deals = sum(1 for deal in deals if deal.get('profit', 0) < 0)
-        total_profit = sum(deal.get('profit', 0) for deal in deals)
-        total_fees = sum(deal.get('fees', 0) for deal in deals)
-        
-        # Update task status
-        task.isRunning = False
-        task.save()
-        
+        start_backtesting_worker(task_id)
         return {
             "success": True,
             "task_id": task_id,
-            "deals": deals,
-            "global_deal": global_deal,
-            "statistics": {
-                "total_deals": total_deals,
-                "winning_deals": winning_deals,
-                "losing_deals": losing_deals,
-                "total_profit": total_profit,
-                "total_fees": total_fees,
-                "win_rate": (winning_deals / total_deals * 100) if total_deals > 0 else 0,
-                "final_balance": global_deal.get('balance', 0)
-            }
         }
     except HTTPException:
-        # Re-raise HTTP exceptions
+        # Re-raise HTTP exceptions from worker validation
         raise
     except Exception as e:
-        logger.error(f"Error running backtesting for task {task_id}: {str(e)}", exc_info=True)
-        # Update task status on error
-        task.isRunning = False
-        task.save()
-        raise HTTPException(status_code=500, detail=f"Error running backtesting: {str(e)}")
+        logger.error(f"Error starting backtesting worker for task {task_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error starting backtesting worker: {str(e)}")
 
 
 def start_backtesting_worker(task_id: int) -> None:
@@ -388,7 +336,12 @@ def start_backtesting_worker(task_id: int) -> None:
         logger.error(f"Task {task_id} dateEnd is required")
         raise HTTPException(status_code=400, detail="Task dateEnd is required")
     
-    task.clear_results()
+    # Clear previous backtesting results for this task
+    try:
+        task.clear_result()
+    except Exception as e:
+        logger.error(f"Failed to clear previous backtesting results for task {task_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to clear previous backtesting results")
     
     # Start worker in separate process
     process = Process(target=worker_backtesting_task, args=(task_id,))
@@ -405,6 +358,19 @@ def worker_backtesting_task(task_id: int) -> None:
         task_id: Task ID to run backtesting for
     """
     try:
+        # Initialize logging in this process
+        setup_logging()
+        
+        # Ensure BacktestingTaskList and Quotes Client are initialized in this process
+        redis_params = {
+            "host": REDIS_HOST,
+            "port": REDIS_PORT,
+            "db": REDIS_DB,
+            "password": REDIS_PASSWORD,
+        }
+        BacktestingTaskList(redis_params=redis_params)
+        Client(redis_params=redis_params)
+
         task = task_list.load(task_id)
         if task is None:
             logger.error(f"Task {task_id} not found in worker process")
@@ -436,7 +402,6 @@ def process_backtesting_task(task: Task) -> None:
     This function runs synchronously in a separate process and does not return any value.
     Task status is updated in Redis (isRunning flag).
     """
-        
     try:
         # Load strategy class
         # Note: load_strategy_class may raise HTTPException, which we catch as Exception
@@ -455,5 +420,157 @@ def process_backtesting_task(task: Task) -> None:
         logger.error(f"Error loading strategy for task {task.id}: {e.detail}")
     except Exception as e:
         logger.error(f"Error running background backtesting for task {task.id}: {str(e)}", exc_info=True)
+
+
+@router.websocket("/tasks/{task_id}/results")
+async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
+    """
+    WebSocket endpoint for streaming backtesting results from Redis to frontend.
+    
+    Protocol:
+    1. Reads Redis Stream from the beginning until the first START packet (type == "start").
+       These initial packets are not sent to the frontend.
+    2. Trims the stream so that all entries before START are removed (START remains).
+    3. Starting from START, forwards all packets to the frontend:
+       - "start": marks the beginning of results stream
+       - "data": incremental data packets (including progress 0-100 in packet.data.progress)
+       - "end": normal completion, forwarded and then coroutine terminates
+       - "error": error packet, forwarded and then coroutine terminates
+       Any other packet type is treated as error: logged, converted to "error" packet and sent, then coroutine terminates.
+    """
+    await websocket.accept()
+
+    # Load task to resolve Redis key
+    task = task_list.load(task_id)
+    if task is None:
+        await websocket.send_json({
+            "type": PacketType.ERROR.value,
+            "data": {"message": "Task not found"}
+        })
+        await websocket.close()
+        return
+
+    # Get Redis key for this task's results
+    try:
+        redis_key = task.get_result_key()
+    except Exception as e:
+        logger.error(f"Failed to get result key for task {task_id}: {e}", exc_info=True)
+        await websocket.send_json({
+            "type": PacketType.ERROR.value,
+            "data": {"message": "Failed to get result key for task"}
+        })
+        await websocket.close()
+        return
+
+    # Initialize GrowingData2Redis in read mode
+    try:
+        redis_client = task_list._get_redis_client()
+        reader = GrowingData2Redis(redis_client=redis_client, redis_key=redis_key)
+    except Exception as e:
+        logger.error(f"Failed to initialize GrowingData2Redis for task {task_id}: {e}", exc_info=True)
+        await websocket.send_json({
+            "type": PacketType.ERROR.value,
+            "data": {"message": "Failed to initialize results reader"}
+        })
+        await websocket.close()
+        return
+
+    last_id = "0-0"
+    start_found = False
+
+    try:
+        while True:
+            # Read from Redis stream; block up to 1 second for new data
+            entries = reader.read_stream_from(last_id=last_id, block_ms=1000, count=10)
+            if not entries:
+                continue
+
+            for message_id, packet in entries:
+                last_id = message_id
+                packet_type = packet.get("type")
+
+                # Ensure packet_type is a plain string
+                if isinstance(packet_type, bytes):
+                    packet_type = packet_type.decode("utf-8")
+
+                # Phase 1: search for first START packet, do not forward anything before it
+                if not start_found:
+                    if packet_type == PacketType.START.value:
+                        start_found = True
+                        # Trim all entries before START (keep START)
+                        try:
+                            reader.trim_stream_min_id(message_id)
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to trim Redis stream {redis_key} to START id {message_id}: {e}",
+                                exc_info=True
+                            )
+                        # Forward START packet to frontend
+                        try:
+                            await websocket.send_json(packet)
+                        except Exception as send_err:
+                            logger.info(
+                                f"WebSocket closed while sending START packet for task {task_id}: {send_err}"
+                            )
+                            return
+                    # Skip all packets before START
+                    continue
+
+                # Phase 2: after START, forward all packets according to rules
+                if packet_type == PacketType.DATA.value:
+                    try:
+                        await websocket.send_json(packet)
+                    except Exception as send_err:
+                        logger.info(
+                            f"WebSocket closed while sending DATA packet for task {task_id}: {send_err}"
+                        )
+                        return
+                    continue
+
+                if packet_type == PacketType.END.value:
+                    try:
+                        await websocket.send_json(packet)
+                    except Exception as send_err:
+                        logger.info(
+                            f"WebSocket closed while sending END packet for task {task_id}: {send_err}"
+                        )
+                    return
+
+                if packet_type == PacketType.ERROR.value:
+                    try:
+                        await websocket.send_json(packet)
+                    except Exception as send_err:
+                        logger.info(
+                            f"WebSocket closed while sending ERROR packet for task {task_id}: {send_err}"
+                        )
+                    return
+
+                # Unexpected packet type
+                logger.error(
+                    f"Unexpected packet type '{packet_type}' in results stream for task {task_id}"
+                )
+                error_packet = {
+                    "type": PacketType.ERROR.value,
+                    "data": {
+                        "message": f"Unexpected packet type '{packet_type}' in results stream"
+                    },
+                }
+                try:
+                    await websocket.send_json(error_packet)
+                except Exception as send_err:
+                    logger.info(
+                        f"WebSocket closed while sending unexpected-type ERROR packet for task {task_id}: {send_err}"
+                    )
+                return
+
+    except WebSocketDisconnect:
+        logger.info(f"Backtesting results WebSocket disconnected for task {task_id}")
+    except Exception as e:
+        # Generic error while reading from Redis or processing packets.
+        # Do not attempt to send or close if connection is already broken.
+        logger.error(
+            f"Error while streaming backtesting results for task {task_id}: {e}",
+            exc_info=True,
+        )
 
 
