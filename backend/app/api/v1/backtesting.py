@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from typing import List, Dict, Any
 import importlib.util
 import sys
+import asyncio
 from multiprocessing import Process
 from app.services.tasks.tasks import BacktestingTaskList, Task
 from app.services.tasks.strategy import StrategyBacktest
@@ -475,93 +476,108 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
         await websocket.close()
         return
 
+    # Start by reading from the beginning to find START packet
+    # After START, we'll continue reading entries after START sequentially
     last_id = "0-0"
     start_found = False
 
     try:
         while True:
             # Read from Redis stream; block up to 1 second for new data
-            entries = reader.read_stream_from(last_id=last_id, block_ms=1000, count=10)
+            # Read one entry at a time to ensure strict ordering and immediate forwarding
+            # Wrap synchronous Redis call in executor to avoid blocking event loop
+            entries = await asyncio.to_thread(reader.read_stream_from, last_id=last_id, block_ms=1000, count=1)
             if not entries:
                 continue
 
-            for message_id, packet in entries:
-                last_id = message_id
-                packet_type = packet.get("type")
+            # Process single entry (count=1 ensures only one entry)
+            message_id, packet = entries[0]
+            packet_type = packet.get("type")
+            
+            # Update last_id immediately to ensure sequential reading
+            # Always update last_id to the current message_id to read next entry sequentially
+            last_id = message_id
 
-                # Ensure packet_type is a plain string
-                if isinstance(packet_type, bytes):
-                    packet_type = packet_type.decode("utf-8")
+            # Ensure packet_type is a plain string
+            if isinstance(packet_type, bytes):
+                packet_type = packet_type.decode("utf-8")
 
-                # Phase 1: search for first START packet, do not forward anything before it
-                if not start_found:
-                    if packet_type == PacketType.START.value:
-                        start_found = True
-                        # Trim all entries before START (keep START)
-                        try:
-                            reader.trim_stream_min_id(message_id)
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to trim Redis stream {redis_key} to START id {message_id}: {e}",
-                                exc_info=True
-                            )
-                        # Forward START packet to frontend
-                        try:
-                            await websocket.send_json(packet)
-                        except Exception as send_err:
-                            logger.info(
-                                f"WebSocket closed while sending START packet for task {task_id}: {send_err}"
-                            )
-                            return
-                    # Skip all packets before START
-                    continue
-
-                # Phase 2: after START, forward all packets according to rules
-                if packet_type == PacketType.DATA.value:
+            # Phase 1: search for first START packet, do not forward anything before it
+            if not start_found:
+                if packet_type == PacketType.START.value:
+                    start_found = True
+                    # Trim all entries before START (keep START)
+                    # Wrap synchronous Redis call in executor to avoid blocking event loop
+                    try:
+                        await asyncio.to_thread(reader.trim_stream_min_id, message_id)
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to trim Redis stream {redis_key} to START id {message_id}: {e}",
+                            exc_info=True
+                        )
+                    # Forward START packet to frontend
                     try:
                         await websocket.send_json(packet)
                     except Exception as send_err:
                         logger.info(
-                            f"WebSocket closed while sending DATA packet for task {task_id}: {send_err}"
+                            f"WebSocket closed while sending START packet for task {task_id}: {send_err}"
                         )
                         return
+                    # After START, continue reading entries after START (use START's message_id as last_id)
+                    # This ensures we read all DATA packets that come after START, even if they're already in the stream
+                    # We read them one by one (count=1) and update last_id after each read
+                    last_id = message_id
+                    # Continue to next iteration to read next packet after START
                     continue
+                # Skip all packets before START
+                continue
 
-                if packet_type == PacketType.END.value:
-                    try:
-                        await websocket.send_json(packet)
-                    except Exception as send_err:
-                        logger.info(
-                            f"WebSocket closed while sending END packet for task {task_id}: {send_err}"
-                        )
-                    return
-
-                if packet_type == PacketType.ERROR.value:
-                    try:
-                        await websocket.send_json(packet)
-                    except Exception as send_err:
-                        logger.info(
-                            f"WebSocket closed while sending ERROR packet for task {task_id}: {send_err}"
-                        )
-                    return
-
-                # Unexpected packet type
-                logger.error(
-                    f"Unexpected packet type '{packet_type}' in results stream for task {task_id}"
-                )
-                error_packet = {
-                    "type": PacketType.ERROR.value,
-                    "data": {
-                        "message": f"Unexpected packet type '{packet_type}' in results stream"
-                    },
-                }
+            # Phase 2: after START, forward all packets according to rules
+            if packet_type == PacketType.DATA.value:
                 try:
-                    await websocket.send_json(error_packet)
+                    await websocket.send_json(packet)
                 except Exception as send_err:
                     logger.info(
-                        f"WebSocket closed while sending unexpected-type ERROR packet for task {task_id}: {send_err}"
+                        f"WebSocket closed while sending DATA packet for task {task_id}: {send_err}"
+                    )
+                    return
+                continue
+
+            if packet_type == PacketType.END.value:
+                try:
+                    await websocket.send_json(packet)
+                except Exception as send_err:
+                    logger.info(
+                        f"WebSocket closed while sending END packet for task {task_id}: {send_err}"
                     )
                 return
+
+            if packet_type == PacketType.ERROR.value:
+                try:
+                    await websocket.send_json(packet)
+                except Exception as send_err:
+                    logger.info(
+                        f"WebSocket closed while sending ERROR packet for task {task_id}: {send_err}"
+                    )
+                return
+
+            # Unexpected packet type
+            logger.error(
+                f"Unexpected packet type '{packet_type}' in results stream for task {task_id}"
+            )
+            error_packet = {
+                "type": PacketType.ERROR.value,
+                "data": {
+                    "message": f"Unexpected packet type '{packet_type}' in results stream"
+                },
+            }
+            try:
+                await websocket.send_json(error_packet)
+            except Exception as send_err:
+                logger.info(
+                    f"WebSocket closed while sending unexpected-type ERROR packet for task {task_id}: {send_err}"
+                )
+            return
 
     except WebSocketDisconnect:
         logger.info(f"Backtesting results WebSocket disconnected for task {task_id}")

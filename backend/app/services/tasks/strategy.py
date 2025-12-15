@@ -422,11 +422,11 @@ class StrategyBacktest(Strategy):
         """
         # Update progress based on current_time and date range
         total_delta = self.date_end - self.date_start
-        current_delta = self.date_end - self.current_time
-        # Remaining progress from 100 down to 0
+        current_delta = self.current_time - self.date_start
+        # Progress from 0 to 100 as we move from date_start to date_end
         progress = float(current_delta / total_delta * 100.0)
-        # Clamp to [0, 100]
-        self.progress = max(0.0, min(100.0, progress))
+        # Clamp to [0, 100] and round to integer
+        self.progress = round(max(0.0, min(100.0, progress)))
 
         try:
             self._data_uploader.send_changes()
