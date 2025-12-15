@@ -297,8 +297,6 @@ async def start_backtesting(task_id: int):
     if not task.dateEnd:
         raise HTTPException(status_code=400, detail="Task dateEnd is required")
     
-    # Update task status
-    
     try:
         # Load strategy class
         strategy_class = load_strategy_class(task.file_name)
@@ -389,6 +387,8 @@ def start_backtesting_worker(task_id: int) -> None:
     if not task.dateEnd:
         logger.error(f"Task {task_id} dateEnd is required")
         raise HTTPException(status_code=400, detail="Task dateEnd is required")
+    
+    task.clear_results()
     
     # Start worker in separate process
     process = Process(target=worker_backtesting_task, args=(task_id,))

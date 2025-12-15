@@ -2,7 +2,7 @@
 Universal manager for uploading changing data to Redis.
 Handles incremental updates for growing lists and full updates for simple properties.
 """
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 from enum import Enum
 import redis
@@ -14,6 +14,14 @@ from app.core.logger import get_logger
 logger = get_logger(__name__)
 
 
+class PacketType(str, Enum):
+    """String enum for packet types stored in Redis."""
+    START = "start"
+    DATA = "data"
+    END = "end"
+    ERROR = "error"
+
+
 class GrowingData2Redis:
     """
     Universal manager for uploading changing data to Redis.
@@ -22,7 +30,7 @@ class GrowingData2Redis:
     - Simple properties: always uploaded with current value
     - List properties: only new elements are uploaded incrementally
     
-    Data is stored in Redis List as JSON packets with type markers:
+    Data is stored in Redis Stream as JSON packets with type markers:
     - "start": initialization marker
     - "data": data packet with changes
     - "end": completion marker
@@ -32,8 +40,8 @@ class GrowingData2Redis:
         self,
         redis_client: redis.Redis,
         redis_key: str,
-        source_object: Any,
-        property_names: List[str]
+        source_object: Optional[Any] = None,
+        property_names: Optional[List[str]] = None
     ):
         """
         Initialize GrowingData2Redis.
@@ -41,19 +49,22 @@ class GrowingData2Redis:
         Args:
             redis_client: Redis client instance
             redis_key: Key for Redis List where data will be stored
-            source_object: Object containing data to upload (e.g., Strategy instance)
-            property_names: List of property names to track and upload
+            source_object: Optional object containing data to upload (e.g., Strategy instance).
+                           If None, the instance works in read-only mode (for receiving packets).
+            property_names: Optional list of property names to track and upload.
+                            Required for write mode, ignored in read-only mode.
         """
         self.redis_client = redis_client
         self.redis_key = redis_key
         self.source_object = source_object
         self.property_names = property_names
         
-        # Internal state (set in reset())
+        # Internal state (set in reset() for write mode)
         self._list_sizes: Dict[str, int] = {}  # property_name -> current size
         self._simple_properties: List[str] = []  # properties that are not lists
         
         self._initialized = False
+        self._write_mode = self.source_object is not None and self.property_names is not None
     
     def _serialize_value(self, value: Any) -> Any:
         """
@@ -128,41 +139,59 @@ class GrowingData2Redis:
         # Fallback: convert to string
         return str(value)
     
-    def _send_packet(self, packet_type: str, data: Optional[Dict[str, Any]] = None) -> None:
+    def _send_packet(self, packet_type: PacketType, data: Optional[Dict[str, Any]] = None) -> None:
         """
-        Send packet to Redis List.
+        Send packet to Redis Stream using XADD.
         
         Args:
-            packet_type: Type of packet ("start", "data", or "end")
+            packet_type: Type of packet (PacketType.START, PacketType.DATA, or PacketType.END)
             data: Optional data dictionary (for "data" type)
         """
-        packet = {
-            "type": packet_type,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        if data is not None:
-            packet["data"] = data
+        # Store only type and data in the stream entry.
+        # Data is JSON-encoded to keep the stream schema simple (string fields).
+        fields: Dict[str, Any] = {"type": packet_type.value}
+        fields["data"] = json.dumps(data or {})
         
         try:
-            packet_json = json.dumps(packet, ensure_ascii=False)
-            self.redis_client.lpush(self.redis_key, packet_json)
-            logger.debug(f"Sent {packet_type} packet to {self.redis_key}")
+            message_id = self.redis_client.xadd(self.redis_key, fields, id="*")
+            logger.debug(f"Sent {packet_type} packet to stream {self.redis_key} with id {message_id}")
         except Exception as e:
-            logger.error(f"Failed to send {packet_type} packet to Redis: {e}")
+            logger.error(f"Failed to send {packet_type} packet to Redis stream: {e}")
             raise
+
+    def _send_error_packet(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Try to send an error packet with diagnostics to Redis.
+        Does not raise if sending the error packet itself fails.
+        """
+        data: Dict[str, Any] = {"message": message}
+        if context:
+            data["context"] = context
+        try:
+            self._send_packet(PacketType.ERROR, data)
+        except Exception as e:
+            # Avoid masking original errors with secondary failures
+            logger.error(f"Failed to send error packet to Redis: {e}")
     
     def reset(self) -> None:
         """
-        Initialize tracking state.
+        Initialize tracking state (write mode).
         
         Analyzes properties:
         - Identifies which properties are lists (for incremental updates)
         - Identifies which properties are simple (for full updates)
         - Records initial list sizes
         
-        Sends "start" marker to Redis.
+        And sends "start" marker.
         """
+        if not self._write_mode:
+            msg = (
+                "reset() is only available in write mode "
+                "(source_object and property_names must be provided)"
+            )
+            self._send_error_packet(msg, {"redis_key": self.redis_key})
+            raise RuntimeError(msg)
+        
         self._list_sizes = {}
         self._simple_properties = []
         
@@ -183,7 +212,7 @@ class GrowingData2Redis:
                 logger.error(f"Error analyzing property '{prop_name}': {e}, skipping")
         
         # Send start marker
-        self._send_packet("start")
+        self._send_packet(PacketType.START)
         self._initialized = True
         
         logger.info(f"Reset completed: {len(self._simple_properties)} simple properties, "
@@ -191,7 +220,7 @@ class GrowingData2Redis:
     
     def send_changes(self) -> None:
         """
-        Send changes to Redis.
+        Send changes to Redis (write mode).
         
         For simple properties: always uploads current value.
         For list properties: uploads only new elements (added since last check).
@@ -199,7 +228,9 @@ class GrowingData2Redis:
         Sends "data" packet to Redis.
         """
         if not self._initialized:
-            raise RuntimeError("reset() must be called before send_changes()")
+            msg = "reset() must be called before send_changes()"
+            self._send_error_packet(msg, {"redis_key": self.redis_key})
+            raise RuntimeError(msg)
         
         data = {}
         
@@ -247,18 +278,20 @@ class GrowingData2Redis:
         
         # Send data packet if there's any data
         if data:
-            self._send_packet("data", data)
+            self._send_packet(PacketType.DATA, data)
         else:
             logger.debug("No changes to send")
     
     def finish(self) -> None:
         """
-        Finalize upload process.
+        Finalize upload process (write mode).
         
         Updates list sizes to final values and sends "end" marker to Redis.
         """
         if not self._initialized:
-            raise RuntimeError("reset() must be called before finish()")
+            msg = "reset() must be called before finish()"
+            self._send_error_packet(msg, {"redis_key": self.redis_key})
+            raise RuntimeError(msg)
         
         # Update final list sizes
         for prop_name in list(self._list_sizes.keys()):
@@ -267,9 +300,77 @@ class GrowingData2Redis:
                 if isinstance(current_list, (list, tuple)):
                     self._list_sizes[prop_name] = len(current_list)
             except (AttributeError, Exception) as e:
-                logger.error(f"Error updating final size for '{prop_name}': {e}")
+                msg = f"Error updating final size for '{prop_name}': {e}"
+                logger.error(msg)
+                self._send_error_packet(msg, {"redis_key": self.redis_key, "property": prop_name})
         
         # Send end marker
-        self._send_packet("end")
+        self._send_packet(PacketType.END)
         
         logger.info(f"Finish completed. Final list sizes: {self._list_sizes}")
+        logger.info(f"Finish completed. Final list sizes: {self._list_sizes}")
+
+    # ==== Stream read helpers (read mode) ====
+
+    def read_stream_from(
+        self,
+        last_id: str,
+        block_ms: int,
+        count: int = 1,
+    ) -> Optional[List[Tuple[str, Dict[str, Any]]]]:
+        """
+        Read entries from the Redis Stream starting after last_id.
+
+        Args:
+            last_id: Last seen message ID (e.g. "0-0" for from beginning).
+            block_ms: Block time in milliseconds (0 for non-blocking).
+            count: Maximum number of entries to return per call.
+
+        Returns:
+            List of (message_id, packet_dict) or None if timeout / no data.
+            packet_dict has keys: "type" (str) and optional "data" (dict).
+        """
+        streams = {self.redis_key: last_id}
+        try:
+            results = self.redis_client.xread(
+                streams=streams,
+                count=count,
+                block=block_ms if block_ms > 0 else None,
+            )
+            if not results:
+                return None
+
+            # xread returns list of (stream, [ (id, fields), ... ])
+            _, entries = results[0]
+            parsed: List[Tuple[str, Dict[str, Any]]] = []
+            for message_id, fields in entries:
+                raw_type = fields.get("type")
+                raw_data = fields.get("data")
+                packet: Dict[str, Any] = {"type": raw_type}
+                if raw_data is not None:
+                    try:
+                        packet["data"] = json.loads(raw_data)
+                    except json.JSONDecodeError:
+                        # If data is not valid JSON, pass it as-is for diagnostics
+                        packet["data"] = {"raw": raw_data}
+                parsed.append((message_id, packet))
+            return parsed
+        except Exception as e:
+            msg = f"Failed to read from Redis stream {self.redis_key}: {e}"
+            logger.error(msg)
+            self._send_error_packet(msg, {"redis_key": self.redis_key})
+            raise
+
+    def trim_stream_min_id(self, min_id: str) -> None:
+        """
+        Trim Redis Stream so that entries with ID < min_id are removed.
+        Keeps min_id and all newer entries.
+        """
+        try:
+            # XTRIM <key> MINID <min_id>
+            self.redis_client.xtrim(self.redis_key, minid=min_id)
+            logger.debug(f"Trimmed Redis stream {self.redis_key} to MINID {min_id}")
+        except Exception as e:
+            msg = f"Failed to trim Redis stream {self.redis_key} to MINID {min_id}: {e}"
+            logger.error(msg)
+            self._send_error_packet(msg, {"redis_key": self.redis_key, "min_id": min_id})

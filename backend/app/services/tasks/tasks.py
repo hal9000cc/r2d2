@@ -54,6 +54,28 @@ class Task(Objects2Redis):
             raise RuntimeError("Task is not associated with a list. Cannot get Redis client.")
         return self._list._get_redis_client()
 
+    def get_result_key(self) -> str:
+        """
+        Get Redis key for backtesting results associated with this task.
+        Delegates to the associated task list.
+        """
+        if self._list is None:
+            raise RuntimeError("Task is not associated with a list. Cannot get result key.")
+        if not hasattr(self._list, "get_result_key"):
+            raise RuntimeError("Associated task list does not support result keys.")
+        return self._list.get_result_key(self.id)
+
+    def clear_result(self) -> None:
+        """
+        Clear backtesting results associated with this task in Redis.
+        Delegates to the associated task list.
+        """
+        if self._list is None:
+            raise RuntimeError("Task is not associated with a list. Cannot clear result.")
+        if not hasattr(self._list, "clear_result"):
+            raise RuntimeError("Associated task list does not support clearing results.")
+        self._list.clear_result(self.id)
+
 
 class TaskList(Objects2RedisList[Task]):
     """
@@ -115,3 +137,28 @@ class BacktestingTaskList(Objects2RedisList[Task]):
     def object_class(self) -> Type[Task]:
         """Returns the Task class"""
         return Task
+
+    # --- Backtesting results helpers ---
+
+    def get_result_key(self, task_id: int) -> str:
+        """
+        Get Redis key for backtesting results stream for a given task.
+        """
+        return f"{self.list_key()}:result:{task_id}"
+
+    def clear_result(self, task_id: int) -> None:
+        """
+        Clear Redis stream with backtesting results for the given task.
+
+        Raises:
+            RuntimeError: On any Redis error during deletion.
+        """
+        key = self.get_result_key(task_id)
+        redis_client = self._get_redis_client()
+        try:
+            deleted = redis_client.delete(key)
+            logger.debug(f"Cleared backtesting result stream at key {key}, deleted={deleted}")
+        except Exception as e:
+            msg = f"Failed to clear backtesting result stream for task {task_id} at key {key}: {e}"
+            logger.error(msg)
+            raise RuntimeError(msg)

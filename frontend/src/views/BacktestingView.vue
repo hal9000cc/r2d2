@@ -9,7 +9,28 @@
         @form-data-changed="handleFormDataChanged"
       />
     </Teleport>
-    
+
+    <!-- Backtest progress bar -->
+    <div v-if="backtestProgressState !== 'idle'" class="backtest-progress">
+      <div class="progress-text">
+        <span v-if="backtestProgressState === 'running'">
+          Backtesting: {{ backtestProgress.toFixed(1) }}%
+        </span>
+        <span v-else-if="backtestProgressState === 'completed'">
+          Backtesting completed
+        </span>
+        <span v-else-if="backtestProgressState === 'error'">
+          Backtesting error: {{ backtestProgressErrorMessage }}
+        </span>
+      </div>
+      <div class="progress-bar">
+        <div
+          class="progress-bar-fill"
+          :style="{ width: backtestProgress + '%' }"
+        ></div>
+      </div>
+    </div>
+
     <div class="backtesting-layout">
       <!-- Left side: Chart and Tabs -->
       <div class="left-panel">
@@ -160,7 +181,6 @@
               @parameters-changed="handleParametersChanged"
             />
           </ResizablePanel>
-          <BacktestResults :results="backtestResults" :is-running="isBacktestingRunning" />
         </div>
       </ResizablePanel>
     </div>
@@ -173,7 +193,6 @@ import ChartPanel from '../components/ChartPanel.vue'
 import MessagesPanel from '../components/MessagesPanel.vue'
 import BacktestingNavForm from '../components/BacktestingNavForm.vue'
 import StrategyParameters from '../components/StrategyParameters.vue'
-import BacktestResults from '../components/BacktestResults.vue'
 import Tabs from '../components/Tabs.vue'
 import CodeMirrorEditor from '../components/CodeMirrorEditor.vue'
 import BacktestingTaskList from '../components/BacktestingTaskList.vue'
@@ -188,7 +207,6 @@ export default {
     MessagesPanel,
     BacktestingNavForm,
     StrategyParameters,
-    BacktestResults,
     Tabs,
     CodeMirrorEditor,
     BacktestingTaskList
@@ -226,15 +244,23 @@ export default {
       isTaskLoading: false, // Flag to prevent auto-save during task loading
       selectMode: false,
       selectedTasksCount: 0,
-      backtestResults: null, // Results from last backtest run
       isBacktestingRunning: false, // Flag to indicate if backtesting is in progress
       isSavingStrategy: false, // Flag to indicate if strategy is being saved
-      hasUnsavedChanges: false // Flag to track if strategy code has been modified since last save
+      hasUnsavedChanges: false, // Flag to track if strategy code has been modified since last save
+      backtestProgress: 0,
+      backtestProgressState: 'idle', // 'idle' | 'running' | 'completed' | 'error'
+      backtestProgressErrorMessage: '',
+      backtestResultsSocket: null
     }
   },
   computed: {
     isMac() {
-      return navigator.platform.toUpperCase().indexOf('MAC') >= 0
+      // Use modern userAgentData API if available, otherwise fall back to userAgent parsing
+      if (navigator.userAgentData?.platform) {
+        return navigator.userAgentData.platform.toUpperCase().indexOf('MAC') >= 0
+      }
+      // Fallback: parse userAgent
+      return /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
     }
   },
   mounted() {
@@ -258,6 +284,11 @@ export default {
     }
     // Save all on component unmount
     this.saveAllSync()
+    // Close backtest results WebSocket if open
+    if (this.backtestResultsSocket) {
+      this.backtestResultsSocket.close()
+      this.backtestResultsSocket = null
+    }
   },
   watch: {
     strategyCode(newValue, oldValue) {
@@ -389,6 +420,51 @@ export default {
       // 6. Keep loading flag true (task is closed, no auto-save needed)
       // isTaskLoading will be set to false when new task is loaded
     },
+    _openBacktestResultsSocket(taskId) {
+      // Close previous socket if any
+      if (this.backtestResultsSocket) {
+        this.backtestResultsSocket.close()
+        this.backtestResultsSocket = null
+      }
+
+      const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'
+      const wsUrl = baseUrl.replace(/^http/i, 'ws') + `/api/v1/backtesting/tasks/${taskId}/results`
+
+      try {
+        const socket = new WebSocket(wsUrl)
+        this.backtestResultsSocket = socket
+
+        socket.onopen = () => {
+          this.backtestProgressState = 'running'
+          this.backtestProgress = 0
+        }
+
+        socket.onmessage = (event) => {
+          try {
+            const packet = JSON.parse(event.data)
+            this._handleBacktestResultPacket(packet)
+          } catch (e) {
+            console.error('Failed to parse backtest results packet:', e)
+          }
+        }
+
+        socket.onerror = (event) => {
+          console.error('Backtest results WebSocket error:', event)
+          this.backtestProgressState = 'error'
+          if (!this.backtestProgressErrorMessage) {
+            this.backtestProgressErrorMessage = 'WebSocket error while receiving backtesting results'
+          }
+        }
+
+        socket.onclose = () => {
+          this.backtestResultsSocket = null
+        }
+      } catch (e) {
+        console.error('Failed to open backtest results WebSocket:', e)
+        this.backtestProgressState = 'error'
+        this.backtestProgressErrorMessage = 'Failed to open WebSocket for backtesting results'
+      }
+    },
     handleSelectionChanged(selectedIds) {
       this.selectedTasksCount = selectedIds.length
     },
@@ -407,6 +483,46 @@ export default {
     },
     clearMessages() {
       this.backtestMessages = []
+    },
+    _resetBacktestProgress() {
+      this.backtestProgress = 0
+      this.backtestProgressState = 'idle'
+      this.backtestProgressErrorMessage = ''
+    },
+    _handleBacktestResultPacket(packet) {
+      const type = packet?.type
+      if (!type) {
+        this.backtestProgressState = 'error'
+        this.backtestProgressErrorMessage = 'Invalid results packet received'
+        return
+      }
+
+      if (type === 'start') {
+        this.backtestProgressState = 'running'
+        this.backtestProgress = 0
+        return
+      }
+
+      if (type === 'error') {
+        this.backtestProgressState = 'error'
+        this.backtestProgressErrorMessage = packet.data?.message || 'Unknown backtesting error'
+        return
+      }
+
+      if (type === 'data') {
+        const progress = packet.data?.progress
+        if (typeof progress === 'number') {
+          this.backtestProgress = Math.min(100, Math.max(0, progress))
+          this.backtestProgressState = 'running'
+        }
+        return
+      }
+
+      if (type === 'end') {
+        this.backtestProgress = 100
+        this.backtestProgressState = 'completed'
+        return
+      }
     },
     async handleStrategyCreated(strategyName) {
       // Load strategy when new one is created
@@ -799,7 +915,7 @@ export default {
 
       // Set running flag
       this.isBacktestingRunning = true
-      this.backtestResults = null
+      this._resetBacktestProgress()
 
       // Add info message
       this.backtestMessages.push({
@@ -810,16 +926,16 @@ export default {
 
       try {
         // Call API to start backtesting
-        const results = await backtestingApi.startBacktest(this.currentTaskId)
+        await backtestingApi.startBacktest(this.currentTaskId)
 
-        // Store results
-        this.backtestResults = results
+        // Open WebSocket to receive backtest results and progress
+        this._openBacktestResultsSocket(this.currentTaskId)
 
         // Add success message
         this.backtestMessages.push({
           timestamp: new Date().toISOString(),
           level: 'success',
-          message: `Backtesting completed successfully. Total deals: ${results.statistics.total_deals}, Final balance: ${results.statistics.final_balance.toFixed(2)}`
+          message: `Backtesting started successfully for task ${this.currentTaskId}`
         })
       } catch (error) {
         console.error('Failed to start backtesting:', error)
@@ -830,7 +946,7 @@ export default {
           message: `Failed to start backtesting: ${errorMessage}`
         })
       } finally {
-        this.isBacktestingRunning = false
+        // isBacktestingRunning will be reset when results stream finishes or on error
       }
     },
     async handleUpdateParameters() {
@@ -988,6 +1104,43 @@ export default {
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+.backtest-progress {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.backtest-progress .progress-text {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.backtest-progress .progress-bar {
+  flex: 1 1 auto;
+  height: 8px;
+  border-radius: 9999px;
+  /* Use explicit colors so the bar is clearly visible */
+  background-color: #e5e7eb; /* light gray */
+  border: 1px solid #d1d5db;
+  overflow: hidden;
+}
+
+.backtest-progress .progress-bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  /* Simple solid color for better visibility */
+  background-color: #3b82f6; /* blue-500 */
+  transition: width 0.2s ease-out;
 }
 
 .backtesting-layout {

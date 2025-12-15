@@ -144,7 +144,7 @@ class Strategy(ABC):
         Update statistics.
         """
         self.total_deals += 1
-        if deal.side == OrderSide.SHORT:
+        if deal.side == OrderSide.SELL:
             self.short_deals += 1
         else:
             self.long_deals += 1
