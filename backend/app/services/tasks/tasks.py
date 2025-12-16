@@ -108,20 +108,21 @@ class Task(Objects2Redis):
             raise RuntimeError("Associated task list does not support clearing results.")
         self._list.clear_result(self.id)
     
-    def send_message(self, level: str, message: str) -> None:
+    def send_message(self, level: str, message: str, category: Optional[str] = None) -> None:
         """
         Send message to Redis pub/sub channel for this task.
         
         Args:
             level: Message level (info, warning, error, success, debug)
             message: Message text
+            category: Optional message category (e.g., "backtesting"). Defaults to None.
             
         Raises:
             RuntimeError: If task is not associated with a list or publish fails
         """
         if self._list is None:
             raise RuntimeError("Task is not associated with a list. Cannot send message.")
-        self._list.send_message(self.id, level, message)
+        self._list.send_message(self.id, level, message, category)
 
 
 class TaskList(Objects2RedisList[Task]):

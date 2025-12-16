@@ -138,7 +138,7 @@
               <button 
                 class="header-btn clear-btn" 
                 @click="clearMessages"
-                :disabled="backtestMessages.length === 0"
+                :disabled="!hasMessages"
                 title="Clear messages"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon">
@@ -149,7 +149,12 @@
             </div>
           </template>
           <template #messages>
-            <MessagesPanelSocket :task-id="currentTaskId" />
+            <MessagesPanelSocket 
+              ref="messagesPanel" 
+              :task-id="currentTaskId" 
+              :local-messages="backtestMessages"
+              @backtesting-error="handleBacktestingErrorMessage"
+            />
           </template>
         </Tabs>
       </div>
@@ -271,12 +276,15 @@ export default {
       return !this.isBacktestingRunning && !this.currentStrategyFilePath
     },
     errorDisplayMessage() {
-      // For cancel packets, show message without prefix
-      // For error packets, add "Backtesting error: " prefix
-      if (this.backtestProgressErrorType === 'cancel') {
-        return this.backtestProgressErrorMessage || 'Backtesting was cancelled'
-      }
-      return `Backtesting error: ${this.backtestProgressErrorMessage || 'Unknown error'}`
+      // Show simple "Error" message in progress bar
+      // Full error message is available in messages panel
+      return 'Error'
+    },
+    hasMessages() {
+      // Check if there are any messages (local or from WebSocket)
+      const localCount = this.backtestMessages.length
+      const wsCount = this.$refs.messagesPanel?.messages?.length || 0
+      return localCount > 0 || wsCount > 0
     }
   },
   mounted() {
@@ -433,6 +441,12 @@ export default {
       this.selectMode = false
       this.selectedTasksCount = 0
       
+      // Clear messages when closing strategy
+      this.backtestMessages = []
+      if (this.$refs.messagesPanel) {
+        this.$refs.messagesPanel.clearMessages()
+      }
+      
       // 6. Keep loading flag true (task is closed, no auto-save needed)
       // isTaskLoading will be set to false when new task is loaded
     },
@@ -512,7 +526,12 @@ export default {
       this.activeTab = tabId
     },
     clearMessages() {
+      // Clear local messages
       this.backtestMessages = []
+      // Clear WebSocket messages in MessagesPanelSocket
+      if (this.$refs.messagesPanel) {
+        this.$refs.messagesPanel.clearMessages()
+      }
     },
     _resetBacktestProgress() {
       this.backtestProgress = 0
@@ -567,6 +586,20 @@ export default {
         return
       }
     },
+    handleBacktestingErrorMessage(errorData) {
+      // Handle error message from messages WebSocket with category="backtesting" and level="error"
+      // This handles errors that occur before the results stream starts
+      this.backtestProgressState = 'error'
+      this.backtestProgressErrorType = 'error'
+      this.backtestProgressErrorMessage = errorData.message || 'Unknown backtesting error'
+      this.isBacktestingRunning = false
+      
+      // Close results WebSocket if it's open (it might not be if error occurred before stream started)
+      if (this.backtestResultsSocket) {
+        this.backtestResultsSocket.close()
+        this.backtestResultsSocket = null
+      }
+    },
     async handleStrategyCreated(strategyName) {
       // Load strategy when new one is created
       await this.loadStrategyFile(strategyName)
@@ -588,6 +621,11 @@ export default {
       // 3. Save previous task if switching to a different one
       if (this.currentTaskId && this.currentTaskId !== task.id) {
         await this.saveAll()
+        // Clear messages when switching to a different task
+        this.backtestMessages = []
+        if (this.$refs.messagesPanel) {
+          this.$refs.messagesPanel.clearMessages()
+        }
       }
 
       // 4. Load fresh task data from API to ensure we have the latest version
@@ -715,11 +753,6 @@ export default {
 
       try {
         const response = await strategiesApi.saveStrategy(this.currentStrategyFilePath, this.strategyCode)
-        
-        // Remove old syntax error messages
-        this.backtestMessages = this.backtestMessages.filter(
-          msg => !msg.message.startsWith('Syntax error:')
-        )
         
         // Add syntax errors if any
         if (response.syntax_errors && response.syntax_errors.length > 0) {
@@ -960,26 +993,12 @@ export default {
       this.isBacktestingRunning = true
       this._resetBacktestProgress()
 
-      // Add info message
-      this.backtestMessages.push({
-        timestamp: new Date().toISOString(),
-        level: 'info',
-        message: `Starting backtesting for task ${this.currentTaskId}...`
-      })
-
       try {
         // Call API to start backtesting
         await backtestingApi.startBacktest(this.currentTaskId)
 
         // Open WebSocket to receive backtest results and progress
         this._openBacktestResultsSocket(this.currentTaskId)
-
-        // Add success message
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'success',
-          message: `Backtesting started successfully for task ${this.currentTaskId}`
-        })
       } catch (error) {
         console.error('Failed to start backtesting:', error)
         const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
@@ -1050,11 +1069,6 @@ export default {
 
       try {
         const strategy = await strategiesApi.loadStrategy(this.currentStrategyFilePath)
-        
-        // Remove old loading error messages first
-        this.backtestMessages = this.backtestMessages.filter(
-          msg => !msg.message.startsWith('Failed to load parameters:')
-        )
         
         // Only update if parameters were successfully loaded (no errors)
         if (strategy.loading_errors && strategy.loading_errors.length > 0) {
@@ -1152,7 +1166,7 @@ export default {
         if (success) {
           this.backtestMessages.push({
             timestamp: new Date().toISOString(),
-            level: 'success',
+            level: 'info',
             message: 'Strategy saved successfully'
           })
         }

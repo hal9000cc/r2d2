@@ -1,5 +1,5 @@
 <template>
-  <MessagesPanel :messages="messages" />
+  <MessagesPanel :messages="allMessages" />
 </template>
 
 <script>
@@ -10,10 +10,15 @@ export default {
   components: {
     MessagesPanel
   },
+  emits: ['backtesting-error'],
   props: {
     taskId: {
       type: Number,
       default: null
+    },
+    localMessages: {
+      type: Array,
+      default: () => []
     }
   },
   data() {
@@ -22,11 +27,24 @@ export default {
       messagesSocket: null
     }
   },
+  computed: {
+    allMessages() {
+      // Combine local messages with WebSocket messages and sort by timestamp
+      const combined = [...this.localMessages, ...this.messages]
+      return combined.sort((a, b) => {
+        const timeA = new Date(a.timestamp).getTime()
+        const timeB = new Date(b.timestamp).getTime()
+        return timeA - timeB
+      })
+    }
+  },
   watch: {
     taskId(newTaskId, oldTaskId) {
       // Reconnect when taskId changes
       if (newTaskId !== oldTaskId) {
         this.disconnect()
+        // Clear messages when task changes
+        this.clearMessages()
         if (newTaskId) {
           this.connect(newTaskId)
         }
@@ -67,8 +85,19 @@ export default {
               this.messages.push({
                 timestamp: message.timestamp,
                 level: message.level,
-                message: message.message
+                message: message.message,
+                category: message.category || null
               })
+              
+              // Handle backtesting error messages (category="backtesting" and level="error")
+              // These errors occur before the results stream starts
+              if (message.category === 'backtesting' && message.level === 'error') {
+                // Emit event to parent component to handle backtesting error
+                this.$emit('backtesting-error', {
+                  message: message.message,
+                  timestamp: message.timestamp
+                })
+              }
             }
           } catch (e) {
             console.error('Failed to parse message from WebSocket:', e)
@@ -92,6 +121,10 @@ export default {
         this.messagesSocket.close()
         this.messagesSocket = null
       }
+    },
+    clearMessages() {
+      // Clear WebSocket messages
+      this.messages = []
     }
   }
 }

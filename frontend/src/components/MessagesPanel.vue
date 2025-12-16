@@ -1,6 +1,5 @@
 <template>
   <div class="messages-panel">
-    <h3>Messages</h3>
     <div class="messages-content" ref="messagesContainer">
       <div v-if="messages.length === 0" class="empty-state">
         <p>No messages</p>
@@ -86,14 +85,6 @@ export default {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.messages-panel h3 {
-  margin: 0 0 var(--spacing-sm) 0;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-  flex-shrink: 0;
 }
 
 .messages-content {

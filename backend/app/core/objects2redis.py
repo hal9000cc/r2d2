@@ -431,17 +431,18 @@ class Objects2RedisList(ABC, Generic[T]):
         """
         logger.info(f"{self.list_key()} list shutdown")
     
-    def send_message(self, obj_id: int, level: str, message: str) -> None:
+    def send_message(self, obj_id: int, level: str, message: str, category: Optional[str] = None) -> None:
         """
         Send message to Redis pub/sub channel for the object.
         
         Channel name format: {list_key()}:messages:{obj_id}
-        Message format: JSON with timestamp, level, and message.
+        Message format: JSON with timestamp, level, message, and category.
         
         Args:
             obj_id: Object ID
             level: Message level (info, warning, error, success, debug)
             message: Message text
+            category: Optional message category (e.g., "backtesting"). Defaults to None.
             
         Raises:
             RuntimeError: If list is not initialized or publish fails
@@ -460,7 +461,8 @@ class Objects2RedisList(ABC, Generic[T]):
         message_data = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": level,
-            "message": message
+            "message": message,
+            "category": category
         }
         
         # Serialize to JSON

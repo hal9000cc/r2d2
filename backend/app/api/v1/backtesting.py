@@ -179,15 +179,16 @@ def load_strategy_class(file_path: str):
         
     Raises:
         StrategyNotFoundError: If strategy file not found
-        HTTPException: If strategy class cannot be loaded
+        StrategyFileError: If strategy file is invalid
+        ValueError: If strategy class cannot be loaded (syntax error, class not found, etc.)
+        RuntimeError: If module loading fails
     """
     # Load strategy file
     try:
         strategy_name, _, strategy_text = load_strategy(file_path)
-    except StrategyNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except StrategyFileError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except (StrategyNotFoundError, StrategyFileError):
+        # Re-raise as-is (these are already proper exceptions)
+        raise
     
     # Create a unique module name
     module_name = f"strategy_backtest_{strategy_name.replace('/', '_').replace('.', '_')}"
@@ -200,7 +201,7 @@ def load_strategy_class(file_path: str):
     try:
         spec = importlib.util.spec_from_loader(module_name, loader=None)
         if spec is None:
-            raise HTTPException(status_code=500, detail="Failed to create module spec")
+            raise RuntimeError("Failed to create module spec")
         
         module = importlib.util.module_from_spec(spec)
         exec(strategy_text, module.__dict__)
@@ -209,9 +210,9 @@ def load_strategy_class(file_path: str):
         error_msg = f"Syntax error in strategy code: {e.msg}"
         if e.lineno:
             error_msg += f" at line {e.lineno}"
-        raise HTTPException(status_code=400, detail=error_msg)
+        raise ValueError(error_msg) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load strategy module: {str(e)}")
+        raise RuntimeError(f"Failed to load strategy module: {str(e)}") from e
     
     # Find the strategy class (should inherit from StrategyBacktest)
     strategy_class = None
@@ -227,9 +228,8 @@ def load_strategy_class(file_path: str):
             continue
     
     if strategy_class is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Strategy class not found: no class inheriting from StrategyBacktest found in the code"
+        raise ValueError(
+            "Strategy class not found: no class inheriting from StrategyBacktest found in the code"
         )
     
     return strategy_class
@@ -426,11 +426,10 @@ def worker_backtesting_task(task_id: int, id_result: str) -> None:
         task.isRunning = True
         task.save()
         logger.info(f"Starting background backtesting for task {task_id} with id_result {id_result}")
-        task.send_message(level="info", message=f"Starting background backtesting for task {task_id} with id_result {id_result}")
         process_backtesting_task(task, id_result)
-        task.send_message(level="info", message=f"Background backtesting completed successfully for task {task_id}")
     except Exception as e:
         logger.error(f"Error running backtesting for task {task_id}: {str(e)}", exc_info=True)
+        task.send_message(level="error", message=f"Error running backtesting: {str(e)}", category="backtesting")
     finally:
         # Reload task to get latest state
         task = task_list.load(task_id)
@@ -451,40 +450,39 @@ def process_backtesting_task(task: Task, id_result: str) -> None:
         
     This function runs synchronously in a separate process and does not return any value.
     Task status is updated in Redis (isRunning flag).
+    
+    Raises:
+        Exception: Any exception that occurs during backtesting will be propagated
+                  to worker_backtesting_task for handling.
     """
+    # Load strategy class
+    # Note: load_strategy_class may raise StrategyNotFoundError, StrategyFileError, ValueError, or RuntimeError
+    # All exceptions will be caught in worker_backtesting_task and handled appropriately
+    strategy_class = load_strategy_class(task.file_name)
+    
+    # Create strategy instance with id_result
     try:
-        # Load strategy class
-        # Note: load_strategy_class may raise HTTPException, which we catch as Exception
-        strategy_class = load_strategy_class(task.file_name)
-        
-        # Create strategy instance with id_result
-        try:
-            strategy = strategy_class(task, id_result)
-        except TypeError as e:
-            if "__init__()" in str(e) and "positional arguments" in str(e):
-                logger.error(
-                    f"Strategy class {strategy_class.__name__} has incorrect constructor signature. "
-                    f"It should accept (task: Task, id_result: str) but got error: {e}. "
-                    f"Please update the strategy class constructor."
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Strategy class {strategy_class.__name__} constructor is outdated. "
-                           f"It must accept 'id_result' parameter: def __init__(self, task: Task, id_result: str)"
-                ) from e
-            raise
-        
-        # Run backtesting
-        strategy.run()
-        
-        logger.info(f"Background backtesting completed successfully for task {task.id}")
-        
-    except HTTPException as e:
-        # HTTPException is raised by load_strategy_class or strategy creation, log it as error
-        logger.error(f"Error loading strategy for task {task.id}: {e.detail}")
-    except Exception as e:
-        logger.error(f"Error running background backtesting for task {task.id}: {str(e)}", exc_info=True)
-
+        strategy = strategy_class(task, id_result)
+    except TypeError as e:
+        if "__init__()" in str(e) and "positional arguments" in str(e):
+            error_msg = (
+                f"Strategy class {strategy_class.__name__} constructor is outdated. "
+                f"It must accept 'id_result' parameter: def __init__(self, task: Task, id_result: str)"
+            )
+            logger.error(f"{error_msg}. Error: {e}")
+            raise ValueError(error_msg) from e
+        raise
+    
+    message = f"Backtesting for task {task.id} started"
+    task.send_message(level="info", message=message, category="backtesting")
+    logger.info(message)
+    
+    # Run backtesting
+    strategy.run()
+    
+    message = f"Backtesting for task {task.id} completed successfully"
+    task.send_message(level="info", message=message, category="backtesting")
+    logger.info(message)
 
 async def _send_error_and_close(websocket: WebSocket, message: str) -> None:
     """
