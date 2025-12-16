@@ -82,6 +82,18 @@ class Objects2RedisList(ABC, Generic[T]):
         else:
             self._is_initialized = False
     
+    def get_redis_params(self) -> Dict:
+        """
+        Returns Redis connection parameters used by this list.
+        """
+        self._check_initialized()
+        return {
+            "host": self.redis_host,
+            "port": self.redis_port,
+            "db": self.redis_db,
+            "password": self.redis_password,
+        }
+    
     def _check_initialized(self):
         """Check if the list is initialized, raise error if not"""
         if not getattr(self, '_is_initialized', False):

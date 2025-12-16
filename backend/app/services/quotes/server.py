@@ -1,13 +1,13 @@
 from datetime import datetime, UTC
 from typing import Optional, Dict, List, Tuple
-import redis
+import redis.asyncio as redis
 import numpy as np
 import msgpack
 import logging
 import threading
 from pathlib import Path
 import clickhouse_connect
-import ccxt
+import ccxt.async_support as ccxt
 import asyncio
 from .timeframe import Timeframe
 from .exceptions import R2D2QuotesException, R2D2QuotesExceptionDataNotReceived
@@ -30,16 +30,17 @@ class QuotesServer:
             cls._instance = super(QuotesServer, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, redis_params: Optional[Dict] = None, clickhouse_params: Optional[Dict] = None):
+    def __init__(self, redis_params: Dict, clickhouse_params: Dict):
         if not QuotesServer._initialized:
-            # Default Redis parameters
-            redis_params = redis_params or {}
-            self.redis_host = redis_params.get('host', 'localhost')
-            self.redis_port = redis_params.get('port', 6379)
-            self.redis_db = redis_params.get('db', 0)
+            # Required Redis parameters
+            if not redis_params:
+                raise ValueError("redis_params must be provided and cannot be empty")
+            self.redis_host = redis_params['host']
+            self.redis_port = redis_params['port']
+            self.redis_db = redis_params['db']
             self.redis_password = redis_params.get('password', None)
             
-            # Initialize Redis client
+            # Initialize asynchronous Redis client
             self.redis_client = redis.Redis(
                 host=self.redis_host,
                 port=self.redis_port,
@@ -48,13 +49,14 @@ class QuotesServer:
                 decode_responses=False  # Keep binary for numpy arrays
             )
             
-            # Default ClickHouse parameters
-            clickhouse_params = clickhouse_params or {}
-            self.clickhouse_host = clickhouse_params.get('host', 'localhost')
-            self.clickhouse_port = clickhouse_params.get('port', 8123)
-            self.clickhouse_username = clickhouse_params.get('username', 'default')
+            # Required ClickHouse parameters
+            if not clickhouse_params:
+                raise ValueError("clickhouse_params must be provided and cannot be empty")
+            self.clickhouse_host = clickhouse_params['host']
+            self.clickhouse_port = clickhouse_params['port']
+            self.clickhouse_username = clickhouse_params['username']
             self.clickhouse_password = clickhouse_params.get('password', '')
-            self.clickhouse_database = clickhouse_params.get('database', 'quotes')
+            self.clickhouse_database = clickhouse_params['database']
             
             self.init_database()
             
@@ -199,7 +201,6 @@ class QuotesServer:
         
         # Convert rows to numpy arrays (more efficient than list comprehension)
         # Each row is: (time, open, high, low, close, volume)
-        n_rows = len(rows)
         time_array = np.array([row[0] for row in rows], dtype=TIME_TYPE)
         open_array = np.array([row[1] for row in rows], dtype=np.float64)
         high_array = np.array([row[2] for row in rows], dtype=np.float64)
@@ -337,22 +338,28 @@ class QuotesServer:
         
         # Step 3: Fill gaps by calling fetch_bar_async for each gap
         if gaps:
-            # Create exchange instance
+            # Create asynchronous exchange instance
             exchange_class = getattr(ccxt, source.lower())
             exchange = exchange_class()
-            
-            # Fill each gap sequentially
-            for gap_start, gap_end in gaps:
-                logger.info(f"Filling gap for {source}/{symbol}/{timeframe} from {gap_start} to {gap_end}")
-                await self.fetch_bar_async(
-                    exchange=exchange,
-                    exchange_name=source,
-                    symbol=symbol,
-                    tf=timeframe,
-                    time_start=gap_start,
-                    time_end=gap_end,
-                    max_bars=1000
-                )
+            try:
+                # Fill each gap sequentially
+                for gap_start, gap_end in gaps:
+                    logger.info(f"Filling gap for {source}/{symbol}/{timeframe} from {gap_start} to {gap_end}")
+                    await self.fetch_bar_async(
+                        exchange=exchange,
+                        exchange_name=source,
+                        symbol=symbol,
+                        tf=timeframe,
+                        time_start=gap_start,
+                        time_end=gap_end,
+                        max_bars=1000
+                    )
+            finally:
+                # Properly close asynchronous exchange connection
+                try:
+                    await exchange.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close exchange {source}: {e}", exc_info=True)
         
             quotes_data = self.get_quotes_base(source, symbol, timeframe, history_start, history_end)
             
@@ -482,17 +489,17 @@ class QuotesServer:
         timeframe_ms = tf.value / TIME_UNITS_IN_ONE_SECOND * 1000
         
         while True:
-
+        
             if current_since > time_end_ms:
                 break
             
             time_diff_ms = time_end_ms - current_since
-            bars_needed = int(time_diff_ms / timeframe_ms) + 2 # +2 because we need to fetch +1 bars more to be sure that we have the last complete bar
+            bars_needed = int(time_diff_ms / timeframe_ms) + 2  # +2 because we need to fetch +1 bars more to be sure that we have the last complete bar
             request_limit = min(bars_needed, max_bars)
             
             try:
-                bars = await asyncio.to_thread(
-                    exchange.fetch_ohlcv,
+                # Use asynchronous CCXT client (ccxt.async_support)
+                bars = await exchange.fetch_ohlcv(
                     symbol=symbol,
                     timeframe=tf_str,
                     since=current_since,
@@ -590,10 +597,10 @@ async def process_request_async(
             
             # Push response to individual response list for this request (async I/O)
             individual_response_list = f"{response_prefix}:{request_id}"
-            await asyncio.to_thread(server.redis_client.lpush, individual_response_list, response_bytes)
+            await server.redis_client.lpush(individual_response_list, response_bytes)
             
             # Set TTL for response list (async I/O)
-            await asyncio.to_thread(server.redis_client.expire, individual_response_list, response_ttl)
+            await server.redis_client.expire(individual_response_list, response_ttl)
             logger.info(f"Processed request {request_id} for {source}:{symbol}:{timeframe}")
         
     except R2D2QuotesExceptionDataNotReceived as e:
@@ -608,9 +615,9 @@ async def process_request_async(
         }
         individual_response_list = f"{response_prefix}:{request_id}"
         response_bytes = msgpack.packb(response_data, use_bin_type=True)
-        await asyncio.to_thread(server.redis_client.lpush, individual_response_list, response_bytes)
+        await server.redis_client.lpush(individual_response_list, response_bytes)
         # Set TTL for response list
-        await asyncio.to_thread(server.redis_client.expire, individual_response_list, response_ttl)
+        await server.redis_client.expire(individual_response_list, response_ttl)
         logger.warning(f"Request {request_id} failed: {e}")
         
     except Exception as e:
@@ -625,17 +632,17 @@ async def process_request_async(
         if request_id:
             individual_response_list = f"{response_prefix}:{request_id}"
             response_bytes = msgpack.packb(response_data, use_bin_type=True)
-            await asyncio.to_thread(server.redis_client.lpush, individual_response_list, response_bytes)
+            await server.redis_client.lpush(individual_response_list, response_bytes)
             # Set TTL for response list
-            await asyncio.to_thread(server.redis_client.expire, individual_response_list, response_ttl)
+            await server.redis_client.expire(individual_response_list, response_ttl)
         logger.error(f"Error processing request {request_id}: {e}", exc_info=True)
 
 
 async def run_quotes_service(
+    redis_params: Dict,
+    clickhouse_params: Dict,
     request_list: str = 'quotes:requests',
     response_prefix: str = 'quotes:responses',
-    redis_params: Optional[Dict] = None,
-    clickhouse_params: Optional[Dict] = None,
     timeout: int = 0,
     response_ttl: int = 300,
     stop_event: Optional[threading.Event] = None
@@ -666,14 +673,22 @@ async def run_quotes_service(
     }
     
     Args:
+        redis_params: Dictionary with Redis connection parameters (host, port, db, password) - REQUIRED
+        clickhouse_params: Dictionary with ClickHouse connection parameters (host, port, username, password, database) - REQUIRED
         request_list: Redis list name for incoming requests
         response_prefix: Prefix for response list names (each request gets its own list)
-        redis_params: Dictionary with Redis connection parameters (host, port, db, password)
-        clickhouse_params: Dictionary with ClickHouse connection parameters (host, port, username, password, database)
         timeout: BRPOP timeout in seconds (0 = block indefinitely)
         response_ttl: TTL for response lists in seconds (default: 300 = 5 minutes)
         stop_event: Threading event to signal service stop
+    
+    Raises:
+        ValueError: If redis_params or clickhouse_params are not provided
     """
+    if not redis_params:
+        raise ValueError("redis_params must be provided and cannot be empty")
+    if not clickhouse_params:
+        raise ValueError("clickhouse_params must be provided and cannot be empty")
+    
     server = QuotesServer(redis_params=redis_params, clickhouse_params=clickhouse_params)
     
     # Clean Redis database from old test data
@@ -684,9 +699,9 @@ async def run_quotes_service(
     ]
     
     for pattern in patterns:
-        keys = await asyncio.to_thread(server.redis_client.keys, pattern)
+        keys = await server.redis_client.keys(pattern)
         if keys:
-            await asyncio.to_thread(server.redis_client.delete, *keys)
+            await server.redis_client.delete(*keys)
             logger.info(f"Cleaned {len(keys)} keys matching pattern: {pattern}")
     
     logger.info(f"Quotes service started. Listening on list: {request_list}")
@@ -699,9 +714,8 @@ async def run_quotes_service(
     try:
         while stop_event is None or not stop_event.is_set():
             try:
-                # Blocking pop from request list (async I/O)
-                result = await asyncio.to_thread(
-                    server.redis_client.brpop,
+                # Blocking pop from request list (async I/O using asynchronous Redis client)
+                result = await server.redis_client.brpop(
                     request_list,
                     timeout=timeout if timeout > 0 else 1
                 )
@@ -750,10 +764,10 @@ async def run_quotes_service(
 
 
 def start_quotes_service(
+    redis_params: Dict,
+    clickhouse_params: Dict,
     request_list: str = 'quotes:requests',
     response_prefix: str = 'quotes:responses',
-    redis_params: Optional[Dict] = None,
-    clickhouse_params: Optional[Dict] = None,
     timeout: int = 0,
     response_ttl: int = 300,
     wait_ready: bool = True,
@@ -763,10 +777,10 @@ def start_quotes_service(
     Start quotes service in a separate thread.
     
     Args:
+        redis_params: Dictionary with Redis connection parameters (host, port, db, password) - REQUIRED
+        clickhouse_params: Dictionary with ClickHouse connection parameters (host, port, username, password, database) - REQUIRED
         request_list: Redis list name for incoming requests
         response_prefix: Prefix for response list names
-        redis_params: Dictionary with Redis connection parameters (host, port, db, password)
-        clickhouse_params: Dictionary with ClickHouse connection parameters (host, port, username, password, database)
         timeout: BRPOP timeout in seconds
         response_ttl: TTL for response lists in seconds
         wait_ready: If True, wait for service to be ready before returning
@@ -774,7 +788,15 @@ def start_quotes_service(
     
     Returns:
         True if service started successfully, False if already running
+    
+    Raises:
+        ValueError: If redis_params or clickhouse_params are not provided
     """
+    if not redis_params:
+        raise ValueError("redis_params must be provided and cannot be empty")
+    if not clickhouse_params:
+        raise ValueError("clickhouse_params must be provided and cannot be empty")
+    
     global _service_thread, _stop_event, _ready_event
     
     if _service_thread is not None and _service_thread.is_alive():
@@ -788,10 +810,10 @@ def start_quotes_service(
         # Run async function in event loop
         try:
             asyncio.run(run_quotes_service(
-                request_list=request_list,
-                response_prefix=response_prefix,
                 redis_params=redis_params,
                 clickhouse_params=clickhouse_params,
+                request_list=request_list,
+                response_prefix=response_prefix,
                 timeout=timeout,
                 response_ttl=response_ttl,
                 stop_event=_stop_event

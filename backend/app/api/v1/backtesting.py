@@ -9,7 +9,7 @@ from app.services.tasks.strategy import StrategyBacktest
 from app.services.strategies import validate_relative_path, load_strategy
 from app.services.strategies.exceptions import StrategyFileError, StrategyNotFoundError
 from app.services.quotes.client import Client
-from app.core.config import REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD
+from app.core.config import redis_params
 from app.core.logger import get_logger, setup_logging
 from app.core.growing_data2redis import GrowingData2Redis, PacketType
 
@@ -363,14 +363,8 @@ def worker_backtesting_task(task_id: int) -> None:
         setup_logging()
         
         # Ensure BacktestingTaskList and Quotes Client are initialized in this process
-        redis_params = {
-            "host": REDIS_HOST,
-            "port": REDIS_PORT,
-            "db": REDIS_DB,
-            "password": REDIS_PASSWORD,
-        }
-        BacktestingTaskList(redis_params=redis_params)
-        Client(redis_params=redis_params)
+        BacktestingTaskList(redis_params=redis_params())
+        Client(redis_params=redis_params())
 
         task = task_list.load(task_id)
         if task is None:
@@ -465,8 +459,8 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
 
     # Initialize GrowingData2Redis in read mode
     try:
-        redis_client = task_list._get_redis_client()
-        reader = GrowingData2Redis(redis_client=redis_client, redis_key=redis_key)
+        redis_params = task_list.get_redis_params()
+        reader = GrowingData2Redis(redis_params=redis_params, redis_key=redis_key)
     except Exception as e:
         logger.error(f"Failed to initialize GrowingData2Redis for task {task_id}: {e}", exc_info=True)
         await websocket.send_json({
@@ -485,8 +479,7 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
         while True:
             # Read from Redis stream; block up to 1 second for new data
             # Read one entry at a time to ensure strict ordering and immediate forwarding
-            # Wrap synchronous Redis call in executor to avoid blocking event loop
-            entries = await asyncio.to_thread(reader.read_stream_from, last_id=last_id, block_ms=1000, count=1)
+            entries = await reader.read_stream_from_async(last_id=last_id, block_ms=1000, count=1)
             if not entries:
                 continue
 
@@ -507,9 +500,8 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
                 if packet_type == PacketType.START.value:
                     start_found = True
                     # Trim all entries before START (keep START)
-                    # Wrap synchronous Redis call in executor to avoid blocking event loop
                     try:
-                        await asyncio.to_thread(reader.trim_stream_min_id, message_id)
+                        await reader.trim_stream_min_id_async(message_id)
                     except Exception as e:
                         logger.error(
                             f"Failed to trim Redis stream {redis_key} to START id {message_id}: {e}",

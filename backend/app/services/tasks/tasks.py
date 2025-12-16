@@ -54,6 +54,22 @@ class Task(Objects2Redis):
             raise RuntimeError("Task is not associated with a list. Cannot get Redis client.")
         return self._list._get_redis_client()
 
+    def get_redis_params(self) -> dict:
+        """
+        Get Redis connection parameters from the associated list.
+        
+        Returns:
+            dict: Redis connection parameters (host, port, db, password)
+            
+        Raises:
+            RuntimeError: If task is not associated with a list
+        """
+        if self._list is None:
+            raise RuntimeError("Task is not associated with a list. Cannot get Redis params.")
+        if not hasattr(self._list, "get_redis_params"):
+            raise RuntimeError("Associated task list does not expose Redis params.")
+        return self._list.get_redis_params()
+
     def get_result_key(self) -> str:
         """
         Get Redis key for backtesting results associated with this task.

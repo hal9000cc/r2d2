@@ -219,7 +219,7 @@ class StrategyBacktest(Strategy):
         self.date_end: Optional[np.datetime64] = None
         
         # Initialize data uploader
-        redis_client = task.get_redis_client()
+        redis_params = task.get_redis_params()
         redis_key = f"backtesting_tasks:result:{task.id}"
         property_names = [
             "total_deals",
@@ -231,10 +231,10 @@ class StrategyBacktest(Strategy):
             "progress",
         ]
         self._data_uploader = GrowingData2Redis(
-            redis_client=redis_client,
+            redis_params=redis_params,
             redis_key=redis_key,
             source_object=self,
-            property_names=property_names
+            property_names=property_names,
         )
         
         self.__reset()

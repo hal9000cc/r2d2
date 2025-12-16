@@ -19,7 +19,7 @@ from app.core.config import (
     REDIS_QUOTE_REQUEST_LIST, REDIS_QUOTE_RESPONSE_PREFIX,
     CLICKHOUSE_HOST, CLICKHOUSE_PORT, CLICKHOUSE_USERNAME,
     CLICKHOUSE_PASSWORD, CLICKHOUSE_DATABASE,
-    STATE_DIR
+    STATE_DIR, redis_params
 )
 from app.services.quotes.server import start_quotes_service, stop_quotes_service
 from app.services.quotes.client import Client
@@ -184,12 +184,6 @@ def startup_quote_service():
     """
     Start quotes service with configuration from environment.
     """
-    redis_params = {
-        'host': REDIS_HOST,
-        'port': REDIS_PORT,
-        'db': REDIS_DB,
-        'password': REDIS_PASSWORD
-    }
     clickhouse_params = {
         'host': CLICKHOUSE_HOST,
         'port': CLICKHOUSE_PORT,
@@ -198,10 +192,10 @@ def startup_quote_service():
         'database': CLICKHOUSE_DATABASE
     }
     if start_quotes_service(
+        redis_params=redis_params(),
+        clickhouse_params=clickhouse_params,
         request_list=REDIS_QUOTE_REQUEST_LIST,
-        response_prefix=REDIS_QUOTE_RESPONSE_PREFIX,
-        redis_params=redis_params,
-        clickhouse_params=clickhouse_params
+        response_prefix=REDIS_QUOTE_RESPONSE_PREFIX
     ):
         logger.info("Quotes service started successfully")
     else:
@@ -222,22 +216,17 @@ def startup():
     startup_redis()
     
     # Initialize TaskList (connects to Redis)
-    redis_params = {
-        'host': REDIS_HOST,
-        'port': REDIS_PORT,
-        'db': REDIS_DB,
-        'password': REDIS_PASSWORD
-    }
-    task_list = TaskList(redis_params=redis_params)
+    params = redis_params()
+    task_list = TaskList(redis_params=params)
     task_list.startup()
     
     # Initialize BacktestingTaskList (connects to Redis)
-    backtesting_task_list = BacktestingTaskList(redis_params=redis_params)
+    backtesting_task_list = BacktestingTaskList(redis_params=params)
     backtesting_task_list.startup()
     
     # Initialize quotes client with configuration
     Client(
-        redis_params=redis_params,
+        redis_params=params,
         request_list=REDIS_QUOTE_REQUEST_LIST,
         response_prefix=REDIS_QUOTE_RESPONSE_PREFIX
     )

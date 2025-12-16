@@ -14,10 +14,9 @@ from app.services.quotes.constants import PRICE_TYPE, TIME_TYPE, TIME_TYPE_UNIT
 from app.services.quotes.exceptions import R2D2QuotesExceptionDataNotReceived
 from app.services.quotes.server import start_quotes_service, stop_quotes_service
 from app.core.config import (
-    REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD,
     REDIS_QUOTE_REQUEST_LIST, REDIS_QUOTE_RESPONSE_PREFIX,
     CLICKHOUSE_HOST, CLICKHOUSE_PORT, CLICKHOUSE_USERNAME,
-    CLICKHOUSE_PASSWORD, CLICKHOUSE_DATABASE
+    CLICKHOUSE_PASSWORD, CLICKHOUSE_DATABASE, redis_params
 )
 from app.core.logger import setup_logging
 from app.services.quotes.timeframe import Timeframe
@@ -54,12 +53,7 @@ def quotes_service():
     
     # Import connection parameters from config
     # Modify database name to use test database
-    redis_params = {
-        'host': REDIS_HOST,
-        'port': REDIS_PORT,
-        'db': REDIS_DB,
-        'password': REDIS_PASSWORD
-    }
+    params = redis_params()
     clickhouse_params = {
         'host': CLICKHOUSE_HOST,
         'port': CLICKHOUSE_PORT,
@@ -89,10 +83,10 @@ def quotes_service():
     
     # Start service with modified parameters (test database)
     started = start_quotes_service(
+        redis_params=params,
+        clickhouse_params=clickhouse_params,
         request_list=REDIS_QUOTE_REQUEST_LIST,
-        response_prefix=REDIS_QUOTE_RESPONSE_PREFIX,
-        redis_params=redis_params,
-        clickhouse_params=clickhouse_params
+        response_prefix=REDIS_QUOTE_RESPONSE_PREFIX
     )
     
     if not started:
@@ -102,7 +96,7 @@ def quotes_service():
     
     # Initialize quotes client with test configuration
     Client(
-        redis_params=redis_params,
+        redis_params=params,
         request_list=REDIS_QUOTE_REQUEST_LIST,
         response_prefix=REDIS_QUOTE_RESPONSE_PREFIX
     )
@@ -554,12 +548,7 @@ def test_parallel_requests(quotes_service):
     third batch on 11.10.2025 with the same configuration.
     """
     # Get Redis parameters from config (same as in quotes_service fixture)
-    redis_params = {
-        'host': REDIS_HOST,
-        'port': REDIS_PORT,
-        'db': REDIS_DB,
-        'password': REDIS_PASSWORD
-    }
+    params = redis_params()
     
     # Use spawn context to avoid fork() issues in multi-threaded environment
     ctx = get_context('spawn')
@@ -572,14 +561,14 @@ def test_parallel_requests(quotes_service):
         for i in range(2):
             p = ctx.Process(
                 target=_parallel_worker,
-                args=('BTC/USDT', '5m', test_date, date_end, 'binance', 100, 120, i + 1, redis_params)
+                args=('BTC/USDT', '5m', test_date, date_end, 'binance', 100, 120, i + 1, params)
             )
             processes.append(p)
         
         # Third process for ETH/USDT (different symbol, will run in parallel)
         p = ctx.Process(
             target=_parallel_worker,
-            args=('ETH/USDT', '5m', test_date, date_end, 'binance', 100, 120, 3, redis_params)
+            args=('ETH/USDT', '5m', test_date, date_end, 'binance', 100, 120, 3, params)
         )
         processes.append(p)
         

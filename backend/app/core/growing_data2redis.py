@@ -6,6 +6,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 from enum import Enum
 import redis
+import redis.asyncio as redis_async
 import json
 import numpy as np
 from pydantic import BaseModel
@@ -38,7 +39,7 @@ class GrowingData2Redis:
     
     def __init__(
         self,
-        redis_client: redis.Redis,
+        redis_params: Dict,
         redis_key: str,
         source_object: Optional[Any] = None,
         property_names: Optional[List[str]] = None
@@ -47,24 +48,48 @@ class GrowingData2Redis:
         Initialize GrowingData2Redis.
         
         Args:
-            redis_client: Redis client instance
-            redis_key: Key for Redis List where data will be stored
+            redis_params: Redis connection parameters dict
+                - host: str
+                - port: int
+                - db: int
+                - password: Optional[str]
+            redis_key: Key for Redis Stream where data will be stored
             source_object: Optional object containing data to upload (e.g., Strategy instance).
                            If None, the instance works in read-only mode (for receiving packets).
             property_names: Optional list of property names to track and upload.
                             Required for write mode, ignored in read-only mode.
         """
-        self.redis_client = redis_client
         self.redis_key = redis_key
         self.source_object = source_object
         self.property_names = property_names
-        
+
         # Internal state (set in reset() for write mode)
         self._list_sizes: Dict[str, int] = {}  # property_name -> current size
         self._simple_properties: List[str] = []  # properties that are not lists
-        
+
         self._initialized = False
+        # Determine mode BEFORE initializing Redis clients
         self._write_mode = self.source_object is not None and self.property_names is not None
+
+        # Write mode: use synchronous Redis client; read mode: use asynchronous client
+        if self._write_mode:
+            self.redis_client = redis.Redis(
+                host=redis_params["host"],
+                port=redis_params["port"],
+                db=redis_params["db"],
+                password=redis_params.get("password"),
+                decode_responses=True,
+            )
+            self.redis_client_async = None
+        else:
+            self.redis_client = None
+            self.redis_client_async = redis_async.Redis(
+                host=redis_params["host"],
+                port=redis_params["port"],
+                db=redis_params["db"],
+                password=redis_params.get("password"),
+                decode_responses=True,
+            )
     
     def _serialize_value(self, value: Any) -> Any:
         """
@@ -310,9 +335,9 @@ class GrowingData2Redis:
         logger.info(f"Finish completed. Final list sizes: {self._list_sizes}")
         logger.info(f"Finish completed. Final list sizes: {self._list_sizes}")
 
-    # ==== Stream read helpers (read mode) ====
-
-    def read_stream_from(
+    # ==== Stream read helpers (read mode, asynchronous) ====
+    
+    async def read_stream_from_async(
         self,
         last_id: str,
         block_ms: int,
@@ -320,6 +345,7 @@ class GrowingData2Redis:
     ) -> Optional[List[Tuple[str, Dict[str, Any]]]]:
         """
         Read entries from the Redis Stream starting after last_id.
+        This method is async and uses an asynchronous Redis client.
 
         Args:
             last_id: Last seen message ID (e.g. "0-0" for from beginning).
@@ -332,7 +358,9 @@ class GrowingData2Redis:
         """
         streams = {self.redis_key: last_id}
         try:
-            results = self.redis_client.xread(
+            if self.redis_client_async is None:
+                raise RuntimeError("read_stream_from_async can only be used in read mode (async client not initialized)")
+            results = await self.redis_client_async.xread(
                 streams=streams,
                 count=count,
                 block=block_ms if block_ms > 0 else None,
@@ -361,14 +389,17 @@ class GrowingData2Redis:
             self._send_error_packet(msg, {"redis_key": self.redis_key})
             raise
 
-    def trim_stream_min_id(self, min_id: str) -> None:
+    async def trim_stream_min_id_async(self, min_id: str) -> None:
         """
         Trim Redis Stream so that entries with ID < min_id are removed.
         Keeps min_id and all newer entries.
+        This method is async and uses an asynchronous Redis client.
         """
         try:
             # XTRIM <key> MINID <min_id>
-            self.redis_client.xtrim(self.redis_key, minid=min_id)
+            if self.redis_client_async is None:
+                raise RuntimeError("trim_stream_min_id_async can only be used in read mode (async client not initialized)")
+            await self.redis_client_async.xtrim(self.redis_key, minid=min_id)
             logger.debug(f"Trimmed Redis stream {self.redis_key} to MINID {min_id}")
         except Exception as e:
             msg = f"Failed to trim Redis stream {self.redis_key} to MINID {min_id}: {e}"

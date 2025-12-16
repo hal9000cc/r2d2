@@ -144,3 +144,18 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
 REDIS_QUOTE_REQUEST_LIST = os.getenv("REDIS_QUOTE_REQUEST_LIST", "quotes:requests")
 REDIS_QUOTE_RESPONSE_PREFIX = os.getenv("REDIS_QUOTE_RESPONSE_PREFIX", "quotes:responses")
 
+
+def redis_params() -> dict:
+    """
+    Returns dictionary with Redis connection parameters.
+    
+    Returns:
+        dict: Dictionary with keys: host, port, db, password
+    """
+    return {
+        "host": REDIS_HOST,
+        "port": REDIS_PORT,
+        "db": REDIS_DB,
+        "password": REDIS_PASSWORD,
+    }
+

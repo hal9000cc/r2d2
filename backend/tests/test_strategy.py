@@ -9,7 +9,7 @@ from app.services.tasks.tasks import Task
 from app.services.tasks.strategy import StrategyBacktest, OrderSide
 from app.core.startup import startup, shutdown
 from app.services.quotes.client import Client
-from app.core.config import REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD
+from app.core.config import redis_params
 import talib
 
 
@@ -24,13 +24,7 @@ def app_startup():
     startup()
     
     # Initialize quotes client with correct Redis connection parameters
-    redis_params = {
-        'host': REDIS_HOST,
-        'port': REDIS_PORT,
-        'db': REDIS_DB,
-        'password': REDIS_PASSWORD
-    }
-    Client(redis_params=redis_params)
+    Client(redis_params=redis_params())
     
     yield
     
