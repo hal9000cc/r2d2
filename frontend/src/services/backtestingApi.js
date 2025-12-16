@@ -50,5 +50,13 @@ export const backtestingApi = {
   async startBacktest(taskId) {
     const response = await axios.post(`${API_BASE_URL}/api/v1/backtesting/tasks/${taskId}/start`)
     return response.data
+  },
+
+  /**
+   * Stop backtesting for a task
+   */
+  async stopBacktest(taskId) {
+    const response = await axios.post(`${API_BASE_URL}/api/v1/backtesting/tasks/${taskId}/stop`)
+    return response.data
   }
 }

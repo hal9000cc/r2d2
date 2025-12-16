@@ -25,6 +25,7 @@ class Task(Objects2Redis):
     symbol: str = ""
     timeframe: str = ""
     isRunning: bool = False
+    id_result: str = ""  # Unique ID for this backtesting run (GUID), used to detect duplicate workers
     dateStart: str = Field(
         default_factory=lambda: (datetime.now() + timedelta(days=-30)).isoformat()
     )
@@ -40,6 +41,21 @@ class Task(Objects2Redis):
         """
         return self.file_name if self.file_name else ""
     
+    def load(self) -> Optional['Task']:
+        """
+        Reload task from Redis to get current state.
+        Proxies to the associated list's load method.
+        
+        Returns:
+            Task instance with current state from Redis, or None if not found
+            
+        Raises:
+            RuntimeError: If task is not associated with a list
+        """
+        if self._list is None:
+            raise RuntimeError("Task is not associated with a list. Cannot load from Redis.")
+        return self._list.load(self.id)
+    
     def get_redis_client(self):
         """
         Get Redis client from the associated list.
@@ -54,20 +70,20 @@ class Task(Objects2Redis):
             raise RuntimeError("Task is not associated with a list. Cannot get Redis client.")
         return self._list._get_redis_client()
 
-    def get_redis_params(self) -> dict:
+    def get_redis_params(self) -> Optional[dict]:
         """
         Get Redis connection parameters from the associated list.
         
         Returns:
-            dict: Redis connection parameters (host, port, db, password)
-            
-        Raises:
-            RuntimeError: If task is not associated with a list
+            dict | None: Redis connection parameters (host, port, db, password) or None
+                         if the task is not associated with a list.
         """
+        # For standalone tasks (e.g., unit tests) we allow missing list and simply
+        # disable Redis-based features by returning None.
         if self._list is None:
-            raise RuntimeError("Task is not associated with a list. Cannot get Redis params.")
+            return None
         if not hasattr(self._list, "get_redis_params"):
-            raise RuntimeError("Associated task list does not expose Redis params.")
+            return None
         return self._list.get_redis_params()
 
     def get_result_key(self) -> str:

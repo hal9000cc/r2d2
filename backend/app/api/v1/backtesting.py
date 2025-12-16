@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from typing import List, Dict, Any
 import importlib.util
 import sys
-import asyncio
+import uuid
+import json
 from multiprocessing import Process
 from app.services.tasks.tasks import BacktestingTaskList, Task
 from app.services.tasks.strategy import StrategyBacktest
@@ -297,6 +298,45 @@ async def start_backtesting(task_id: int):
         raise HTTPException(status_code=500, detail=f"Error starting backtesting worker: {str(e)}")
 
 
+@router.post("/tasks/{task_id}/stop", response_model=Dict[str, Any])
+async def stop_backtesting(task_id: int):
+    """
+    Stop backtesting for a task.
+    
+    This endpoint:
+    - Sets task.isRunning flag to False
+    - TODO: In future, will signal the worker process to stop gracefully
+    
+    Args:
+        task_id: Task ID
+        
+    Returns:
+        Dictionary with success flag and task_id
+        
+    Raises:
+        HTTPException: If task not found
+    """
+    # Load task
+    task = task_list.load(task_id)
+    if task is None:
+        logger.error(f"Task {task_id} not found for stop request")
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Set isRunning to False
+    task.isRunning = False
+    task.save()
+    logger.info(f"Task {task_id} stop requested: isRunning set to False")
+    
+    # TODO: Add mechanism to signal worker process to stop gracefully
+    # For now, this is a stub that just sets the flag
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "message": "Stop request received"
+    }
+
+
 def start_backtesting_worker(task_id: int) -> None:
     """
     Start backtesting worker in a separate process.
@@ -344,19 +384,28 @@ def start_backtesting_worker(task_id: int) -> None:
         logger.error(f"Failed to clear previous backtesting results for task {task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to clear previous backtesting results")
     
+    # Generate unique ID for this backtesting run
+    id_result = str(uuid.uuid4())
+    
+    # Write id_result to task and save
+    task.id_result = id_result
+    task.save()
+    logger.info(f"Generated id_result {id_result} for task {task_id}")
+    
     # Start worker in separate process
-    process = Process(target=worker_backtesting_task, args=(task_id,))
+    process = Process(target=worker_backtesting_task, args=(task_id, id_result))
     process.start()
-    logger.info(f"Started backtesting worker process for task {task_id} (PID: {process.pid})")
+    logger.info(f"Started backtesting worker process for task {task_id} (PID: {process.pid}) with id_result {id_result}")
 
 
-def worker_backtesting_task(task_id: int) -> None:
+def worker_backtesting_task(task_id: int, id_result: str) -> None:
     """
     Worker function that runs in a separate process.
     Handles task status updates and calls process_backtesting_task.
     
     Args:
         task_id: Task ID to run backtesting for
+        id_result: Unique ID for this backtesting run (GUID)
     """
     try:
         # Initialize logging in this process
@@ -373,8 +422,8 @@ def worker_backtesting_task(task_id: int) -> None:
             
         task.isRunning = True
         task.save()
-        logger.info(f"Starting background backtesting for task {task_id}")
-        process_backtesting_task(task)
+        logger.info(f"Starting background backtesting for task {task_id} with id_result {id_result}")
+        process_backtesting_task(task, id_result)
     except Exception as e:
         logger.error(f"Error running backtesting for task {task_id}: {str(e)}", exc_info=True)
     finally:
@@ -386,13 +435,14 @@ def worker_backtesting_task(task_id: int) -> None:
             logger.info(f"Task {task_id} status updated: isRunning=False")
     
     
-def process_backtesting_task(task: Task) -> None:
+def process_backtesting_task(task: Task, id_result: str) -> None:
     """
     Background procedure for running backtesting task.
     This function is designed to run in a separate process.
     
     Args:
         task: Task instance to run backtesting for
+        id_result: Unique ID for this backtesting run (GUID)
         
     This function runs synchronously in a separate process and does not return any value.
     Task status is updated in Redis (isRunning flag).
@@ -402,8 +452,22 @@ def process_backtesting_task(task: Task) -> None:
         # Note: load_strategy_class may raise HTTPException, which we catch as Exception
         strategy_class = load_strategy_class(task.file_name)
         
-        # Create strategy instance
-        strategy = strategy_class(task)
+        # Create strategy instance with id_result
+        try:
+            strategy = strategy_class(task, id_result)
+        except TypeError as e:
+            if "__init__()" in str(e) and "positional arguments" in str(e):
+                logger.error(
+                    f"Strategy class {strategy_class.__name__} has incorrect constructor signature. "
+                    f"It should accept (task: Task, id_result: str) but got error: {e}. "
+                    f"Please update the strategy class constructor."
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Strategy class {strategy_class.__name__} constructor is outdated. "
+                           f"It must accept 'id_result' parameter: def __init__(self, task: Task, id_result: str)"
+                ) from e
+            raise
         
         # Run backtesting
         strategy.run()
@@ -411,10 +475,49 @@ def process_backtesting_task(task: Task) -> None:
         logger.info(f"Background backtesting completed successfully for task {task.id}")
         
     except HTTPException as e:
-        # HTTPException is raised by load_strategy_class, log it as error
+        # HTTPException is raised by load_strategy_class or strategy creation, log it as error
         logger.error(f"Error loading strategy for task {task.id}: {e.detail}")
     except Exception as e:
         logger.error(f"Error running background backtesting for task {task.id}: {str(e)}", exc_info=True)
+
+
+async def _send_error_and_close(websocket: WebSocket, message: str) -> None:
+    """
+    Send error packet to WebSocket and close connection.
+    
+    Args:
+        websocket: WebSocket connection
+        message: Error message to send
+    """
+    try:
+        await websocket.send_json({
+            "type": PacketType.ERROR.value,
+            "data": {"message": message}
+        })
+    except Exception as e:
+        logger.error(f"Failed to send error packet: {e}")
+    finally:
+        await websocket.close()
+
+
+def _parse_packet_data(packet: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Parse packet data from packet dictionary.
+    Handles both dict and JSON string formats.
+    
+    Args:
+        packet: Packet dictionary with "data" field
+        
+    Returns:
+        Parsed data dictionary
+    """
+    packet_data = packet.get("data", {})
+    if isinstance(packet_data, str):
+        try:
+            packet_data = json.loads(packet_data)
+        except json.JSONDecodeError:
+            packet_data = {}
+    return packet_data if isinstance(packet_data, dict) else {}
 
 
 @router.websocket("/tasks/{task_id}/results")
@@ -438,11 +541,7 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
     # Load task to resolve Redis key
     task = task_list.load(task_id)
     if task is None:
-        await websocket.send_json({
-            "type": PacketType.ERROR.value,
-            "data": {"message": "Task not found"}
-        })
-        await websocket.close()
+        await _send_error_and_close(websocket, "Task not found")
         return
 
     # Get Redis key for this task's results
@@ -450,11 +549,7 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
         redis_key = task.get_result_key()
     except Exception as e:
         logger.error(f"Failed to get result key for task {task_id}: {e}", exc_info=True)
-        await websocket.send_json({
-            "type": PacketType.ERROR.value,
-            "data": {"message": "Failed to get result key for task"}
-        })
-        await websocket.close()
+        await _send_error_and_close(websocket, "Failed to get result key for task")
         return
 
     # Initialize GrowingData2Redis in read mode
@@ -463,13 +558,15 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
         reader = GrowingData2Redis(redis_params=redis_params, redis_key=redis_key)
     except Exception as e:
         logger.error(f"Failed to initialize GrowingData2Redis for task {task_id}: {e}", exc_info=True)
-        await websocket.send_json({
-            "type": PacketType.ERROR.value,
-            "data": {"message": "Failed to initialize results reader"}
-        })
-        await websocket.close()
+        await _send_error_and_close(websocket, "Failed to initialize results reader")
         return
 
+    # Get expected id_result from task and validate it's not empty
+    expected_id_result = task.id_result
+    if not expected_id_result:
+        await _send_error_and_close(websocket, "Task id_result is not set. Backtesting may not have started yet.")
+        return
+    
     # Start by reading from the beginning to find START packet
     # After START, we'll continue reading entries after START sequentially
     last_id = "0-0"
@@ -499,6 +596,18 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
             if not start_found:
                 if packet_type == PacketType.START.value:
                     start_found = True
+                    # Check id_result in START packet
+                    packet_data = _parse_packet_data(packet)
+                    packet_id_result = packet_data.get("id_result")
+                    
+                    # If id_result doesn't match, skip this START and continue searching
+                    if packet_id_result != expected_id_result:
+                        logger.warning(
+                            f"Skipping START packet with mismatched id_result for task {task_id}: "
+                            f"expected {expected_id_result}, got {packet_id_result}"
+                        )
+                        continue
+                    
                     # Trim all entries before START (keep START)
                     try:
                         await reader.trim_stream_min_id_async(message_id)
@@ -525,6 +634,17 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
                 continue
 
             # Phase 2: after START, forward all packets according to rules
+            # Check id_result in all packets (skip if mismatch)
+            packet_data = _parse_packet_data(packet)
+            packet_id_result = packet_data.get("id_result")
+            
+            # If id_result doesn't match, skip this packet and continue
+            if packet_id_result != expected_id_result:
+                logger.debug(
+                    f"Skipping {packet_type} packet with mismatched id_result for task {task_id}: "
+                    f"expected {expected_id_result}, got {packet_id_result}"
+                )
+                continue
             if packet_type == PacketType.DATA.value:
                 try:
                     await websocket.send_json(packet)
@@ -553,22 +673,23 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
                     )
                 return
 
+            if packet_type == PacketType.CANCEL.value:
+                try:
+                    await websocket.send_json(packet)
+                except Exception as send_err:
+                    logger.info(
+                        f"WebSocket closed while sending CANCEL packet for task {task_id}: {send_err}"
+                    )
+                return
+
             # Unexpected packet type
             logger.error(
                 f"Unexpected packet type '{packet_type}' in results stream for task {task_id}"
             )
-            error_packet = {
-                "type": PacketType.ERROR.value,
-                "data": {
-                    "message": f"Unexpected packet type '{packet_type}' in results stream"
-                },
-            }
-            try:
-                await websocket.send_json(error_packet)
-            except Exception as send_err:
-                logger.info(
-                    f"WebSocket closed while sending unexpected-type ERROR packet for task {task_id}: {send_err}"
-                )
+            await _send_error_and_close(
+                websocket,
+                f"Unexpected packet type '{packet_type}' in results stream"
+            )
             return
 
     except WebSocketDisconnect:

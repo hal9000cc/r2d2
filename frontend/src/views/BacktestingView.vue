@@ -4,14 +4,16 @@
     <Teleport to="#navbar-content-slot">
       <BacktestingNavForm 
         ref="navForm" 
-        :disabled="!currentStrategyFilePath || isBacktestingRunning"
+        :disabled="buttonDisabled"
+        :is-running="isBacktestingRunning"
         @start="handleStart"
+        @stop="handleStop"
         @form-data-changed="handleFormDataChanged"
       />
     </Teleport>
 
     <!-- Backtest progress bar -->
-    <div v-if="backtestProgressState !== 'idle'" class="backtest-progress">
+    <div v-if="backtestProgressState !== 'idle'" class="backtest-progress" :class="{ 'error-state': backtestProgressState === 'error' }">
       <div class="progress-text">
         <span v-if="backtestProgressState === 'running'">
           Backtesting: {{ backtestProgress.toFixed(1) }}%
@@ -19,8 +21,8 @@
         <span v-else-if="backtestProgressState === 'completed'">
           Backtesting completed
         </span>
-        <span v-else-if="backtestProgressState === 'error'">
-          Backtesting error: {{ backtestProgressErrorMessage }}
+        <span v-else-if="backtestProgressState === 'error'" class="error-message">
+          {{ errorDisplayMessage }}
         </span>
       </div>
       <div class="progress-bar">
@@ -250,6 +252,7 @@ export default {
       backtestProgress: 0,
       backtestProgressState: 'idle', // 'idle' | 'running' | 'completed' | 'error'
       backtestProgressErrorMessage: '',
+      backtestProgressErrorType: null, // 'error' | 'cancel' | null
       backtestResultsSocket: null
     }
   },
@@ -261,6 +264,19 @@ export default {
       }
       // Fallback: parse userAgent
       return /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
+    },
+    buttonDisabled() {
+      // If backtesting is running, button should be enabled (for Stop)
+      // If backtesting is not running, button is disabled if no strategy file is loaded
+      return !this.isBacktestingRunning && !this.currentStrategyFilePath
+    },
+    errorDisplayMessage() {
+      // For cancel packets, show message without prefix
+      // For error packets, add "Backtesting error: " prefix
+      if (this.backtestProgressErrorType === 'cancel') {
+        return this.backtestProgressErrorMessage || 'Backtesting was cancelled'
+      }
+      return `Backtesting error: ${this.backtestProgressErrorMessage || 'Unknown error'}`
     }
   },
   mounted() {
@@ -451,18 +467,32 @@ export default {
         socket.onerror = (event) => {
           console.error('Backtest results WebSocket error:', event)
           this.backtestProgressState = 'error'
+          this.backtestProgressErrorType = 'error'
           if (!this.backtestProgressErrorMessage) {
             this.backtestProgressErrorMessage = 'WebSocket error while receiving backtesting results'
           }
+          this.isBacktestingRunning = false
         }
 
         socket.onclose = () => {
           this.backtestResultsSocket = null
+          // If backtesting was running but socket closed unexpectedly, reset flag
+          if (this.isBacktestingRunning && this.backtestProgressState === 'running') {
+            this.isBacktestingRunning = false
+            this.backtestProgressState = 'error'
+            this.backtestProgressErrorType = 'error'
+            this.backtestProgressErrorMessage = 'Connection closed unexpectedly'
+          } else if (this.isBacktestingRunning && this.backtestProgressState === 'completed') {
+            // If socket closes after completion, ensure flag is reset
+            this.isBacktestingRunning = false
+          }
         }
       } catch (e) {
         console.error('Failed to open backtest results WebSocket:', e)
         this.backtestProgressState = 'error'
+        this.backtestProgressErrorType = 'error'
         this.backtestProgressErrorMessage = 'Failed to open WebSocket for backtesting results'
+        this.isBacktestingRunning = false
       }
     },
     handleSelectionChanged(selectedIds) {
@@ -488,11 +518,13 @@ export default {
       this.backtestProgress = 0
       this.backtestProgressState = 'idle'
       this.backtestProgressErrorMessage = ''
+      this.backtestProgressErrorType = null
     },
     _handleBacktestResultPacket(packet) {
       const type = packet?.type
       if (!type) {
         this.backtestProgressState = 'error'
+        this.backtestProgressErrorType = 'error'
         this.backtestProgressErrorMessage = 'Invalid results packet received'
         return
       }
@@ -505,7 +537,17 @@ export default {
 
       if (type === 'error') {
         this.backtestProgressState = 'error'
+        this.backtestProgressErrorType = 'error'
         this.backtestProgressErrorMessage = packet.data?.message || 'Unknown backtesting error'
+        this.isBacktestingRunning = false
+        return
+      }
+
+      if (type === 'cancel') {
+        this.backtestProgressState = 'error'
+        this.backtestProgressErrorType = 'cancel'
+        this.backtestProgressErrorMessage = packet.data?.message || 'Backtesting was cancelled'
+        this.isBacktestingRunning = false
         return
       }
 
@@ -521,6 +563,7 @@ export default {
       if (type === 'end') {
         this.backtestProgress = 100
         this.backtestProgressState = 'completed'
+        this.isBacktestingRunning = false
         return
       }
     },
@@ -949,6 +992,31 @@ export default {
         // isBacktestingRunning will be reset when results stream finishes or on error
       }
     },
+    async handleStop() {
+      // Validate that we have a current task
+      if (!this.currentTaskId) {
+        this.backtestMessages.push({
+          timestamp: new Date().toISOString(),
+          level: 'error',
+          message: 'No task selected. Cannot stop backtesting.'
+        })
+        return
+      }
+
+      try {
+        // Call API to stop backtesting
+        // All UI changes will happen via WebSocket packets (error packet)
+        await backtestingApi.stopBacktest(this.currentTaskId)
+      } catch (error) {
+        console.error('Failed to stop backtesting:', error)
+        const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
+        this.backtestMessages.push({
+          timestamp: new Date().toISOString(),
+          level: 'error',
+          message: `Failed to stop backtesting: ${errorMessage}`
+        })
+      }
+    },
     async handleUpdateParameters() {
       // Update parameters description from strategy
       if (!this.currentStrategyName || !this.isStrategyLoaded) {
@@ -1119,9 +1187,30 @@ export default {
   color: var(--text-secondary);
 }
 
+.backtest-progress.error-state {
+  background-color: rgba(239, 68, 68, 0.1);
+  border-bottom-color: var(--color-danger, #ef4444);
+  border-bottom-width: 2px;
+}
+
 .backtest-progress .progress-text {
   flex: 0 0 auto;
   white-space: nowrap;
+}
+
+.backtest-progress .progress-text .error-message {
+  color: var(--color-danger, #ef4444);
+  font-weight: var(--font-weight-semibold, 600);
+  animation: error-pulse 2s ease-in-out infinite;
+}
+
+@keyframes error-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
 }
 
 .backtest-progress .progress-bar {

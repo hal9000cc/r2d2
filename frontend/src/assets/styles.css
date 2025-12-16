@@ -29,6 +29,7 @@
   --color-danger-hover: #d32f2f;
   --color-danger-light: #ffebee;
   --color-danger-lighter: #ffcdd2;
+  --color-danger-shadow: rgba(244, 67, 54, 0.25);
 
   /* Colors - Info */
   --color-info: #2196f3;

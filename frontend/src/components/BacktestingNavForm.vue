@@ -56,24 +56,39 @@
         :disabled="disabled"
       />
     </div>
-    <button class="start-btn" :disabled="disabled" @click="handleStart">Start</button>
+    <button 
+      :class="['action-btn', isRunning ? 'stop-btn' : 'start-btn']" 
+      :disabled="disabled && !isRunning" 
+      @click="handleAction"
+    >
+      <PlayIcon v-if="!isRunning" class="btn-icon" />
+      <StopIcon v-else class="btn-icon" />
+      {{ isRunning ? 'Stop' : 'Start' }}
+    </button>
   </div>
 </template>
 
 <script>
 import SourceInput from './SourceInput.vue'
 import SymbolInput from './SymbolInput.vue'
+import { PlayIcon, StopIcon } from '@heroicons/vue/24/outline'
 import { strategiesApi } from '../services/strategiesApi'
 
 export default {
   name: 'BacktestingNavForm',
   components: {
     SourceInput,
-    SymbolInput
+    SymbolInput,
+    PlayIcon,
+    StopIcon
   },
-  emits: ['start', 'form-data-changed'],
+  emits: ['start', 'stop', 'form-data-changed'],
   props: {
     disabled: {
+      type: Boolean,
+      default: false
+    },
+    isRunning: {
       type: Boolean,
       default: false
     }
@@ -121,8 +136,12 @@ export default {
         this.timeframes = ['1s', '1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '1w']
       }
     },
-    handleStart() {
-      this.$emit('start', { ...this.formData })
+    handleAction() {
+      if (this.isRunning) {
+        this.$emit('stop')
+      } else {
+        this.$emit('start', { ...this.formData })
+      }
     }
   }
 }
@@ -165,26 +184,37 @@ export default {
 }
 
 .form-input.invalid {
-  border-color: var(--color-danger, #ef4444);
-  box-shadow: 0 0 0 0.2rem rgba(244, 67, 54, 0.25);
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 0.2rem var(--color-danger-shadow);
 }
 
 .required {
-  color: var(--color-danger, #ef4444);
+  color: var(--color-danger);
   margin-left: 2px;
 }
 
 
-.start-btn {
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
   padding: var(--spacing-sm) var(--spacing-xl);
-  background-color: var(--color-primary);
-  color: var(--text-inverse);
   border: none;
   border-radius: var(--radius-md);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   transition: background-color var(--transition-base);
   margin-top: 1.25rem;
+}
+
+.action-btn .btn-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.start-btn {
+  background-color: var(--color-primary);
+  color: var(--text-inverse);
 }
 
 .start-btn:hover:not(:disabled) {
@@ -195,7 +225,20 @@ export default {
   background-color: var(--color-primary-active);
 }
 
-.start-btn:disabled {
+.stop-btn {
+  background-color: var(--color-danger);
+  color: var(--text-inverse);
+}
+
+.stop-btn:hover:not(:disabled) {
+  background-color: var(--color-danger-hover);
+}
+
+.stop-btn:active:not(:disabled) {
+  background-color: var(--color-danger-hover);
+}
+
+.action-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

@@ -11,8 +11,8 @@ class MyStrategy(StrategyBacktest):
     Replace MyStrategy with your strategy class name.
     """
     
-    def __init__(self, task: Task):
-        super().__init__(task)
+    def __init__(self, task: Task, id_result: str):
+        super().__init__(task, id_result)
     
     @staticmethod
     def get_parameters_description() -> Dict[str, Tuple[Any, str]]:

@@ -60,8 +60,8 @@ def setup_logging():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
+    # Console handler: use original stdout to avoid pytest/capture closing it
+    console_handler = logging.StreamHandler(sys.__stdout__)
     console_handler.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)

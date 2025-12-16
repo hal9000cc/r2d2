@@ -21,6 +21,7 @@ class PacketType(str, Enum):
     DATA = "data"
     END = "end"
     ERROR = "error"
+    CANCEL = "cancel"
 
 
 class GrowingData2Redis:
@@ -42,7 +43,8 @@ class GrowingData2Redis:
         redis_params: Dict,
         redis_key: str,
         source_object: Optional[Any] = None,
-        property_names: Optional[List[str]] = None
+        property_names: Optional[List[str]] = None,
+        id_result: Optional[str] = None
     ):
         """
         Initialize GrowingData2Redis.
@@ -58,18 +60,29 @@ class GrowingData2Redis:
                            If None, the instance works in read-only mode (for receiving packets).
             property_names: Optional list of property names to track and upload.
                             Required for write mode, ignored in read-only mode.
+            id_result: Optional unique ID for this backtesting run (GUID). If provided, will be included in all packets.
         """
         self.redis_key = redis_key
         self.source_object = source_object
         self.property_names = property_names
+        
+        # Determine mode: write mode if source_object is provided
+        self._write_mode = self.source_object is not None
+        
+        # In write mode, property_names and id_result are required
+        if self._write_mode:
+            if self.property_names is None:
+                raise ValueError("property_names is required in write mode (when source_object is provided)")
+            if not id_result:
+                raise ValueError("id_result is required in write mode (when source_object is provided)")
+        
+        self.id_result = id_result
 
         # Internal state (set in reset() for write mode)
         self._list_sizes: Dict[str, int] = {}  # property_name -> current size
         self._simple_properties: List[str] = []  # properties that are not lists
 
         self._initialized = False
-        # Determine mode BEFORE initializing Redis clients
-        self._write_mode = self.source_object is not None and self.property_names is not None
 
         # Write mode: use synchronous Redis client; read mode: use asynchronous client
         if self._write_mode:
@@ -169,13 +182,18 @@ class GrowingData2Redis:
         Send packet to Redis Stream using XADD.
         
         Args:
-            packet_type: Type of packet (PacketType.START, PacketType.DATA, or PacketType.END)
+            packet_type: Type of packet (PacketType.START, PacketType.DATA, PacketType.END, PacketType.ERROR, PacketType.CANCEL)
             data: Optional data dictionary (for "data" type)
         """
         # Store only type and data in the stream entry.
         # Data is JSON-encoded to keep the stream schema simple (string fields).
         fields: Dict[str, Any] = {"type": packet_type.value}
-        fields["data"] = json.dumps(data or {})
+        
+        # Prepare data dict, adding id_result (always present in write mode)
+        packet_data = data or {}
+        packet_data["id_result"] = self.id_result
+        
+        fields["data"] = json.dumps(packet_data)
         
         try:
             message_id = self.redis_client.xadd(self.redis_key, fields, id="*")
@@ -184,7 +202,7 @@ class GrowingData2Redis:
             logger.error(f"Failed to send {packet_type} packet to Redis stream: {e}")
             raise
 
-    def _send_error_packet(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
+    def send_error_packet(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
         """
         Try to send an error packet with diagnostics to Redis.
         Does not raise if sending the error packet itself fails.
@@ -197,6 +215,19 @@ class GrowingData2Redis:
         except Exception as e:
             # Avoid masking original errors with secondary failures
             logger.error(f"Failed to send error packet to Redis: {e}")
+    
+    def send_cancel_packet(self, message: str) -> None:
+        """
+        Send a cancel packet to Redis.
+        Used when backtesting is stopped by user request.
+        Does not raise if sending the cancel packet itself fails.
+        """
+        data: Dict[str, Any] = {"message": message}
+        try:
+            self._send_packet(PacketType.CANCEL, data)
+        except Exception as e:
+            # Avoid masking original errors with secondary failures
+            logger.error(f"Failed to send cancel packet to Redis: {e}")
     
     def reset(self) -> None:
         """
@@ -214,7 +245,7 @@ class GrowingData2Redis:
                 "reset() is only available in write mode "
                 "(source_object and property_names must be provided)"
             )
-            self._send_error_packet(msg, {"redis_key": self.redis_key})
+            self.send_error_packet(msg, {"redis_key": self.redis_key})
             raise RuntimeError(msg)
         
         self._list_sizes = {}
@@ -254,7 +285,7 @@ class GrowingData2Redis:
         """
         if not self._initialized:
             msg = "reset() must be called before send_changes()"
-            self._send_error_packet(msg, {"redis_key": self.redis_key})
+            self.send_error_packet(msg, {"redis_key": self.redis_key})
             raise RuntimeError(msg)
         
         data = {}
@@ -315,7 +346,7 @@ class GrowingData2Redis:
         """
         if not self._initialized:
             msg = "reset() must be called before finish()"
-            self._send_error_packet(msg, {"redis_key": self.redis_key})
+            self.send_error_packet(msg, {"redis_key": self.redis_key})
             raise RuntimeError(msg)
         
         # Update final list sizes
@@ -327,7 +358,7 @@ class GrowingData2Redis:
             except (AttributeError, Exception) as e:
                 msg = f"Error updating final size for '{prop_name}': {e}"
                 logger.error(msg)
-                self._send_error_packet(msg, {"redis_key": self.redis_key, "property": prop_name})
+                self.send_error_packet(msg, {"redis_key": self.redis_key, "property": prop_name})
         
         # Send end marker
         self._send_packet(PacketType.END)
@@ -386,7 +417,7 @@ class GrowingData2Redis:
         except Exception as e:
             msg = f"Failed to read from Redis stream {self.redis_key}: {e}"
             logger.error(msg)
-            self._send_error_packet(msg, {"redis_key": self.redis_key})
+            self.send_error_packet(msg, {"redis_key": self.redis_key})
             raise
 
     async def trim_stream_min_id_async(self, min_id: str) -> None:
@@ -404,4 +435,4 @@ class GrowingData2Redis:
         except Exception as e:
             msg = f"Failed to trim Redis stream {self.redis_key} to MINID {min_id}: {e}"
             logger.error(msg)
-            self._send_error_packet(msg, {"redis_key": self.redis_key, "min_id": min_id})
+            self.send_error_packet(msg, {"redis_key": self.redis_key, "min_id": min_id})

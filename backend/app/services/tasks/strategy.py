@@ -10,6 +10,7 @@ from app.services.tasks.tasks import Task
 from app.core.growing_data2redis import GrowingData2Redis
 from app.core.logger import get_logger
 from app.core.datetime_utils import parse_utc_datetime64
+from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 
 logger = get_logger(__name__)
 
@@ -112,13 +113,13 @@ class Order:
 
 
 class Strategy(ABC):
-    def __init__(self, task: Task, results_save_period: float = 1.0):
+    def __init__(self, task: Task, results_save_period: float = TRADE_RESULTS_SAVE_PERIOD):
         """
         Initialize strategy.
         
         Args:
             task: Task instance
-            results_save_period: Period for saving results in seconds (default: 1.0)
+            results_save_period: Period for saving results in seconds (default: TRADE_RESULTS_SAVE_PERIOD)
         """
         self.task = task
         self.results_save_period = results_save_period
@@ -210,32 +211,36 @@ class Strategy(ABC):
     
 
 class StrategyBacktest(Strategy):
-    def __init__(self, task: Task):
+    def __init__(self, task: Task, id_result: str):
         super().__init__(task)
+        self.id_result = id_result  # Unique ID for this backtesting run
         self.__quotes = QuotesBackTest(task.symbol, task.timeframe, task.dateStart, task.dateEnd, task.source)
         self.fee = 0.001
         self.progress: float = 0.0
         self.date_start: Optional[np.datetime64] = None
         self.date_end: Optional[np.datetime64] = None
         
-        # Initialize data uploader
+        # Initialize data uploader (optional, depends on task having Redis params)
+        self._data_uploader = None
         redis_params = task.get_redis_params()
-        redis_key = f"backtesting_tasks:result:{task.id}"
-        property_names = [
-            "total_deals",
-            "short_deals",
-            "long_deals",
-            "total_profit",
-            "total_fees",
-            "deals",
-            "progress",
-        ]
-        self._data_uploader = GrowingData2Redis(
-            redis_params=redis_params,
-            redis_key=redis_key,
-            source_object=self,
-            property_names=property_names,
-        )
+        if redis_params is not None:
+            redis_key = f"backtesting_tasks:result:{task.id}"
+            property_names = [
+                "total_deals",
+                "short_deals",
+                "long_deals",
+                "total_profit",
+                "total_fees",
+                "deals",
+                "progress",
+            ]
+            self._data_uploader = GrowingData2Redis(
+                redis_params=redis_params,
+                redis_key=redis_key,
+                source_object=self,
+                property_names=property_names,
+                id_result=id_result,
+            )
         
         self.__reset()
 
@@ -276,8 +281,9 @@ class StrategyBacktest(Strategy):
 
         self.init_stats()
         
-        # Reset data uploader
-        self._data_uploader.reset()
+        # Reset data uploader (if configured)
+        if self._data_uploader is not None:
+            self._data_uploader.reset()
 
     def __buy(self, volume: VOLUME_TYPE):
         """
@@ -397,6 +403,7 @@ class StrategyBacktest(Strategy):
             # Check if it's time to save results
             current_time = time.time()
             if current_time - last_save_time >= self.results_save_period:
+                self.check_state()
                 self.save_results()
                 last_save_time = current_time
 
@@ -409,6 +416,15 @@ class StrategyBacktest(Strategy):
         self.global_deal.close(self.current_time, self.price, self.fee)
         
         # Finalize data upload
+        self._finalize_data_upload()
+
+    def _finalize_data_upload(self) -> None:
+        """
+        Finalize data upload to Redis (if uploader is configured).
+        Separated from run() to keep main simulation code clean.
+        """
+        if self._data_uploader is None:
+            return
         try:
             self._data_uploader.finish()
         except Exception as e:
@@ -428,11 +444,71 @@ class StrategyBacktest(Strategy):
         # Clamp to [0, 100] and round to integer
         self.progress = round(max(0.0, min(100.0, progress)))
 
+        # Save results to Redis only if uploader is configured
+        if self._data_uploader is not None:
+            try:
+                self._data_uploader.send_changes()
+            except Exception as e:
+                logger.error(f"Failed to save results to Redis: {e}", exc_info=True)
+                raise
+    
+    def check_state(self) -> None:
+        """
+        Check if task is still running by reading isRunning flag from Redis.
+        If isRunning is False, sends error packet and raises exception to stop backtesting.
+        
+        Raises:
+            RuntimeError: If task is stopped (isRunning == False)
+        """
+        # Check if task is associated with a list (has Redis connection)
+        if self.task._list is None:
+            # If no list, skip state check (standalone mode)
+            return
+        
         try:
-            self._data_uploader.send_changes()
-        except Exception as e:
-            logger.error(f"Failed to save results to Redis: {e}", exc_info=True)
+            # Load task from Redis to get current state
+            current_task = self.task.load()
+            if current_task is None:
+                logger.warning(f"Task {self.task.id} not found in Redis during state check")
+                return
+            
+            # Check if task is still running
+            if not current_task.isRunning:
+                # Task was stopped, send cancel packet and raise exception
+                cancel_message = "Backtesting was stopped by user request"
+                logger.info(f"Task {self.task.id} stopped: {cancel_message}")
+                
+                # Send cancel packet if uploader is configured
+                if self._data_uploader is not None:
+                    try:
+                        self._data_uploader.send_cancel_packet(cancel_message)
+                    except Exception as e:
+                        logger.error(f"Failed to send cancel packet: {e}", exc_info=True)
+                
+                # Raise exception to exit from run() loop
+                raise RuntimeError(cancel_message)
+            
+            # Check if id_result matches (detect duplicate workers)
+            if current_task.id_result != self.id_result:
+                # Another worker is running, send error packet and raise exception
+                error_message = f"Another backtesting worker is running for this task (expected id_result: {current_task.id_result}, got: {self.id_result})"
+                logger.error(f"Task {self.task.id} id_result mismatch: {error_message}")
+                
+                # Send error packet if uploader is configured
+                if self._data_uploader is not None:
+                    try:
+                        self._data_uploader.send_error_packet(error_message)
+                    except Exception as e:
+                        logger.error(f"Failed to send error packet: {e}", exc_info=True)
+                
+                # Raise exception to exit from run() loop
+                raise RuntimeError(error_message)
+        except RuntimeError:
+            # Re-raise RuntimeError (task stopped)
             raise
+        except Exception as e:
+            # Log other errors but don't stop backtesting
+            logger.error(f"Failed to check task state: {e}", exc_info=True)
     
     def on_bar(self):
         pass

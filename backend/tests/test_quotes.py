@@ -1,116 +1,14 @@
 import pytest
 import numpy as np
 import time
-import os
-import logging
-from pathlib import Path
-from datetime import datetime, UTC
-from dotenv import load_dotenv
-import clickhouse_connect
-from datetime import timedelta
+from datetime import datetime, UTC, timedelta
 from multiprocessing import get_context
+
 from app.services.quotes.client import PriceSeries, QuotesBackTest, Client
 from app.services.quotes.constants import PRICE_TYPE, TIME_TYPE, TIME_TYPE_UNIT
 from app.services.quotes.exceptions import R2D2QuotesExceptionDataNotReceived
-from app.services.quotes.server import start_quotes_service, stop_quotes_service
-from app.core.config import (
-    REDIS_QUOTE_REQUEST_LIST, REDIS_QUOTE_RESPONSE_PREFIX,
-    CLICKHOUSE_HOST, CLICKHOUSE_PORT, CLICKHOUSE_USERNAME,
-    CLICKHOUSE_PASSWORD, CLICKHOUSE_DATABASE, redis_params
-)
-from app.core.logger import setup_logging
+from app.core.config import redis_params
 from app.services.quotes.timeframe import Timeframe
-from app.core.startup import startup_redis, shutdown_redis
-
-
-def load_test_env():
-    """Load environment variables from .env file."""
-    env_file = Path(__file__).parent.parent / '.env'
-    if env_file.exists():
-        load_dotenv(env_file)
-    else:
-        # Use defaults if .env doesn't exist
-        os.environ.setdefault('REDIS_HOST', 'localhost')
-        os.environ.setdefault('REDIS_PORT', '6379')
-        os.environ.setdefault('REDIS_DB', '0')
-        os.environ.setdefault('REDIS_PASSWORD', '')
-        os.environ.setdefault('CLICKHOUSE_HOST', 'localhost')
-        os.environ.setdefault('CLICKHOUSE_PORT', '8123')
-        os.environ.setdefault('CLICKHOUSE_USERNAME', 'default')
-        os.environ.setdefault('CLICKHOUSE_PASSWORD', '')
-        os.environ.setdefault('CLICKHOUSE_DATABASE', 'quotes_test')
-
-
-@pytest.fixture(scope="module", autouse=True)
-def quotes_service():
-    """Fixture to start and stop quotes service for tests."""
-    # Load environment variables
-    load_test_env()
-    
-    # Setup logging with DEBUG level for tests
-    setup_logging()
-    logging.getLogger().setLevel(logging.DEBUG)
-    
-    # Import connection parameters from config
-    # Modify database name to use test database
-    params = redis_params()
-    clickhouse_params = {
-        'host': CLICKHOUSE_HOST,
-        'port': CLICKHOUSE_PORT,
-        'username': CLICKHOUSE_USERNAME,
-        'password': CLICKHOUSE_PASSWORD,
-        'database': 'quotes_test'  # Use test database instead of production
-    }
-    
-    # Drop test database before starting service
-    try:
-        client = clickhouse_connect.get_client(
-            host=clickhouse_params['host'],
-            port=clickhouse_params['port'],
-            username=clickhouse_params['username'],
-            password=clickhouse_params['password']
-        )
-        client.command(f"DROP DATABASE IF EXISTS {clickhouse_params['database']}")
-    except Exception as e:
-        # Ignore errors if database doesn't exist
-        pass
-    
-    # Start Redis server for tests
-    try:
-        startup_redis()
-    except RuntimeError as e:
-        pytest.skip(f"Could not start Redis server for tests: {e}")
-    
-    # Start service with modified parameters (test database)
-    started = start_quotes_service(
-        redis_params=params,
-        clickhouse_params=clickhouse_params,
-        request_list=REDIS_QUOTE_REQUEST_LIST,
-        response_prefix=REDIS_QUOTE_RESPONSE_PREFIX
-    )
-    
-    if not started:
-        # Stop Redis if service failed to start
-        shutdown_redis()
-        pytest.skip("Could not start quotes service")
-    
-    # Initialize quotes client with test configuration
-    Client(
-        redis_params=params,
-        request_list=REDIS_QUOTE_REQUEST_LIST,
-        response_prefix=REDIS_QUOTE_RESPONSE_PREFIX
-    )
-    
-    # Wait a bit for service to initialize
-    time.sleep(0.1)
-    
-    yield
-    
-    # Stop service
-    stop_quotes_service(timeout=2.0)
-    
-    # Stop Redis server after tests
-    shutdown_redis()
 
 
 def test_quotes_usage_scenario(quotes_service):

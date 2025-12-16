@@ -33,15 +33,7 @@ class SampleObjectList(Objects2RedisList[SampleObject]):
 
 
 # Fixtures
-@pytest.fixture
-def redis_params():
-    """Redis connection parameters for testing"""
-    return {
-        'host': 'localhost',
-        'port': 6379,
-        'db': 0,
-        'password': None
-    }
+# redis_params fixture is provided by conftest.py
 
 
 @pytest.fixture
