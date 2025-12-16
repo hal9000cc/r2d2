@@ -4,7 +4,10 @@ import importlib.util
 import sys
 import uuid
 import json
+import asyncio
+from datetime import datetime, timezone
 from multiprocessing import Process
+import redis.asyncio as redis_async
 from app.services.tasks.tasks import BacktestingTaskList, Task
 from app.services.tasks.strategy import StrategyBacktest
 from app.services.strategies import validate_relative_path, load_strategy
@@ -423,7 +426,9 @@ def worker_backtesting_task(task_id: int, id_result: str) -> None:
         task.isRunning = True
         task.save()
         logger.info(f"Starting background backtesting for task {task_id} with id_result {id_result}")
+        task.send_message(level="info", message=f"Starting background backtesting for task {task_id} with id_result {id_result}")
         process_backtesting_task(task, id_result)
+        task.send_message(level="info", message=f"Background backtesting completed successfully for task {task_id}")
     except Exception as e:
         logger.error(f"Error running backtesting for task {task_id}: {str(e)}", exc_info=True)
     finally:
@@ -518,6 +523,124 @@ def _parse_packet_data(packet: Dict[str, Any]) -> Dict[str, Any]:
         except json.JSONDecodeError:
             packet_data = {}
     return packet_data if isinstance(packet_data, dict) else {}
+
+
+@router.websocket("/tasks/{task_id}/messages")
+async def task_messages_websocket(websocket: WebSocket, task_id: int):
+    """
+    WebSocket endpoint for streaming task messages to frontend.
+    
+    Subscribes to Redis pub/sub channel: backtesting_tasks:messages:{task_id}
+    and forwards messages to the frontend via WebSocket.
+    
+    Args:
+        websocket: WebSocket connection
+        task_id: Task ID
+    """
+    await websocket.accept()
+    
+    # Load task to get Redis params and validate task exists
+    task = task_list.load(task_id)
+    if task is None:
+        await _send_error_and_close(websocket, f"Task {task_id} not found")
+        return
+    
+    # Get Redis connection parameters
+    redis_params_dict = task_list.get_redis_params()
+    
+    # Create async Redis client
+    redis_client = None
+    pubsub = None
+    
+    try:
+        redis_client = redis_async.Redis(
+            host=redis_params_dict["host"],
+            port=redis_params_dict["port"],
+            db=redis_params_dict["db"],
+            password=redis_params_dict.get("password"),
+            decode_responses=True
+        )
+        
+        # Form channel name: backtesting_tasks:messages:{task_id}
+        channel = f"backtesting_tasks:messages:{task_id}"
+        
+        # Create pubsub and subscribe to channel
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe(channel)
+        
+        logger.info(f"Subscribed to messages channel {channel} for task {task_id}")
+        
+        # Listen for messages from Redis pub/sub
+        while True:
+            try:
+                # Get message from pubsub (with timeout to allow checking WebSocket state)
+                message = await asyncio.wait_for(pubsub.get_message(ignore_subscribe_messages=True), timeout=1.0)
+                
+                if message is not None:
+                    # Parse message data (should be JSON string)
+                    try:
+                        message_data = json.loads(message["data"])
+                        # Forward message to WebSocket
+                        await websocket.send_json(message_data)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Received non-JSON message from channel {channel}: {message['data']}")
+                    except Exception as e:
+                        logger.error(f"Error processing message from channel {channel}: {e}")
+                
+                # Check if WebSocket is still open (non-blocking)
+                # If connection is closed, get_message will raise on next iteration
+                
+            except asyncio.TimeoutError:
+                # Timeout is normal, continue listening
+                continue
+            except WebSocketDisconnect:
+                # Client disconnected normally
+                break
+            except Exception as e:
+                logger.error(f"Error in messages stream for task {task_id}: {e}", exc_info=True)
+                # Try to send error message
+                try:
+                    await websocket.send_json({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "level": "error",
+                        "message": f"Error in messages stream: {str(e)}"
+                    })
+                except:
+                    pass
+                break
+                
+    except WebSocketDisconnect:
+        # Client disconnected normally
+        pass
+    except Exception as e:
+        logger.error(f"Error setting up messages stream for task {task_id}: {e}", exc_info=True)
+        try:
+            await websocket.send_json({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "level": "error",
+                "message": f"Error setting up messages stream: {str(e)}"
+            })
+        except:
+            pass
+    finally:
+        # Cleanup: unsubscribe and close connections
+        if pubsub:
+            try:
+                await pubsub.unsubscribe()
+                await pubsub.close()
+            except Exception as e:
+                logger.warning(f"Error closing pubsub for task {task_id}: {e}")
+        
+        if redis_client:
+            try:
+                await redis_client.close()
+            except Exception as e:
+                logger.warning(f"Error closing Redis client for task {task_id}: {e}")
+        
+        try:
+            await websocket.close()
+        except:
+            pass
 
 
 @router.websocket("/tasks/{task_id}/results")

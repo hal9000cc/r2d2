@@ -149,7 +149,7 @@
             </div>
           </template>
           <template #messages>
-            <MessagesPanel :messages="backtestMessages" />
+            <MessagesPanelSocket :task-id="currentTaskId" />
           </template>
         </Tabs>
       </div>
@@ -192,7 +192,7 @@
 <script>
 import ResizablePanel from '../components/ResizablePanel.vue'
 import ChartPanel from '../components/ChartPanel.vue'
-import MessagesPanel from '../components/MessagesPanel.vue'
+import MessagesPanelSocket from '../components/MessagesPanelSocket.vue'
 import BacktestingNavForm from '../components/BacktestingNavForm.vue'
 import StrategyParameters from '../components/StrategyParameters.vue'
 import Tabs from '../components/Tabs.vue'
@@ -206,7 +206,7 @@ export default {
   components: {
     ResizablePanel,
     ChartPanel,
-    MessagesPanel,
+    MessagesPanelSocket,
     BacktestingNavForm,
     StrategyParameters,
     Tabs,

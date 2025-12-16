@@ -107,6 +107,21 @@ class Task(Objects2Redis):
         if not hasattr(self._list, "clear_result"):
             raise RuntimeError("Associated task list does not support clearing results.")
         self._list.clear_result(self.id)
+    
+    def send_message(self, level: str, message: str) -> None:
+        """
+        Send message to Redis pub/sub channel for this task.
+        
+        Args:
+            level: Message level (info, warning, error, success, debug)
+            message: Message text
+            
+        Raises:
+            RuntimeError: If task is not associated with a list or publish fails
+        """
+        if self._list is None:
+            raise RuntimeError("Task is not associated with a list. Cannot send message.")
+        self._list.send_message(self.id, level, message)
 
 
 class TaskList(Objects2RedisList[Task]):

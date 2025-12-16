@@ -3,6 +3,7 @@ Abstract classes for objects stored in Redis with Pydantic models.
 """
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, TypeVar, Generic, Type, TYPE_CHECKING
+from datetime import datetime, timezone
 import redis
 import json
 from pydantic import BaseModel, PrivateAttr
@@ -429,4 +430,48 @@ class Objects2RedisList(ABC, Generic[T]):
         Redis connection will be closed automatically when client goes out of scope.
         """
         logger.info(f"{self.list_key()} list shutdown")
+    
+    def send_message(self, obj_id: int, level: str, message: str) -> None:
+        """
+        Send message to Redis pub/sub channel for the object.
+        
+        Channel name format: {list_key()}:messages:{obj_id}
+        Message format: JSON with timestamp, level, and message.
+        
+        Args:
+            obj_id: Object ID
+            level: Message level (info, warning, error, success, debug)
+            message: Message text
+            
+        Raises:
+            RuntimeError: If list is not initialized or publish fails
+        """
+        self._check_initialized()
+        
+        # Validate level
+        valid_levels = ['info', 'warning', 'error', 'success', 'debug']
+        if level not in valid_levels:
+            raise ValueError(f"Invalid message level '{level}'. Must be one of: {', '.join(valid_levels)}")
+        
+        # Form channel name
+        channel = f"{self.list_key()}:messages:{obj_id}"
+        
+        # Create message payload with timestamp
+        message_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "message": message
+        }
+        
+        # Serialize to JSON
+        message_json = json.dumps(message_data, ensure_ascii=False)
+        
+        try:
+            client = self._get_redis_client()
+            # Publish to Redis pub/sub channel
+            subscribers = client.publish(channel, message_json)
+            logger.debug(f"Published message to channel {channel} (subscribers: {subscribers})")
+        except Exception as e:
+            logger.error(f"Failed to publish message to channel {channel}: {str(e)}")
+            raise RuntimeError(f"Failed to publish message to channel {channel}: {str(e)}") from e
 
