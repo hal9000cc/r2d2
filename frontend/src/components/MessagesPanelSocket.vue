@@ -36,6 +36,10 @@ export default {
         const timeB = new Date(b.timestamp).getTime()
         return timeA - timeB
       })
+    },
+    messagesCount() {
+      // Return total count of messages (local + WebSocket)
+      return this.localMessages.length + this.messages.length
     }
   },
   watch: {
@@ -125,6 +129,10 @@ export default {
     clearMessages() {
       // Clear WebSocket messages
       this.messages = []
+    },
+    getMessagesCount() {
+      // Return total count of messages (local + WebSocket)
+      return this.localMessages.length + this.messages.length
     }
   }
 }

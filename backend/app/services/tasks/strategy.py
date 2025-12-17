@@ -510,6 +510,17 @@ class StrategyBacktest(Strategy):
             # Log other errors but don't stop backtesting
             logger.error(f"Failed to check task state: {e}", exc_info=True)
     
+    def logging(self, message: str, level: str = "info") -> None:
+        """
+        Send log message to frontend via task.
+        
+        Args:
+            message: Message text (required)
+            level: Message level (optional, default: "info")
+                  Valid levels: info, warning, error, success, debug
+        """
+        self.task.send_message(level=level, message=message)
+    
     def on_bar(self):
         pass
 

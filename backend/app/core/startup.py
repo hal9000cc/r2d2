@@ -11,6 +11,8 @@ import signal
 import os
 import socket
 import atexit
+from typing import Optional
+import psutil
 
 from app.core.logger import setup_logging, get_logger
 from app.services.tasks.tasks import TaskList, BacktestingTaskList
@@ -146,38 +148,175 @@ def startup_redis():
         raise
 
 
-def shutdown_redis():
+def _find_redis_by_pidfile() -> Optional[int]:
+    """
+    Find Redis process by PID file.
+    
+    Returns:
+        int: Process ID if found, None otherwise
+    """
+    redis_pidfile = STATE_DIR / 'redis.pid'
+    if redis_pidfile.exists():
+        try:
+            with open(redis_pidfile, 'r') as f:
+                pid = int(f.read().strip())
+            # Check if process exists and is actually redis-server
+            try:
+                proc = psutil.Process(pid)
+                if 'redis-server' in proc.name().lower() or 'redis-server' in ' '.join(proc.cmdline()):
+                    return pid
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        except (ValueError, IOError):
+            pass
+    return None
+
+
+def _find_redis_by_port(host: str, port: int) -> Optional[int]:
+    """
+    Find Redis process listening on specified host:port.
+    
+    Returns:
+        int: Process ID if found, None otherwise
+    """
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'connections']):
+            try:
+                # Check if it's a redis-server process
+                proc_name = proc.info['name'] or ''
+                if 'redis-server' not in proc_name.lower():
+                    continue
+                
+                # Check connections
+                connections = proc.info.get('connections')
+                if connections:
+                    for conn in connections:
+                        if conn.status == psutil.CONN_LISTEN:
+                            if conn.laddr.ip == host or conn.laddr.ip == '0.0.0.0' or (host == 'localhost' and conn.laddr.ip == '127.0.0.1'):
+                                if conn.laddr.port == port:
+                                    return proc.info['pid']
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception as e:
+        logger.debug(f"Error finding Redis by port: {e}")
+    return None
+
+
+def _kill_redis_process(pid: int, force: bool = False) -> bool:
+    """
+    Kill Redis process by PID.
+    
+    Args:
+        pid: Process ID
+        force: If True, use SIGKILL instead of SIGTERM
+        
+    Returns:
+        bool: True if process was killed successfully
+    """
+    try:
+        proc = psutil.Process(pid)
+        if force:
+            proc.kill()
+            logger.info(f"Force killed Redis process {pid}")
+        else:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+                logger.info(f"Terminated Redis process {pid}")
+            except psutil.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                logger.info(f"Force killed Redis process {pid} after timeout")
+        return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        logger.debug(f"Could not kill process {pid}: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Error killing Redis process {pid}: {e}")
+        return False
+
+
+def force_stop_redis(host: str = None, port: int = None) -> bool:
+    """
+    Force stop Redis server by finding it via PID file or port.
+    This function can stop Redis even if it wasn't started by this application.
+    
+    Args:
+        host: Redis host (default: from config)
+        port: Redis port (default: from config)
+        
+    Returns:
+        bool: True if Redis was stopped, False otherwise
+    """
+    if host is None:
+        host = REDIS_HOST if REDIS_HOST != 'localhost' else '127.0.0.1'
+    if port is None:
+        port = REDIS_PORT
+    
+    logger.info(f"Attempting to force stop Redis on {host}:{port}")
+    
+    # Try to find by PID file first
+    pid = _find_redis_by_pidfile()
+    if pid:
+        logger.info(f"Found Redis process {pid} from PID file")
+        if _kill_redis_process(pid):
+            return True
+    
+    # Try to find by port
+    pid = _find_redis_by_port(host, port)
+    if pid:
+        logger.info(f"Found Redis process {pid} listening on {host}:{port}")
+        if _kill_redis_process(pid):
+            return True
+    
+    logger.warning(f"Could not find Redis process on {host}:{port}")
+    return False
+
+
+def shutdown_redis(force: bool = False):
     """
     Stop Redis server.
+    
+    Args:
+        force: If True, also try to find and stop Redis by PID file or port
     """
     global _redis_process
     
-    if _redis_process is None:
-        logger.debug("Redis process not found, may already be stopped")
-        return
+    stopped = False
     
-    try:
-        # Try graceful shutdown
-        if _redis_process.poll() is None:  # Process is still running
-            logger.info("Stopping Redis server...")
-            # Send SIGTERM
-            _redis_process.terminate()
-            
-            # Wait for process to terminate (max 5 seconds)
-            try:
-                _redis_process.wait(timeout=5)
-                logger.info("Redis server stopped successfully")
-            except subprocess.TimeoutExpired:
-                # Force kill if it doesn't stop
-                logger.warning("Redis server did not stop gracefully, forcing shutdown...")
-                _redis_process.kill()
-                _redis_process.wait()
-                logger.info("Redis server force stopped")
-        
-        _redis_process = None
-        
-    except Exception as e:
-        logger.error(f"Error stopping Redis server: {e}")
+    # First, try to stop via stored process handle
+    if _redis_process is not None:
+        try:
+            # Try graceful shutdown
+            if _redis_process.poll() is None:  # Process is still running
+                logger.info("Stopping Redis server via process handle...")
+                # Send SIGTERM
+                _redis_process.terminate()
+                
+                # Wait for process to terminate (max 5 seconds)
+                try:
+                    _redis_process.wait(timeout=5)
+                    logger.info("Redis server stopped successfully")
+                    stopped = True
+                except subprocess.TimeoutExpired:
+                    # Force kill if it doesn't stop
+                    logger.warning("Redis server did not stop gracefully, forcing shutdown...")
+                    _redis_process.kill()
+                    _redis_process.wait()
+                    logger.info("Redis server force stopped")
+                    stopped = True
+        except Exception as e:
+            logger.error(f"Error stopping Redis server via process handle: {e}")
+        finally:
+            _redis_process = None
+    
+    # If force is True or we couldn't stop via process handle, try other methods
+    if force or not stopped:
+        if force_stop_redis():
+            stopped = True
+    
+    if not stopped:
+        logger.debug("Redis process not found or already stopped")
 
 
 def startup_quote_service():
@@ -257,8 +396,8 @@ def shutdown():
     backtesting_task_list = BacktestingTaskList()
     backtesting_task_list.shutdown()
     
-    # Stop Redis server
-    shutdown_redis()
+    # Stop Redis server (force stop if needed)
+    shutdown_redis(force=True)
     
     logger.info("Shutdown complete")
 

@@ -88,7 +88,7 @@ class QuotesServer:
         if database is not None:
             params['database'] = database
         
-        return clickhouse_connect.get_client(**params)
+        return clickhouse_connect.get_client(**params, compression=True)
 
     def init_database(self) -> None:
         """
@@ -182,13 +182,10 @@ class QuotesServer:
         ORDER BY time
         """
         
-        result = self.clickhouse_client.query(query)
-        
-        # Get all rows at once
-        rows = result.result_rows
-        
+        # Read data directly as numpy array (more efficient than reading rows)
+        result_array = self.clickhouse_client.query_np(query)
         # Check if we have any results
-        if not rows:
+        if result_array.size == 0 or len(result_array) == 0:
             # Return empty arrays if no data
             return {
                 'time': np.array([], dtype=TIME_TYPE),
@@ -199,14 +196,15 @@ class QuotesServer:
                 'volume': np.array([], dtype=np.float64)
             }
         
-        # Convert rows to numpy arrays (more efficient than list comprehension)
-        # Each row is: (time, open, high, low, close, volume)
-        time_array = np.array([row[0] for row in rows], dtype=TIME_TYPE)
-        open_array = np.array([row[1] for row in rows], dtype=np.float64)
-        high_array = np.array([row[2] for row in rows], dtype=np.float64)
-        low_array = np.array([row[3] for row in rows], dtype=np.float64)
-        close_array = np.array([row[4] for row in rows], dtype=np.float64)
-        volume_array = np.array([row[5] for row in rows], dtype=np.float64)
+        # Extract columns directly from numpy array
+        # query_np returns structured array (since we have different types: DateTime64 and Float64)
+        # Access columns by name from the structured array
+        time_array = np.asarray(result_array['time'], dtype=TIME_TYPE)
+        open_array = np.asarray(result_array['open'], dtype=np.float64)
+        high_array = np.asarray(result_array['high'], dtype=np.float64)
+        low_array = np.asarray(result_array['low'], dtype=np.float64)
+        close_array = np.asarray(result_array['close'], dtype=np.float64)
+        volume_array = np.asarray(result_array['volume'], dtype=np.float64)
         
         return {
             'time': time_array,
@@ -329,9 +327,20 @@ class QuotesServer:
         """
         if history_end is None:
             history_end = datetime.now(UTC)
+
+        overall_start = datetime.now(UTC)
         
-        # Step 1: Get history from database
-        quotes_data = self.get_quotes_base(source, symbol, timeframe, history_start, history_end)
+        # Step 1: Get history from database (run blocking ClickHouse query in a thread pool)
+        loop = asyncio.get_running_loop()
+        quotes_data = await loop.run_in_executor(
+            None,
+            self.get_quotes_base,
+            source,
+            symbol,
+            timeframe,
+            history_start,
+            history_end,
+        )
         
         # Step 2: Find gaps (find_gaps handles empty arrays internally)
         gaps = self.find_gaps(quotes_data['time'], timeframe, history_start, history_end)
@@ -344,7 +353,14 @@ class QuotesServer:
             try:
                 # Fill each gap sequentially
                 for gap_start, gap_end in gaps:
-                    logger.info(f"Filling gap for {source}/{symbol}/{timeframe} from {gap_start} to {gap_end}")
+                    logger.info(
+                        "Filling gap for %s/%s/%s from %s to %s",
+                        source,
+                        symbol,
+                        timeframe,
+                        gap_start,
+                        gap_end,
+                    )
                     await self.fetch_bar_async(
                         exchange=exchange,
                         exchange_name=source,
@@ -352,7 +368,7 @@ class QuotesServer:
                         tf=timeframe,
                         time_start=gap_start,
                         time_end=gap_end,
-                        max_bars=1000
+                        max_bars=1000,
                     )
             finally:
                 # Properly close asynchronous exchange connection
@@ -361,8 +377,18 @@ class QuotesServer:
                 except Exception as e:
                     logger.warning(f"Failed to close exchange {source}: {e}", exc_info=True)
         
+            # Step 4: Re-read history after filling gaps
             quotes_data = self.get_quotes_base(source, symbol, timeframe, history_start, history_end)
-            
+
+        overall_duration = (datetime.now(UTC) - overall_start).total_seconds()
+        logger.info(
+            "get_quotes finished for %s/%s/%s in %.3f s (bars: %d)",
+            source,
+            symbol,
+            timeframe,
+            overall_duration,
+            len(quotes_data['time']),
+        )
         return quotes_data
 
     def save_bars(self, exchange_name: str, symbol: str, tf: Timeframe, bars: List[list], check_data: bool = True):
@@ -563,8 +589,6 @@ async def process_request_async(
         
         # Process request with lock - ensures only one request per (source, symbol, timeframe) at a time
         async with lock:
-            logger.debug(f"Processing request {request_id} for {source}:{symbol}:{timeframe_str} (locked)")
-            
             # Get quotes data (async function)
             quotes_data = await server.get_quotes(source, symbol, timeframe, history_start, history_end)
             
@@ -741,7 +765,6 @@ async def run_quotes_service(
                     asyncio.create_task(
                         process_request_async(server, request_data, request_id, response_prefix, response_ttl)
                     )
-                    logger.debug(f"Started async processing for request {request_id}")
                     
                 except Exception as e:
                     logger.error(f"Error parsing request: {e}", exc_info=True)

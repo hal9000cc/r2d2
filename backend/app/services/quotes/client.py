@@ -428,7 +428,9 @@ class QuotesBackTest(Quotes):
         self.history_end = parse_datetime(history_end)
 
         self.client = Client()
+        logger.debug(f"Getting quotes for {self.source}:{self.symbol}:{self.timeframe} from {self.history_start} to {self.history_end}")
         self._quotes_data = self.client.get_quotes(self.source, self.symbol, self.timeframe, self.history_start, self.history_end, timeout)
+        logger.debug(f"Quotes received: {len(self._quotes_data['time'])} bars")
 
     @property
     def close(self):

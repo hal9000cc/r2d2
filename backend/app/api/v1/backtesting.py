@@ -582,7 +582,18 @@ async def task_messages_websocket(websocket: WebSocket, task_id: int):
                         await websocket.send_json(message_data)
                     except json.JSONDecodeError:
                         logger.warning(f"Received non-JSON message from channel {channel}: {message['data']}")
+                    except (WebSocketDisconnect, ConnectionError) as e:
+                        # Client disconnected - this is normal, exit loop
+                        logger.debug(f"WebSocket disconnected while sending message for task {task_id}: {e}")
+                        break
                     except Exception as e:
+                        # Check if it's a WebSocket close error (code 1001 "going away")
+                        error_str = str(e).lower()
+                        if "1001" in error_str or "going away" in error_str:
+                            # Normal WebSocket closure, exit loop
+                            logger.debug(f"WebSocket closed normally for task {task_id}: {e}")
+                            break
+                        # Other errors - log and continue
                         logger.error(f"Error processing message from channel {channel}: {e}")
                 
                 # Check if WebSocket is still open (non-blocking)

@@ -283,7 +283,7 @@ export default {
     hasMessages() {
       // Check if there are any messages (local or from WebSocket)
       const localCount = this.backtestMessages.length
-      const wsCount = this.$refs.messagesPanel?.messages?.length || 0
+      const wsCount = this.$refs.messagesPanel?.getMessagesCount() || 0
       return localCount > 0 || wsCount > 0
     }
   },
