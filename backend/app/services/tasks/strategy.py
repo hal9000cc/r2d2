@@ -131,7 +131,7 @@ class Strategy(ABC):
         self.close: Optional[np.ndarray] = None  # dtype: PRICE_TYPE
         self.volume: Optional[np.ndarray] = None  # dtype: VOLUME_TYPE
 
-    def init_stats(self):
+    def _init_stats(self):
         """
         Initialize statistics.
         """
@@ -141,7 +141,7 @@ class Strategy(ABC):
         self.total_profit = 0
         self.total_fees = 0
 
-    def update_stats(self, deal: Deal):
+    def _update_stats(self, deal: Deal):
         """
         Update statistics.
         """
@@ -154,9 +154,25 @@ class Strategy(ABC):
         self.total_fees += deal.fees
 
     @abstractmethod
+    def on_start(self):
+        """
+        Called before the testing loop starts.
+        Use this method to initialize any strategy-specific data structures or variables.
+        """
+        pass
+
+    @abstractmethod
     def on_bar(self):
         """
         Called when a new bar is received.
+        """
+        pass
+
+    @abstractmethod
+    def on_finish(self):
+        """
+        Called after the testing loop completes.
+        Use this method to perform any final calculations or cleanup.
         """
         pass
 
@@ -226,6 +242,12 @@ class StrategyBacktest(Strategy):
         if redis_params is not None:
             redis_key = f"backtesting_tasks:result:{task.id}"
             property_names = [
+                "time", 
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
                 "total_deals",
                 "short_deals",
                 "long_deals",
@@ -279,7 +301,7 @@ class StrategyBacktest(Strategy):
         # Current deal (None initially, created on first buy/sell)
         self.current_deal: Optional[Deal] = None
 
-        self.init_stats()
+        self._init_stats()
         
         # Reset data uploader (if configured)
         if self._data_uploader is not None:
@@ -307,7 +329,7 @@ class StrategyBacktest(Strategy):
         if self.current_deal.has_zero_balance():
             self.current_deal.close(self.current_time, self.price, self.fee)
             self.deals.append(self.current_deal)
-            self.update_stats(self.current_deal)
+            self._update_stats(self.current_deal)
             self.current_deal = None
 
     def __sell(self, volume: VOLUME_TYPE):
@@ -332,7 +354,7 @@ class StrategyBacktest(Strategy):
         if self.current_deal.has_zero_balance():
             self.current_deal.close(self.current_time, self.price, self.fee)
             self.deals.append(self.current_deal)
-            self.update_stats(self.current_deal)
+            self._update_stats(self.current_deal)
             self.current_deal = None
 
     def order(
@@ -377,6 +399,7 @@ class StrategyBacktest(Strategy):
         Periodically saves results based on results_save_period.
         """
 
+        results_save_period = 1.0
         last_save_time =  time.time()
 
         all_time = self.__quotes.time.values
@@ -385,6 +408,9 @@ class StrategyBacktest(Strategy):
         all_low = self.__quotes.low.values
         all_close = self.__quotes.close.values
         all_volume = self.__quotes.volume.values
+        
+        # Call on_start before the testing loop
+        self.on_start()
         
         for i in range(len(all_close)):
             self.time = all_time[:i+1]
@@ -406,11 +432,15 @@ class StrategyBacktest(Strategy):
                 self.check_state()
                 self.save_results()
                 last_save_time = current_time
+                results_save_period = min(results_save_period + 1.0, self.results_save_period)
+
+        # Call on_finish after the testing loop
+        self.on_finish()
 
         if self.current_deal is not None:
             self.current_deal.close(self.current_time, self.price, self.fee)
             self.deals.append(self.current_deal)
-            self.update_stats(self.current_deal)
+            self._update_stats(self.current_deal)
             self.current_deal = None
 
         self.global_deal.close(self.current_time, self.price, self.fee)
@@ -472,6 +502,22 @@ class StrategyBacktest(Strategy):
                 logger.warning(f"Task {self.task.id} not found in Redis during state check")
                 return
             
+            # Check if id_result matches (detect duplicate workers)
+            if current_task.id_result != self.id_result:
+                # Another worker is running, send error packet and raise exception
+                error_message = f"Another backtesting worker is running for this task (expected id_result: {current_task.id_result}, got: {self.id_result})"
+                logger.error(f"Task {self.task.id} id_result mismatch: {error_message}")
+                
+                # Send error packet if uploader is configured
+                if self._data_uploader is not None:
+                    try:
+                        self._data_uploader.send_error_packet(error_message)
+                    except Exception as e:
+                        logger.error(f"Failed to send error packet: {e}", exc_info=True)
+                
+                # Raise exception to exit from run() loop
+                raise RuntimeError(error_message)
+
             # Check if task is still running
             if not current_task.isRunning:
                 # Task was stopped, send cancel packet and raise exception
@@ -488,21 +534,6 @@ class StrategyBacktest(Strategy):
                 # Raise exception to exit from run() loop
                 raise RuntimeError(cancel_message)
             
-            # Check if id_result matches (detect duplicate workers)
-            if current_task.id_result != self.id_result:
-                # Another worker is running, send error packet and raise exception
-                error_message = f"Another backtesting worker is running for this task (expected id_result: {current_task.id_result}, got: {self.id_result})"
-                logger.error(f"Task {self.task.id} id_result mismatch: {error_message}")
-                
-                # Send error packet if uploader is configured
-                if self._data_uploader is not None:
-                    try:
-                        self._data_uploader.send_error_packet(error_message)
-                    except Exception as e:
-                        logger.error(f"Failed to send error packet: {e}", exc_info=True)
-                
-                # Raise exception to exit from run() loop
-                raise RuntimeError(error_message)
         except RuntimeError:
             # Re-raise RuntimeError (task stopped)
             raise
@@ -521,7 +552,21 @@ class StrategyBacktest(Strategy):
         """
         self.task.send_message(level=level, message=message)
     
+    def on_start(self):
+        """
+        Called before the testing loop starts.
+        Default implementation does nothing.
+        """
+        pass
+
     def on_bar(self):
+        pass
+
+    def on_finish(self):
+        """
+        Called after the testing loop completes.
+        Default implementation does nothing.
+        """
         pass
 
     

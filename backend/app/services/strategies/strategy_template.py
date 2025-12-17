@@ -30,10 +30,25 @@ class MyStrategy(StrategyBacktest):
         """
         return {}
     
+    def on_start(self):
+        """
+        Called before the start of trading.
+        Use this method to initialize any strategy-specific data structures or variables.
+        """
+        self.logging("Strategy started (example log message)")
+    
     def on_bar(self):
         """
         Called when a new bar is received.
         Implement your strategy logic here.
         """
         # Example: self.order(OrderSide.BUY, quantity=0.001)
+        pass
+    
+    def on_finish(self):
+        """
+        Called after the testing loop completes (only for backtesting).
+        In real trading, the loop is infinite, so this method is not called.
+        Use this method to perform any final calculations or cleanup.
+        """
         pass
