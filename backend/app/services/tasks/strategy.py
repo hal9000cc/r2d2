@@ -235,6 +235,13 @@ class StrategyBacktest(Strategy):
         self.progress: float = 0.0
         self.date_start: Optional[np.datetime64] = None
         self.date_end: Optional[np.datetime64] = None
+        self.time = self.__quotes.time.values[:0]
+        self.open = self.__quotes.open.values[:0]
+        self.high = self.__quotes.high.values[:0]
+        self.low = self.__quotes.low.values[:0]
+        self.close = self.__quotes.close.values[:0]
+        self.volume = self.__quotes.volume.values[:0]
+
         
         # Initialize data uploader (optional, depends on task having Redis params)
         self._data_uploader = None

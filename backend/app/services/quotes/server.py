@@ -773,7 +773,6 @@ async def run_quotes_service(
                 # Catch any exceptions in the main loop to prevent service from crashing
                 logger.error(f"Error in quotes service main loop: {e}", exc_info=True)
                 # Wait a bit before retrying to avoid tight error loop
-                # The while loop condition will check stop_event on next iteration
                 await asyncio.sleep(1)
                 
     except KeyboardInterrupt:

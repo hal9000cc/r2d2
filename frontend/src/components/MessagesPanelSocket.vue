@@ -10,7 +10,7 @@ export default {
   components: {
     MessagesPanel
   },
-  emits: ['backtesting-error'],
+  emits: ['backtesting-error', 'messages-count-changed'],
   props: {
     taskId: {
       type: Number,
@@ -40,6 +40,10 @@ export default {
     messagesCount() {
       // Return total count of messages (local + WebSocket)
       return this.localMessages.length + this.messages.length
+    },
+    wsMessagesCount() {
+      // Return count of WebSocket messages only
+      return this.messages.length
     }
   },
   watch: {
@@ -53,12 +57,18 @@ export default {
           this.connect(newTaskId)
         }
       }
+    },
+    wsMessagesCount(newCount) {
+      // Emit event when WebSocket message count changes so parent can reactively update
+      this.$emit('messages-count-changed', newCount)
     }
   },
   mounted() {
     if (this.taskId) {
       this.connect(this.taskId)
     }
+    // Emit initial WebSocket messages count
+    this.$emit('messages-count-changed', this.wsMessagesCount)
   },
   beforeUnmount() {
     this.disconnect()
@@ -129,6 +139,10 @@ export default {
     clearMessages() {
       // Clear WebSocket messages
       this.messages = []
+      // Emit event after clearing (watch will also trigger, but this ensures it)
+      this.$nextTick(() => {
+        this.$emit('messages-count-changed', this.wsMessagesCount)
+      })
     },
     getMessagesCount() {
       // Return total count of messages (local + WebSocket)

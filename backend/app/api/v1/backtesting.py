@@ -4,6 +4,7 @@ import importlib.util
 import sys
 import uuid
 import json
+import msgpack
 import asyncio
 from datetime import datetime, timezone
 from multiprocessing import Process
@@ -503,26 +504,6 @@ async def _send_error_and_close(websocket: WebSocket, message: str) -> None:
         await websocket.close()
 
 
-def _parse_packet_data(packet: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Parse packet data from packet dictionary.
-    Handles both dict and JSON string formats.
-    
-    Args:
-        packet: Packet dictionary with "data" field
-        
-    Returns:
-        Parsed data dictionary
-    """
-    packet_data = packet.get("data", {})
-    if isinstance(packet_data, str):
-        try:
-            packet_data = json.loads(packet_data)
-        except json.JSONDecodeError:
-            packet_data = {}
-    return packet_data if isinstance(packet_data, dict) else {}
-
-
 @router.websocket("/tasks/{task_id}/messages")
 async def task_messages_websocket(websocket: WebSocket, task_id: int):
     """
@@ -723,14 +704,17 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
             # Ensure packet_type is a plain string
             if isinstance(packet_type, bytes):
                 packet_type = packet_type.decode("utf-8")
+            
+            # Ensure id_result is a plain string (if present)
+            if "id_result" in packet and isinstance(packet["id_result"], bytes):
+                packet["id_result"] = packet["id_result"].decode("utf-8")
 
             # Phase 1: search for first START packet, do not forward anything before it
             if not start_found:
                 if packet_type == PacketType.START.value:
                     start_found = True
-                    # Check id_result in START packet
-                    packet_data = _parse_packet_data(packet)
-                    packet_id_result = packet_data.get("id_result")
+                    # Check id_result in START packet (now at packet level, not in data)
+                    packet_id_result = packet.get("id_result")
                     
                     # If id_result doesn't match, skip this START and continue searching
                     if packet_id_result != expected_id_result:
@@ -748,9 +732,10 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
                             f"Failed to trim Redis stream {redis_key} to START id {message_id}: {e}",
                             exc_info=True
                         )
-                    # Forward START packet to frontend
+                    # Forward START packet to frontend as MessagePack binary
                     try:
-                        await websocket.send_json(packet)
+                        packet_bytes = msgpack.packb(packet, use_bin_type=True)
+                        await websocket.send_bytes(packet_bytes)
                     except Exception as send_err:
                         logger.info(
                             f"WebSocket closed while sending START packet for task {task_id}: {send_err}"
@@ -767,8 +752,8 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
 
             # Phase 2: after START, forward all packets according to rules
             # Check id_result in all packets (skip if mismatch)
-            packet_data = _parse_packet_data(packet)
-            packet_id_result = packet_data.get("id_result")
+            # id_result is now at packet level, not in data
+            packet_id_result = packet.get("id_result")
             
             # If id_result doesn't match, skip this packet and continue
             if packet_id_result != expected_id_result:
@@ -779,7 +764,8 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
                 continue
             if packet_type == PacketType.DATA.value:
                 try:
-                    await websocket.send_json(packet)
+                    packet_bytes = msgpack.packb(packet, use_bin_type=True)
+                    await websocket.send_bytes(packet_bytes)
                 except Exception as send_err:
                     logger.info(
                         f"WebSocket closed while sending DATA packet for task {task_id}: {send_err}"
@@ -789,7 +775,8 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
 
             if packet_type == PacketType.END.value:
                 try:
-                    await websocket.send_json(packet)
+                    packet_bytes = msgpack.packb(packet, use_bin_type=True)
+                    await websocket.send_bytes(packet_bytes)
                 except Exception as send_err:
                     logger.info(
                         f"WebSocket closed while sending END packet for task {task_id}: {send_err}"
@@ -798,7 +785,8 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
 
             if packet_type == PacketType.ERROR.value:
                 try:
-                    await websocket.send_json(packet)
+                    packet_bytes = msgpack.packb(packet, use_bin_type=True)
+                    await websocket.send_bytes(packet_bytes)
                 except Exception as send_err:
                     logger.info(
                         f"WebSocket closed while sending ERROR packet for task {task_id}: {send_err}"
@@ -807,7 +795,8 @@ async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
 
             if packet_type == PacketType.CANCEL.value:
                 try:
-                    await websocket.send_json(packet)
+                    packet_bytes = msgpack.packb(packet, use_bin_type=True)
+                    await websocket.send_bytes(packet_bytes)
                 except Exception as send_err:
                     logger.info(
                         f"WebSocket closed while sending CANCEL packet for task {task_id}: {send_err}"

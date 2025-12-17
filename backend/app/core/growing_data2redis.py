@@ -8,6 +8,7 @@ from enum import Enum
 import redis
 import redis.asyncio as redis_async
 import json
+import msgpack
 import numpy as np
 from pydantic import BaseModel
 from app.core.logger import get_logger
@@ -31,6 +32,7 @@ class GrowingData2Redis:
     Tracks changes in object properties:
     - Simple properties: always uploaded with current value
     - List properties: only new elements are uploaded incrementally
+    - Numpy array properties: only new elements are uploaded incrementally (chunked)
     
     Data is stored in Redis Stream as JSON packets with type markers:
     - "start": initialization marker
@@ -80,18 +82,20 @@ class GrowingData2Redis:
 
         # Internal state (set in reset() for write mode)
         self._list_sizes: Dict[str, int] = {}  # property_name -> current size
-        self._simple_properties: List[str] = []  # properties that are not lists
+        self._numpy_array_sizes: Dict[str, int] = {}  # property_name -> current size for numpy arrays
+        self._simple_properties: List[str] = []  # properties that are not lists or numpy arrays
 
         self._initialized = False
 
         # Write mode: use synchronous Redis client; read mode: use asynchronous client
+        # Use decode_responses=False to support binary data (MessagePack) in Redis Stream
         if self._write_mode:
             self.redis_client = redis.Redis(
                 host=redis_params["host"],
                 port=redis_params["port"],
                 db=redis_params["db"],
                 password=redis_params.get("password"),
-                decode_responses=True,
+                decode_responses=False,  # False to support binary MessagePack data
             )
             self.redis_client_async = None
         else:
@@ -101,18 +105,19 @@ class GrowingData2Redis:
                 port=redis_params["port"],
                 db=redis_params["db"],
                 password=redis_params.get("password"),
-                decode_responses=True,
+                decode_responses=False,  # False to support binary MessagePack data
             )
     
     def _serialize_value(self, value: Any) -> Any:
         """
-        Serialize value to JSON-serializable format.
+        Serialize value to MessagePack-serializable format.
         
         Handles:
         - Pydantic BaseModel: uses model_dump()
         - Enum: uses value
         - numpy types: converts to Python types
         - datetime/numpy datetime64: converts to ISO string
+        - bytes: passes through (MessagePack handles binary data)
         - Regular objects: attempts to serialize __dict__
         - Basic types: passes through
         
@@ -120,10 +125,14 @@ class GrowingData2Redis:
             value: Value to serialize
             
         Returns:
-            JSON-serializable value
+            MessagePack-serializable value
         """
         if value is None:
             return None
+        
+        # bytes - pass through (MessagePack with use_bin_type=True handles it)
+        if isinstance(value, bytes):
+            return value
         
         # Pydantic BaseModel
         if isinstance(value, BaseModel):
@@ -185,15 +194,25 @@ class GrowingData2Redis:
             packet_type: Type of packet (PacketType.START, PacketType.DATA, PacketType.END, PacketType.ERROR, PacketType.CANCEL)
             data: Optional data dictionary (for "data" type)
         """
-        # Store only type and data in the stream entry.
-        # Data is JSON-encoded to keep the stream schema simple (string fields).
-        fields: Dict[str, Any] = {"type": packet_type.value}
+        # Store type, id_result and data in the stream entry.
+        # Data is MessagePack-encoded (supports binary data like numpy arrays).
+        # Redis Stream can store binary data directly as bytes.
+        # With decode_responses=False, Redis accepts both str and bytes keys, but returns bytes
+        fields: Dict[Any, Any] = {
+            "type": packet_type.value,
+            "id_result": self.id_result
+        }
         
-        # Prepare data dict, adding id_result (always present in write mode)
+        # Prepare data dict (id_result is now at fields level, not in data)
         packet_data = data or {}
-        packet_data["id_result"] = self.id_result
         
-        fields["data"] = json.dumps(packet_data)
+        # Recursively serialize all values to ensure datetime and other non-serializable types are handled
+        # MessagePack doesn't support datetime directly, so we need to serialize it first
+        serialized_data = self._serialize_value(packet_data)
+        
+        # Serialize with MessagePack (supports binary data) - store as bytes directly
+        msgpack_data = msgpack.packb(serialized_data, use_bin_type=True)
+        fields["data"] = msgpack_data
         
         try:
             message_id = self.redis_client.xadd(self.redis_key, fields, id="*")
@@ -235,8 +254,9 @@ class GrowingData2Redis:
         
         Analyzes properties:
         - Identifies which properties are lists (for incremental updates)
+        - Identifies which properties are numpy arrays (for incremental chunked updates)
         - Identifies which properties are simple (for full updates)
-        - Records initial list sizes
+        - Records initial list and numpy array sizes
         
         And sends "start" marker.
         """
@@ -249,14 +269,19 @@ class GrowingData2Redis:
             raise RuntimeError(msg)
         
         self._list_sizes = {}
+        self._numpy_array_sizes = {}
         self._simple_properties = []
         
         for prop_name in self.property_names:
             try:
                 value = getattr(self.source_object, prop_name)
                 
+                # Check if it's a numpy array
+                if isinstance(value, np.ndarray):
+                    self._numpy_array_sizes[prop_name] = len(value)
+                    logger.debug(f"Property '{prop_name}' is a numpy array with size {len(value)}")
                 # Check if it's a list or tuple
-                if isinstance(value, (list, tuple)):
+                elif isinstance(value, (list, tuple)):
                     self._list_sizes[prop_name] = len(value)
                     logger.debug(f"Property '{prop_name}' is a list with size {len(value)}")
                 else:
@@ -272,7 +297,8 @@ class GrowingData2Redis:
         self._initialized = True
         
         logger.info(f"Reset completed: {len(self._simple_properties)} simple properties, "
-                   f"{len(self._list_sizes)} list properties")
+                   f"{len(self._list_sizes)} list properties, "
+                   f"{len(self._numpy_array_sizes)} numpy array properties")
     
     def send_changes(self) -> None:
         """
@@ -280,6 +306,7 @@ class GrowingData2Redis:
         
         For simple properties: always uploads current value.
         For list properties: uploads only new elements (added since last check).
+        For numpy array properties: uploads only new elements (added since last check, chunked).
         
         Sends "data" packet to Redis.
         """
@@ -332,6 +359,42 @@ class GrowingData2Redis:
             except Exception as e:
                 logger.error(f"Error processing list property '{prop_name}': {e}, skipping")
         
+        # Process numpy array properties (only new elements, chunked)
+        for prop_name, last_size in self._numpy_array_sizes.items():
+            try:
+                current_array = getattr(self.source_object, prop_name)
+                
+                if not isinstance(current_array, np.ndarray):
+                    logger.warning(f"Property '{prop_name}' is no longer a numpy array, skipping")
+                    continue
+                
+                current_size = len(current_array)
+                
+                # Check if there are new elements
+                if current_size > last_size:
+                    new_elements = current_array[last_size:]
+                    # Convert numpy array to bytes for efficient MessagePack serialization
+                    # Store as binary data with dtype and shape for deserialization
+                    data[f"{prop_name}_new"] = {
+                        "data": new_elements.tobytes(),
+                        "dtype": str(new_elements.dtype),
+                        "shape": list(new_elements.shape)
+                    }
+                    
+                    # Update stored size
+                    self._numpy_array_sizes[prop_name] = current_size
+                    
+                    logger.debug(f"Property '{prop_name}': added {len(new_elements)} new elements")
+                elif current_size < last_size:
+                    logger.warning(f"Property '{prop_name}': numpy array size decreased from {last_size} to {current_size}, "
+                                 f"this is unexpected for growing arrays")
+                    # Update size anyway
+                    self._numpy_array_sizes[prop_name] = current_size
+            except AttributeError:
+                logger.error(f"Property '{prop_name}' not found, skipping")
+            except Exception as e:
+                logger.error(f"Error processing numpy array property '{prop_name}': {e}, skipping")
+        
         # Send data packet if there's any data
         if data:
             self._send_packet(PacketType.DATA, data)
@@ -342,14 +405,18 @@ class GrowingData2Redis:
         """
         Finalize upload process (write mode).
         
-        Updates list sizes to final values and sends "end" marker to Redis.
+        Updates list and numpy array sizes to final values and sends "end" marker to Redis.
         """
         if not self._initialized:
             msg = "reset() must be called before finish()"
             self.send_error_packet(msg, {"redis_key": self.redis_key})
             raise RuntimeError(msg)
         
-        # Update final list sizes
+        # Send final changes BEFORE updating sizes (to ensure all remaining data is sent)
+        # This ensures that any remaining new elements are sent
+        self.send_changes()
+        
+        # Update final list sizes (after sending changes)
         for prop_name in list(self._list_sizes.keys()):
             try:
                 current_list = getattr(self.source_object, prop_name)
@@ -360,11 +427,22 @@ class GrowingData2Redis:
                 logger.error(msg)
                 self.send_error_packet(msg, {"redis_key": self.redis_key, "property": prop_name})
         
+        # Update final numpy array sizes (after sending changes)
+        for prop_name in list(self._numpy_array_sizes.keys()):
+            try:
+                current_array = getattr(self.source_object, prop_name)
+                if isinstance(current_array, np.ndarray):
+                    self._numpy_array_sizes[prop_name] = len(current_array)
+            except (AttributeError, Exception) as e:
+                msg = f"Error updating final size for '{prop_name}': {e}"
+                logger.error(msg)
+                self.send_error_packet(msg, {"redis_key": self.redis_key, "property": prop_name})
+        
         # Send end marker
         self._send_packet(PacketType.END)
         
-        logger.info(f"Finish completed. Final list sizes: {self._list_sizes}")
-        logger.info(f"Finish completed. Final list sizes: {self._list_sizes}")
+        logger.info(f"Finish completed. Final list sizes: {self._list_sizes}, "
+                   f"Final numpy array sizes: {self._numpy_array_sizes}")
 
     # ==== Stream read helpers (read mode, asynchronous) ====
     
@@ -403,15 +481,43 @@ class GrowingData2Redis:
             _, entries = results[0]
             parsed: List[Tuple[str, Dict[str, Any]]] = []
             for message_id, fields in entries:
-                raw_type = fields.get("type")
-                raw_data = fields.get("data")
+                # With decode_responses=False, all fields are bytes
+                raw_type = fields.get(b"type") or fields.get("type")
+                raw_data = fields.get(b"data") or fields.get("data")
+                
+                # Decode type to string (Redis returns bytes with decode_responses=False)
+                if isinstance(raw_type, bytes):
+                    raw_type = raw_type.decode("utf-8")
+                elif raw_type is None:
+                    continue  # Skip entries without type
+                
                 packet: Dict[str, Any] = {"type": raw_type}
+                
+                # Handle id_result field (also bytes with decode_responses=False)
+                raw_id_result = fields.get(b"id_result") or fields.get("id_result")
+                if raw_id_result is not None:
+                    if isinstance(raw_id_result, bytes):
+                        packet["id_result"] = raw_id_result.decode("utf-8")
+                    else:
+                        packet["id_result"] = raw_id_result
+                
                 if raw_data is not None:
                     try:
-                        packet["data"] = json.loads(raw_data)
-                    except json.JSONDecodeError:
-                        # If data is not valid JSON, pass it as-is for diagnostics
-                        packet["data"] = {"raw": raw_data}
+                        # Deserialize MessagePack directly (Redis returns bytes with decode_responses=False)
+                        if isinstance(raw_data, bytes):
+                            packet["data"] = msgpack.unpackb(raw_data, raw=False)
+                        else:
+                            # If it's a string, try to decode as JSON for backward compatibility
+                            packet["data"] = json.loads(raw_data)
+                    except (msgpack.exceptions.ExtraData, msgpack.exceptions.UnpackException) as e:
+                        # If data is not valid MessagePack, try JSON for backward compatibility
+                        try:
+                            if isinstance(raw_data, bytes):
+                                raw_data = raw_data.decode("utf-8")
+                            packet["data"] = json.loads(raw_data)
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            # If data is not valid JSON either, pass it as-is for diagnostics
+                            packet["data"] = {"raw": str(raw_data)[:100], "error": str(e)}
                 parsed.append((message_id, packet))
             return parsed
         except Exception as e:

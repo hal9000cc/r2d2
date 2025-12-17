@@ -154,6 +154,7 @@
               :task-id="currentTaskId" 
               :local-messages="backtestMessages"
               @backtesting-error="handleBacktestingErrorMessage"
+              @messages-count-changed="handleMessagesCountChanged"
             />
           </template>
         </Tabs>
@@ -205,6 +206,7 @@ import CodeMirrorEditor from '../components/CodeMirrorEditor.vue'
 import BacktestingTaskList from '../components/BacktestingTaskList.vue'
 import { strategiesApi } from '../services/strategiesApi'
 import { backtestingApi } from '../services/backtestingApi'
+import { decode } from '@msgpack/msgpack'
 
 export default {
   name: 'BacktestingView',
@@ -258,7 +260,8 @@ export default {
       backtestProgressState: 'idle', // 'idle' | 'running' | 'completed' | 'error'
       backtestProgressErrorMessage: '',
       backtestProgressErrorType: null, // 'error' | 'cancel' | null
-      backtestResultsSocket: null
+      backtestResultsSocket: null,
+      wsMessagesCount: 0 // Track WebSocket messages count reactively
     }
   },
   computed: {
@@ -283,7 +286,7 @@ export default {
     hasMessages() {
       // Check if there are any messages (local or from WebSocket)
       const localCount = this.backtestMessages.length
-      const wsCount = this.$refs.messagesPanel?.getMessagesCount() || 0
+      const wsCount = this.wsMessagesCount
       return localCount > 0 || wsCount > 0
     }
   },
@@ -469,9 +472,32 @@ export default {
           this.backtestProgress = 0
         }
 
-        socket.onmessage = (event) => {
+        socket.onmessage = async (event) => {
           try {
-            const packet = JSON.parse(event.data)
+            // Handle MessagePack binary data
+            let packet
+            let dataArray
+            
+            if (event.data instanceof Blob) {
+              const arrayBuffer = await event.data.arrayBuffer()
+              dataArray = new Uint8Array(arrayBuffer)
+            } else if (event.data instanceof ArrayBuffer) {
+              dataArray = new Uint8Array(event.data)
+            } else if (event.data instanceof Uint8Array) {
+              dataArray = event.data
+            } else if (typeof event.data === 'string') {
+              // Fallback to JSON for backward compatibility
+              packet = JSON.parse(event.data)
+              this._handleBacktestResultPacket(packet)
+              return
+            } else {
+              // Try to convert to Uint8Array
+              dataArray = new Uint8Array(event.data)
+            }
+            
+            // Decode MessagePack with rawStrings: false to get binary as Uint8Array
+            packet = decode(dataArray, { rawStrings: false })
+            
             this._handleBacktestResultPacket(packet)
           } catch (e) {
             console.error('Failed to parse backtest results packet:', e)
@@ -529,9 +555,14 @@ export default {
       // Clear local messages
       this.backtestMessages = []
       // Clear WebSocket messages in MessagesPanelSocket
+      // This will trigger events that update wsMessagesCount reactively
       if (this.$refs.messagesPanel) {
         this.$refs.messagesPanel.clearMessages()
       }
+    },
+    handleMessagesCountChanged(count) {
+      // Update WebSocket messages count reactively
+      this.wsMessagesCount = count
     },
     _resetBacktestProgress() {
       this.backtestProgress = 0
@@ -576,6 +607,13 @@ export default {
           this.backtestProgress = Math.min(100, Math.max(0, progress))
           this.backtestProgressState = 'running'
         }
+        
+        // TODO: Process time_new, close_new, volume_new arrays here
+        // Data is available in packet.data with structure:
+        // - time_new: { data: Uint8Array, dtype: 'datetime64[ms]', shape: [N] }
+        // - close_new: { data: Uint8Array, dtype: 'float64', shape: [N] }
+        // - volume_new: { data: Uint8Array, dtype: 'float64', shape: [N] }
+        
         return
       }
 
