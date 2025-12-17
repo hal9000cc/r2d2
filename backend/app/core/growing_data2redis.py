@@ -216,7 +216,6 @@ class GrowingData2Redis:
         
         try:
             message_id = self.redis_client.xadd(self.redis_key, fields, id="*")
-            logger.debug(f"Sent {packet_type} packet to stream {self.redis_key} with id {message_id}")
         except Exception as e:
             logger.error(f"Failed to send {packet_type} packet to Redis stream: {e}")
             raise
@@ -279,14 +278,11 @@ class GrowingData2Redis:
                 # Check if it's a numpy array
                 if isinstance(value, np.ndarray):
                     self._numpy_array_sizes[prop_name] = len(value)
-                    logger.debug(f"Property '{prop_name}' is a numpy array with size {len(value)}")
                 # Check if it's a list or tuple
                 elif isinstance(value, (list, tuple)):
                     self._list_sizes[prop_name] = len(value)
-                    logger.debug(f"Property '{prop_name}' is a list with size {len(value)}")
                 else:
                     self._simple_properties.append(prop_name)
-                    logger.debug(f"Property '{prop_name}' is a simple property")
             except AttributeError:
                 logger.error(f"Property '{prop_name}' not found in source object, skipping")
             except Exception as e:
@@ -347,8 +343,6 @@ class GrowingData2Redis:
                     
                     # Update stored size
                     self._list_sizes[prop_name] = current_size
-                    
-                    logger.debug(f"Property '{prop_name}': added {len(new_elements)} new elements")
                 elif current_size < last_size:
                     logger.warning(f"Property '{prop_name}': list size decreased from {last_size} to {current_size}, "
                                  f"this is unexpected for growing lists")
@@ -383,8 +377,6 @@ class GrowingData2Redis:
                     
                     # Update stored size
                     self._numpy_array_sizes[prop_name] = current_size
-                    
-                    logger.debug(f"Property '{prop_name}': added {len(new_elements)} new elements")
                 elif current_size < last_size:
                     logger.warning(f"Property '{prop_name}': numpy array size decreased from {last_size} to {current_size}, "
                                  f"this is unexpected for growing arrays")
@@ -398,8 +390,6 @@ class GrowingData2Redis:
         # Send data packet if there's any data
         if data:
             self._send_packet(PacketType.DATA, data)
-        else:
-            logger.debug("No changes to send")
     
     def finish(self) -> None:
         """
@@ -537,7 +527,6 @@ class GrowingData2Redis:
             if self.redis_client_async is None:
                 raise RuntimeError("trim_stream_min_id_async can only be used in read mode (async client not initialized)")
             await self.redis_client_async.xtrim(self.redis_key, minid=min_id)
-            logger.debug(f"Trimmed Redis stream {self.redis_key} to MINID {min_id}")
         except Exception as e:
             msg = f"Failed to trim Redis stream {self.redis_key} to MINID {min_id}: {e}"
             logger.error(msg)

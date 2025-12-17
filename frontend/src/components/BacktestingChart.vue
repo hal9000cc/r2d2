@@ -115,8 +115,19 @@ export default {
         this.candlestickSeries.setData(formattedData)
         this.currentData = [...formattedData]
       } else {
-        // Add new candles incrementally
-        formattedData.forEach(candle => {
+        // Only add new candles that aren't already in currentData
+        // Find the index where new data starts (after the last element in currentData)
+        const lastTime = this.currentData[this.currentData.length - 1].time
+        let startIndex = formattedData.findIndex(candle => candle.time > lastTime)
+        
+        // If no new data found (all data is already added), skip
+        if (startIndex === -1) {
+          return
+        }
+        
+        // Add only new candles incrementally
+        const newCandles = formattedData.slice(startIndex)
+        newCandles.forEach(candle => {
           this.candlestickSeries.update(candle)
           this.currentData.push(candle)
         })
