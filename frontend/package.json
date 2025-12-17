@@ -21,6 +21,7 @@
     "@msgpack/msgpack": "^3.0.0",
     "axios": "^1.13.2",
     "codemirror": "^6.0.2",
+    "lightweight-charts": "^5.1.0",
     "vue": "^3.3.4",
     "vue-router": "^4.2.5"
   },

@@ -124,7 +124,7 @@
               </div>
             </template>
             <template #chart>
-              <ChartPanel />
+              <ChartPanel :chart-data="chartData" :clear-chart="clearChartFlag" @chart-cleared="clearChartFlag = false" />
             </template>
           </Tabs>
         </ResizablePanel>
@@ -261,7 +261,9 @@ export default {
       backtestProgressErrorMessage: '',
       backtestProgressErrorType: null, // 'error' | 'cancel' | null
       backtestResultsSocket: null,
-      wsMessagesCount: 0 // Track WebSocket messages count reactively
+      wsMessagesCount: 0, // Track WebSocket messages count reactively
+      chartData: [], // Array of {time, open, high, low, close} for chart
+      clearChartFlag: false // Flag to trigger chart clearing
     }
   },
   computed: {
@@ -570,6 +572,161 @@ export default {
       this.backtestProgressErrorMessage = ''
       this.backtestProgressErrorType = null
     },
+    clearChart() {
+      // Trigger chart clearing
+      this.clearChartFlag = true
+      this.chartData = []
+      // Reset flag after next tick
+      this.$nextTick(() => {
+        this.clearChartFlag = false
+      })
+    },
+    processChartData(data) {
+      // Process time_new, open_new, high_new, low_new, close_new arrays
+      // Data structure: { data: Uint8Array, dtype: string, shape: number[] }
+      
+      if (!data) {
+        return
+      }
+
+      // Check if we have the required arrays
+      const timeNew = data.time_new
+      const openNew = data.open_new
+      const highNew = data.high_new
+      const lowNew = data.low_new
+      const closeNew = data.close_new
+
+      // All arrays must be present to create candlestick data
+      if (!timeNew || !openNew || !highNew || !lowNew || !closeNew) {
+        // Silently skip if chart data is not available (this is normal for some packets)
+        return
+      }
+
+      try {
+        // Convert binary data to arrays
+        const timeArray = this.convertTimeArray(timeNew)
+        const openArray = this.convertFloat64Array(openNew)
+        const highArray = this.convertFloat64Array(highNew)
+        const lowArray = this.convertFloat64Array(lowNew)
+        const closeArray = this.convertFloat64Array(closeNew)
+
+        // Ensure all arrays have the same length
+        const length = Math.min(
+          timeArray.length,
+          openArray.length,
+          highArray.length,
+          lowArray.length,
+          closeArray.length
+        )
+
+        if (length === 0) {
+          return
+        }
+
+        // Create chart data points
+        const newChartData = []
+        for (let i = 0; i < length; i++) {
+          newChartData.push({
+            time: timeArray[i], // Unix timestamp in seconds
+            open: openArray[i],
+            high: highArray[i],
+            low: lowArray[i],
+            close: closeArray[i]
+          })
+        }
+
+        // Add new data to existing chart data
+        this.chartData = [...this.chartData, ...newChartData]
+      } catch (error) {
+        console.error('Failed to process chart data:', error, data)
+      }
+    },
+    convertTimeArray(timeData) {
+      // Convert datetime64[ms] binary data to Unix timestamps (in seconds)
+      // timeData: { data: Uint8Array, dtype: 'datetime64[ms]', shape: [N] }
+      
+      if (!timeData || !timeData.data) {
+        return []
+      }
+
+      // Handle different data formats
+      let data = timeData.data
+      if (data instanceof Uint8Array) {
+        // Already Uint8Array
+      } else if (data instanceof ArrayBuffer) {
+        data = new Uint8Array(data)
+      } else if (Array.isArray(data)) {
+        // If it's already an array, convert directly
+        return data.map(ts => Math.floor(ts / 1000))
+      } else {
+        console.warn('Unexpected time data format:', typeof data)
+        return []
+      }
+
+      const shape = timeData.shape || []
+      const length = shape[0] || 0
+
+      if (length === 0) {
+        return []
+      }
+
+      // datetime64[ms] is stored as int64 (8 bytes per value)
+      // Each value represents milliseconds since 1970-01-01
+      const timestamps = []
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+
+      for (let i = 0; i < length; i++) {
+        // Read int64 (8 bytes) as BigInt, then convert to number
+        // JavaScript numbers can safely represent timestamps up to 2^53
+        const msBigInt = view.getBigInt64(i * 8, true) // little-endian
+        const ms = Number(msBigInt)
+        // Convert milliseconds to seconds (Unix timestamp)
+        const seconds = Math.floor(ms / 1000)
+        timestamps.push(seconds)
+      }
+
+      return timestamps
+    },
+    convertFloat64Array(floatData) {
+      // Convert float64 binary data to JavaScript array
+      // floatData: { data: Uint8Array, dtype: 'float64', shape: [N] }
+      
+      if (!floatData || !floatData.data) {
+        return []
+      }
+
+      // Handle different data formats
+      let data = floatData.data
+      if (data instanceof Uint8Array) {
+        // Already Uint8Array
+      } else if (data instanceof ArrayBuffer) {
+        data = new Uint8Array(data)
+      } else if (Array.isArray(data)) {
+        // If it's already an array, return directly
+        return data
+      } else {
+        console.warn('Unexpected float data format:', typeof data)
+        return []
+      }
+
+      const shape = floatData.shape || []
+      const length = shape[0] || 0
+
+      if (length === 0) {
+        return []
+      }
+
+      // float64 is 8 bytes per value
+      const values = []
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+
+      for (let i = 0; i < length; i++) {
+        const value = view.getFloat64(i * 8, true) // little-endian
+        values.push(value)
+      }
+
+      return values
+    },
     _handleBacktestResultPacket(packet) {
       const type = packet?.type
       if (!type) {
@@ -582,6 +739,8 @@ export default {
       if (type === 'start') {
         this.backtestProgressState = 'running'
         this.backtestProgress = 0
+        // Clear chart data when starting
+        this.clearChart()
         return
       }
 
@@ -608,11 +767,8 @@ export default {
           this.backtestProgressState = 'running'
         }
         
-        // TODO: Process time_new, close_new, volume_new arrays here
-        // Data is available in packet.data with structure:
-        // - time_new: { data: Uint8Array, dtype: 'datetime64[ms]', shape: [N] }
-        // - close_new: { data: Uint8Array, dtype: 'float64', shape: [N] }
-        // - volume_new: { data: Uint8Array, dtype: 'float64', shape: [N] }
+        // Process chart data from packet
+        this.processChartData(packet.data)
         
         return
       }
@@ -1030,6 +1186,8 @@ export default {
       // Set running flag
       this.isBacktestingRunning = true
       this._resetBacktestProgress()
+      // Clear chart when starting backtesting
+      this.clearChart()
 
       try {
         // Call API to start backtesting

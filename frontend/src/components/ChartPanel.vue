@@ -1,15 +1,37 @@
 <template>
   <div class="chart-panel">
-    <h3>Chart</h3>
-    <div class="chart-content">
-      <p>Chart panel placeholder</p>
-    </div>
+    <BacktestingChart 
+      :chart-data="chartData" 
+      :clear-chart="clearChart"
+      @chart-cleared="handleChartCleared"
+    />
   </div>
 </template>
 
 <script>
+import BacktestingChart from './BacktestingChart.vue'
+
 export default {
-  name: 'ChartPanel'
+  name: 'ChartPanel',
+  components: {
+    BacktestingChart
+  },
+  props: {
+    chartData: {
+      type: Array,
+      default: () => []
+    },
+    clearChart: {
+      type: Boolean,
+      default: false
+    }
+  },
+  emits: ['chart-cleared'],
+  methods: {
+    handleChartCleared() {
+      this.$emit('chart-cleared')
+    }
+  }
 }
 </script>
 
@@ -17,28 +39,8 @@ export default {
 .chart-panel {
   width: 100%;
   height: 100%;
-  padding: var(--spacing-sm);
-  border-bottom: 1px solid var(--border-color-dark);
-  background-color: var(--bg-primary);
-  overflow: auto;
   min-height: 150px;
-}
-
-.chart-panel h3 {
-  margin: 0 0 var(--spacing-sm) 0;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-}
-
-.chart-content {
-  width: 100%;
-  height: calc(100% - 30px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  font-size: var(--font-size-sm);
+  overflow: hidden;
 }
 </style>
 
