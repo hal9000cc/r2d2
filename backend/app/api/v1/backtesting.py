@@ -4,7 +4,6 @@ import importlib.util
 import sys
 import uuid
 import json
-import msgpack
 import asyncio
 from datetime import datetime, timezone
 from multiprocessing import Process
@@ -16,7 +15,6 @@ from app.services.strategies.exceptions import StrategyFileError, StrategyNotFou
 from app.services.quotes.client import Client
 from app.core.config import redis_params
 from app.core.logger import get_logger, setup_logging
-from app.core.growing_data2redis import GrowingData2Redis, PacketType
 from app.core.objects2redis import MessageType
 
 logger = get_logger(__name__)
@@ -486,25 +484,6 @@ def process_backtesting_task(task: Task, id_result: str) -> None:
     task.message(message)
     logger.info(message)
 
-async def _send_error_and_close(websocket: WebSocket, message: str) -> None:
-    """
-    Send error packet to WebSocket and close connection.
-    
-    Args:
-        websocket: WebSocket connection
-        message: Error message to send
-    """
-    try:
-        await websocket.send_json({
-            "type": PacketType.ERROR.value,
-            "data": {"message": message}
-        })
-    except Exception as e:
-        logger.error(f"Failed to send error packet: {e}")
-    finally:
-        await websocket.close()
-
-
 @router.websocket("/tasks/{task_id}/messages")
 async def task_messages_websocket(websocket: WebSocket, task_id: int):
     """
@@ -522,8 +501,12 @@ async def task_messages_websocket(websocket: WebSocket, task_id: int):
     # Load task to get Redis params and validate task exists
     task = task_list.load(task_id)
     if task is None:
-        await _send_error_and_close(websocket, f"Task {task_id} not found")
-        return
+        # Send error messages via new message mechanism
+        # Messages will be sent through Redis pub/sub and this WebSocket will forward them
+        error_message = f"Task {task_id} not found"
+        task_list.send_message(task_id, MessageType.EVENT, {"event": "backtesting_error"})
+        task_list.send_message(task_id, MessageType.MESSAGE, {"level": "error", "message": error_message})
+        # Continue - WebSocket will read and forward these messages from Redis pub/sub
     
     # Get Redis connection parameters
     redis_params_dict = task_list.get_redis_params()
@@ -632,196 +615,3 @@ async def task_messages_websocket(websocket: WebSocket, task_id: int):
             await websocket.close()
         except:
             pass
-
-
-@router.websocket("/tasks/{task_id}/results")
-async def backtesting_results_websocket(websocket: WebSocket, task_id: int):
-    """
-    WebSocket endpoint for streaming backtesting results from Redis to frontend.
-    
-    Protocol:
-    1. Reads Redis Stream from the beginning until the first START packet (type == "start").
-       These initial packets are not sent to the frontend.
-    2. Trims the stream so that all entries before START are removed (START remains).
-    3. Starting from START, forwards all packets to the frontend:
-       - "start": marks the beginning of results stream
-       - "data": incremental data packets (including progress 0-100 in packet.data.progress)
-       - "end": normal completion, forwarded and then coroutine terminates
-       - "error": error packet, forwarded and then coroutine terminates
-       Any other packet type is treated as error: logged, converted to "error" packet and sent, then coroutine terminates.
-    """
-    await websocket.accept()
-
-    # Load task to resolve Redis key
-    task = task_list.load(task_id)
-    if task is None:
-        await _send_error_and_close(websocket, "Task not found")
-        return
-
-    # Get Redis key for this task's results
-    try:
-        redis_key = task.get_result_key()
-    except Exception as e:
-        logger.error(f"Failed to get result key for task {task_id}: {e}", exc_info=True)
-        await _send_error_and_close(websocket, "Failed to get result key for task")
-        return
-
-    # Initialize GrowingData2Redis in read mode
-    try:
-        redis_params = task_list.get_redis_params()
-        reader = GrowingData2Redis(redis_params=redis_params, redis_key=redis_key)
-    except Exception as e:
-        logger.error(f"Failed to initialize GrowingData2Redis for task {task_id}: {e}", exc_info=True)
-        await _send_error_and_close(websocket, "Failed to initialize results reader")
-        return
-
-    # Get expected id_result from task and validate it's not empty
-    expected_id_result = task.id_result
-    if not expected_id_result:
-        await _send_error_and_close(websocket, "Task id_result is not set. Backtesting may not have started yet.")
-        return
-    
-    # Start by reading from the beginning to find START packet
-    # After START, we'll continue reading entries after START sequentially
-    last_id = "0-0"
-    start_found = False
-
-    try:
-        while True:
-            # Read from Redis stream; block up to 1 second for new data
-            # Read one entry at a time to ensure strict ordering and immediate forwarding
-            entries = await reader.read_stream_from_async(last_id=last_id, block_ms=1000, count=1)
-            if not entries:
-                continue
-
-            # Process single entry (count=1 ensures only one entry)
-            message_id, packet = entries[0]
-            packet_type = packet.get("type")
-            
-            # Update last_id immediately to ensure sequential reading
-            # Always update last_id to the current message_id to read next entry sequentially
-            last_id = message_id
-
-            # Ensure packet_type is a plain string
-            if isinstance(packet_type, bytes):
-                packet_type = packet_type.decode("utf-8")
-            
-            # Ensure id_result is a plain string (if present)
-            if "id_result" in packet and isinstance(packet["id_result"], bytes):
-                packet["id_result"] = packet["id_result"].decode("utf-8")
-
-            # Phase 1: search for first START packet, do not forward anything before it
-            if not start_found:
-                if packet_type == PacketType.START.value:
-                    start_found = True
-                    # Check id_result in START packet (now at packet level, not in data)
-                    packet_id_result = packet.get("id_result")
-                    
-                    # If id_result doesn't match, skip this START and continue searching
-                    if packet_id_result != expected_id_result:
-                        logger.warning(
-                            f"Skipping START packet with mismatched id_result for task {task_id}: "
-                            f"expected {expected_id_result}, got {packet_id_result}"
-                        )
-                        continue
-                    
-                    # Trim all entries before START (keep START)
-                    try:
-                        await reader.trim_stream_min_id_async(message_id)
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to trim Redis stream {redis_key} to START id {message_id}: {e}",
-                            exc_info=True
-                        )
-                    # Forward START packet to frontend as MessagePack binary
-                    try:
-                        packet_bytes = msgpack.packb(packet, use_bin_type=True)
-                        await websocket.send_bytes(packet_bytes)
-                    except Exception as send_err:
-                        logger.info(
-                            f"WebSocket closed while sending START packet for task {task_id}: {send_err}"
-                        )
-                        return
-                    # After START, continue reading entries after START (use START's message_id as last_id)
-                    # This ensures we read all DATA packets that come after START, even if they're already in the stream
-                    # We read them one by one (count=1) and update last_id after each read
-                    last_id = message_id
-                    # Continue to next iteration to read next packet after START
-                    continue
-                # Skip all packets before START
-                continue
-
-            # Phase 2: after START, forward all packets according to rules
-            # Check id_result in all packets (skip if mismatch)
-            # id_result is now at packet level, not in data
-            packet_id_result = packet.get("id_result")
-            
-            # If id_result doesn't match, skip this packet and continue
-            if packet_id_result != expected_id_result:
-                logger.debug(
-                    f"Skipping {packet_type} packet with mismatched id_result for task {task_id}: "
-                    f"expected {expected_id_result}, got {packet_id_result}"
-                )
-                continue
-            if packet_type == PacketType.DATA.value:
-                try:
-                    packet_bytes = msgpack.packb(packet, use_bin_type=True)
-                    await websocket.send_bytes(packet_bytes)
-                except Exception as send_err:
-                    logger.info(
-                        f"WebSocket closed while sending DATA packet for task {task_id}: {send_err}"
-                    )
-                    return
-                continue
-
-            if packet_type == PacketType.END.value:
-                try:
-                    packet_bytes = msgpack.packb(packet, use_bin_type=True)
-                    await websocket.send_bytes(packet_bytes)
-                except Exception as send_err:
-                    logger.info(
-                        f"WebSocket closed while sending END packet for task {task_id}: {send_err}"
-                    )
-                return
-
-            if packet_type == PacketType.ERROR.value:
-                try:
-                    packet_bytes = msgpack.packb(packet, use_bin_type=True)
-                    await websocket.send_bytes(packet_bytes)
-                except Exception as send_err:
-                    logger.info(
-                        f"WebSocket closed while sending ERROR packet for task {task_id}: {send_err}"
-                    )
-                return
-
-            if packet_type == PacketType.CANCEL.value:
-                try:
-                    packet_bytes = msgpack.packb(packet, use_bin_type=True)
-                    await websocket.send_bytes(packet_bytes)
-                except Exception as send_err:
-                    logger.info(
-                        f"WebSocket closed while sending CANCEL packet for task {task_id}: {send_err}"
-                    )
-                return
-
-            # Unexpected packet type
-            logger.error(
-                f"Unexpected packet type '{packet_type}' in results stream for task {task_id}"
-            )
-            await _send_error_and_close(
-                websocket,
-                f"Unexpected packet type '{packet_type}' in results stream"
-            )
-            return
-
-    except WebSocketDisconnect:
-        logger.info(f"Backtesting results WebSocket disconnected for task {task_id}")
-    except Exception as e:
-        # Generic error while reading from Redis or processing packets.
-        # Do not attempt to send or close if connection is already broken.
-        logger.error(
-            f"Error while streaming backtesting results for task {task_id}: {e}",
-            exc_info=True,
-        )
-
-

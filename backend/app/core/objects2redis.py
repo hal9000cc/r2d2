@@ -2,7 +2,7 @@
 Abstract classes for objects stored in Redis with Pydantic models.
 """
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, TypeVar, Generic, Type, TYPE_CHECKING
+from typing import List, Optional, Dict, TypeVar, Generic, Type
 from datetime import datetime, timezone
 from enum import Enum
 import redis
@@ -11,9 +11,6 @@ from pydantic import BaseModel, PrivateAttr
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
-
-if TYPE_CHECKING:
-    pass
 
 
 class MessageType(str, Enum):

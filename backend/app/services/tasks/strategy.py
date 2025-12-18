@@ -3,9 +3,8 @@ from enum import Enum
 from typing import Optional, Union, List, Tuple, Dict, Any
 import numpy as np
 import time
-import weakref
 from app.services.quotes.client import QuotesBackTest
-from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE, TIME_TYPE
+from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
 from app.core.growing_data2redis import GrowingData2Redis
 from app.core.logger import get_logger
@@ -271,6 +270,7 @@ class StrategyBacktest(Strategy):
                 property_names=property_names,
                 id_result=id_result,
             )
+            self._data_uploader = None
         
         self.__reset()
 

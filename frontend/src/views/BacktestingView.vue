@@ -206,7 +206,6 @@ import CodeMirrorEditor from '../components/CodeMirrorEditor.vue'
 import BacktestingTaskList from '../components/BacktestingTaskList.vue'
 import { strategiesApi } from '../services/strategiesApi'
 import { backtestingApi } from '../services/backtestingApi'
-import { decode } from '@msgpack/msgpack'
 
 export default {
   name: 'BacktestingView',
@@ -313,11 +312,6 @@ export default {
     }
     // Save all on component unmount
     this.saveAllSync()
-    // Close backtest results WebSocket if open
-    if (this.backtestResultsSocket) {
-      this.backtestResultsSocket.close()
-      this.backtestResultsSocket = null
-    }
   },
   watch: {
     strategyCode(newValue, oldValue) {
@@ -455,88 +449,6 @@ export default {
       // 6. Keep loading flag true (task is closed, no auto-save needed)
       // isTaskLoading will be set to false when new task is loaded
     },
-    _openBacktestResultsSocket(taskId) {
-      // Close previous socket if any
-      if (this.backtestResultsSocket) {
-        this.backtestResultsSocket.close()
-        this.backtestResultsSocket = null
-      }
-
-      const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'
-      const wsUrl = baseUrl.replace(/^http/i, 'ws') + `/api/v1/backtesting/tasks/${taskId}/results`
-
-      try {
-        const socket = new WebSocket(wsUrl)
-        this.backtestResultsSocket = socket
-
-        socket.onopen = () => {
-          this.backtestProgressState = 'running'
-          this.backtestProgress = 0
-        }
-
-        socket.onmessage = async (event) => {
-          try {
-            // Handle MessagePack binary data
-            let packet
-            let dataArray
-            
-            if (event.data instanceof Blob) {
-              const arrayBuffer = await event.data.arrayBuffer()
-              dataArray = new Uint8Array(arrayBuffer)
-            } else if (event.data instanceof ArrayBuffer) {
-              dataArray = new Uint8Array(event.data)
-            } else if (event.data instanceof Uint8Array) {
-              dataArray = event.data
-            } else if (typeof event.data === 'string') {
-              // Fallback to JSON for backward compatibility
-              packet = JSON.parse(event.data)
-              this._handleBacktestResultPacket(packet)
-              return
-            } else {
-              // Try to convert to Uint8Array
-              dataArray = new Uint8Array(event.data)
-            }
-            
-            // Decode MessagePack with rawStrings: false to get binary as Uint8Array
-            packet = decode(dataArray, { rawStrings: false })
-            
-            this._handleBacktestResultPacket(packet)
-          } catch (e) {
-            console.error('Failed to parse backtest results packet:', e)
-          }
-        }
-
-        socket.onerror = (event) => {
-          console.error('Backtest results WebSocket error:', event)
-          this.backtestProgressState = 'error'
-          this.backtestProgressErrorType = 'error'
-          if (!this.backtestProgressErrorMessage) {
-            this.backtestProgressErrorMessage = 'WebSocket error while receiving backtesting results'
-          }
-          this.isBacktestingRunning = false
-        }
-
-        socket.onclose = () => {
-          this.backtestResultsSocket = null
-          // If backtesting was running but socket closed unexpectedly, reset flag
-          if (this.isBacktestingRunning && this.backtestProgressState === 'running') {
-            this.isBacktestingRunning = false
-            this.backtestProgressState = 'error'
-            this.backtestProgressErrorType = 'error'
-            this.backtestProgressErrorMessage = 'Connection closed unexpectedly'
-          } else if (this.isBacktestingRunning && this.backtestProgressState === 'completed') {
-            // If socket closes after completion, ensure flag is reset
-            this.isBacktestingRunning = false
-          }
-        }
-      } catch (e) {
-        console.error('Failed to open backtest results WebSocket:', e)
-        this.backtestProgressState = 'error'
-        this.backtestProgressErrorType = 'error'
-        this.backtestProgressErrorMessage = 'Failed to open WebSocket for backtesting results'
-        this.isBacktestingRunning = false
-      }
-    },
     handleSelectionChanged(selectedIds) {
       this.selectedTasksCount = selectedIds.length
     },
@@ -566,220 +478,6 @@ export default {
       // Update WebSocket messages count reactively
       this.wsMessagesCount = count
     },
-    _resetBacktestProgress() {
-      this.backtestProgress = 0
-      this.backtestProgressState = 'idle'
-      this.backtestProgressErrorMessage = ''
-      this.backtestProgressErrorType = null
-    },
-    clearChart() {
-      // Trigger chart clearing
-      this.clearChartFlag = true
-      this.chartData = []
-      // Reset flag after next tick
-      this.$nextTick(() => {
-        this.clearChartFlag = false
-      })
-    },
-    processChartData(data) {
-      // Process time_new, open_new, high_new, low_new, close_new arrays
-      // Data structure: { data: Uint8Array, dtype: string, shape: number[] }
-      
-      if (!data) {
-        return
-      }
-
-      // Check if we have the required arrays
-      const timeNew = data.time_new
-      const openNew = data.open_new
-      const highNew = data.high_new
-      const lowNew = data.low_new
-      const closeNew = data.close_new
-
-      // All arrays must be present to create candlestick data
-      if (!timeNew || !openNew || !highNew || !lowNew || !closeNew) {
-        // Silently skip if chart data is not available (this is normal for some packets)
-        return
-      }
-
-      try {
-        // Convert binary data to arrays
-        const timeArray = this.convertTimeArray(timeNew)
-        const openArray = this.convertFloat64Array(openNew)
-        const highArray = this.convertFloat64Array(highNew)
-        const lowArray = this.convertFloat64Array(lowNew)
-        const closeArray = this.convertFloat64Array(closeNew)
-
-        // Ensure all arrays have the same length
-        const length = Math.min(
-          timeArray.length,
-          openArray.length,
-          highArray.length,
-          lowArray.length,
-          closeArray.length
-        )
-
-        if (length === 0) {
-          return
-        }
-
-        // Create chart data points
-        const newChartData = []
-        for (let i = 0; i < length; i++) {
-          newChartData.push({
-            time: timeArray[i], // Unix timestamp in seconds
-            open: openArray[i],
-            high: highArray[i],
-            low: lowArray[i],
-            close: closeArray[i]
-          })
-        }
-
-        // Add new data to existing chart data
-        this.chartData = [...this.chartData, ...newChartData]
-      } catch (error) {
-        console.error('Failed to process chart data:', error, data)
-      }
-    },
-    convertTimeArray(timeData) {
-      // Convert datetime64[ms] binary data to Unix timestamps (in seconds)
-      // timeData: { data: Uint8Array, dtype: 'datetime64[ms]', shape: [N] }
-      
-      if (!timeData || !timeData.data) {
-        return []
-      }
-
-      // Handle different data formats
-      let data = timeData.data
-      if (data instanceof Uint8Array) {
-        // Already Uint8Array
-      } else if (data instanceof ArrayBuffer) {
-        data = new Uint8Array(data)
-      } else if (Array.isArray(data)) {
-        // If it's already an array, convert directly
-        return data.map(ts => Math.floor(ts / 1000))
-      } else {
-        console.warn('Unexpected time data format:', typeof data)
-        return []
-      }
-
-      const shape = timeData.shape || []
-      const length = shape[0] || 0
-
-      if (length === 0) {
-        return []
-      }
-
-      // datetime64[ms] is stored as int64 (8 bytes per value)
-      // Each value represents milliseconds since 1970-01-01
-      const timestamps = []
-      const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-
-      for (let i = 0; i < length; i++) {
-        // Read int64 (8 bytes) as BigInt, then convert to number
-        // JavaScript numbers can safely represent timestamps up to 2^53
-        const msBigInt = view.getBigInt64(i * 8, true) // little-endian
-        const ms = Number(msBigInt)
-        // Convert milliseconds to seconds (Unix timestamp)
-        const seconds = Math.floor(ms / 1000)
-        timestamps.push(seconds)
-      }
-
-      return timestamps
-    },
-    convertFloat64Array(floatData) {
-      // Convert float64 binary data to JavaScript array
-      // floatData: { data: Uint8Array, dtype: 'float64', shape: [N] }
-      
-      if (!floatData || !floatData.data) {
-        return []
-      }
-
-      // Handle different data formats
-      let data = floatData.data
-      if (data instanceof Uint8Array) {
-        // Already Uint8Array
-      } else if (data instanceof ArrayBuffer) {
-        data = new Uint8Array(data)
-      } else if (Array.isArray(data)) {
-        // If it's already an array, return directly
-        return data
-      } else {
-        console.warn('Unexpected float data format:', typeof data)
-        return []
-      }
-
-      const shape = floatData.shape || []
-      const length = shape[0] || 0
-
-      if (length === 0) {
-        return []
-      }
-
-      // float64 is 8 bytes per value
-      const values = []
-      const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-
-      for (let i = 0; i < length; i++) {
-        const value = view.getFloat64(i * 8, true) // little-endian
-        values.push(value)
-      }
-
-      return values
-    },
-    _handleBacktestResultPacket(packet) {
-      const type = packet?.type
-      if (!type) {
-        this.backtestProgressState = 'error'
-        this.backtestProgressErrorType = 'error'
-        this.backtestProgressErrorMessage = 'Invalid results packet received'
-        return
-      }
-
-      if (type === 'start') {
-        this.backtestProgressState = 'running'
-        this.backtestProgress = 0
-        // Clear chart data when starting
-        this.clearChart()
-        return
-      }
-
-      if (type === 'error') {
-        this.backtestProgressState = 'error'
-        this.backtestProgressErrorType = 'error'
-        this.backtestProgressErrorMessage = packet.data?.message || 'Unknown backtesting error'
-        this.isBacktestingRunning = false
-        return
-      }
-
-      if (type === 'cancel') {
-        this.backtestProgressState = 'error'
-        this.backtestProgressErrorType = 'cancel'
-        this.backtestProgressErrorMessage = packet.data?.message || 'Backtesting was cancelled'
-        this.isBacktestingRunning = false
-        return
-      }
-
-      if (type === 'data') {
-        const progress = packet.data?.progress
-        if (typeof progress === 'number') {
-          this.backtestProgress = Math.min(100, Math.max(0, progress))
-          this.backtestProgressState = 'running'
-        }
-        
-        // Process chart data from packet
-        this.processChartData(packet.data)
-        
-        return
-      }
-
-      if (type === 'end') {
-        this.backtestProgress = 100
-        this.backtestProgressState = 'completed'
-        this.isBacktestingRunning = false
-        return
-      }
-    },
     handleBacktestingErrorMessage(errorData) {
       // Handle error event from messages WebSocket with type="event" and data.event="backtesting_error"
       // This handles errors that occur before the results stream starts
@@ -787,12 +485,6 @@ export default {
       this.backtestProgressErrorType = 'error'
       this.backtestProgressErrorMessage = errorData.message || 'Unknown backtesting error'
       this.isBacktestingRunning = false
-      
-      // Close results WebSocket if it's open (it might not be if error occurred before stream started)
-      if (this.backtestResultsSocket) {
-        this.backtestResultsSocket.close()
-        this.backtestResultsSocket = null
-      }
     },
     async handleStrategyCreated(strategyName) {
       // Load strategy when new one is created
@@ -1185,16 +877,10 @@ export default {
 
       // Set running flag
       this.isBacktestingRunning = true
-      this._resetBacktestProgress()
-      // Clear chart when starting backtesting
-      this.clearChart()
 
       try {
         // Call API to start backtesting
         await backtestingApi.startBacktest(this.currentTaskId)
-
-        // Open WebSocket to receive backtest results and progress
-        this._openBacktestResultsSocket(this.currentTaskId)
       } catch (error) {
         console.error('Failed to start backtesting:', error)
         const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
