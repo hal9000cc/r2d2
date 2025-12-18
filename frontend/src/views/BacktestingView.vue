@@ -781,7 +781,7 @@ export default {
       }
     },
     handleBacktestingErrorMessage(errorData) {
-      // Handle error message from messages WebSocket with category="backtesting" and level="error"
+      // Handle error event from messages WebSocket with type="event" and data.event="backtesting_error"
       // This handles errors that occur before the results stream starts
       this.backtestProgressState = 'error'
       this.backtestProgressErrorType = 'error'

@@ -377,8 +377,17 @@ class QuotesServer:
                 except Exception as e:
                     logger.warning(f"Failed to close exchange {source}: {e}", exc_info=True)
         
-            # Step 4: Re-read history after filling gaps
-            quotes_data = self.get_quotes_base(source, symbol, timeframe, history_start, history_end)
+            # Step 4: Re-read history after filling gaps (run blocking ClickHouse query in a thread pool)
+            loop = asyncio.get_running_loop()
+            quotes_data = await loop.run_in_executor(
+                None,
+                self.get_quotes_base,
+                source,
+                symbol,
+                timeframe,
+                history_start,
+                history_end,
+            )
 
         overall_duration = (datetime.now(UTC) - overall_start).total_seconds()
         logger.info(
@@ -502,11 +511,10 @@ class QuotesServer:
             - In historical mode: bars is empty list (bars are saved during fetch)
             - In realtime mode: bars contains only the last complete bar [timestamp, open, high, low, close, volume]
         """
+        tf_str = str(tf)
         realtime = time_end is None
         if realtime:
             raise ValueError(f"Not released realtime mode for {exchange_name}/{symbol}/{tf_str}")
-
-        tf_str = str(tf)
         current_since = int(time_start.replace(tzinfo=UTC).timestamp() * 1000)
         time_end_ms = int(time_end.replace(tzinfo=UTC).timestamp() * 1000.0) if time_end else None
         prev_bars = []

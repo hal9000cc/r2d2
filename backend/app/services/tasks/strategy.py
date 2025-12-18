@@ -11,6 +11,7 @@ from app.core.growing_data2redis import GrowingData2Redis
 from app.core.logger import get_logger
 from app.core.datetime_utils import parse_utc_datetime64
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
+from app.core.objects2redis import MessageType
 
 logger = get_logger(__name__)
 
@@ -557,7 +558,7 @@ class StrategyBacktest(Strategy):
             level: Message level (optional, default: "info")
                   Valid levels: info, warning, error, success, debug
         """
-        self.task.send_message(level=level, message=message)
+        self.task.send_message(MessageType.MESSAGE, {"level": level, "message": message})
     
     def on_start(self):
         """

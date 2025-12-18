@@ -4,6 +4,7 @@ Abstract classes for objects stored in Redis with Pydantic models.
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, TypeVar, Generic, Type, TYPE_CHECKING
 from datetime import datetime, timezone
+from enum import Enum
 import redis
 import json
 from pydantic import BaseModel, PrivateAttr
@@ -13,6 +14,12 @@ logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     pass
+
+
+class MessageType(str, Enum):
+    """Types of messages sent through Redis pub/sub."""
+    MESSAGE = "message"  # Message for messages panel
+    EVENT = "event"  # Event notification
 
 T = TypeVar('T', bound='Objects2Redis')
 
@@ -431,28 +438,47 @@ class Objects2RedisList(ABC, Generic[T]):
         """
         logger.info(f"{self.list_key()} list shutdown")
     
-    def send_message(self, obj_id: int, level: str, message: str, category: Optional[str] = None) -> None:
+    def send_message(self, obj_id: int, type: MessageType, data: Dict) -> None:
         """
         Send message to Redis pub/sub channel for the object.
         
         Channel name format: {list_key()}:messages:{obj_id}
-        Message format: JSON with timestamp, level, message, and category.
+        Message format: JSON with timestamp, type, and data.
         
         Args:
             obj_id: Object ID
-            level: Message level (info, warning, error, success, debug)
-            message: Message text
-            category: Optional message category (e.g., "backtesting"). Defaults to None.
+            type: Message type (MessageType.MESSAGE or MessageType.EVENT)
+            data: Dictionary with message data. Structure depends on type:
+                - For MessageType.MESSAGE: must contain 'level' (str) and 'message' (str)
+                - For MessageType.EVENT: must contain 'event' (str)
             
         Raises:
+            ValueError: If data structure is invalid for the given type
             RuntimeError: If list is not initialized or publish fails
         """
         self._check_initialized()
         
-        # Validate level
-        valid_levels = ['info', 'warning', 'error', 'success', 'debug']
-        if level not in valid_levels:
-            raise ValueError(f"Invalid message level '{level}'. Must be one of: {', '.join(valid_levels)}")
+        # Validate data structure based on type
+        if type == MessageType.MESSAGE:
+            if not isinstance(data, dict):
+                raise ValueError(f"Data must be a dictionary for type {type}")
+            if 'level' not in data or 'message' not in data:
+                raise ValueError(f"Data for type {type} must contain 'level' and 'message' keys")
+            if not isinstance(data['level'], str) or not isinstance(data['message'], str):
+                raise ValueError(f"Data 'level' and 'message' must be strings for type {type}")
+            # Validate level
+            valid_levels = ['info', 'warning', 'error', 'success', 'debug']
+            if data['level'] not in valid_levels:
+                raise ValueError(f"Invalid message level '{data['level']}'. Must be one of: {', '.join(valid_levels)}")
+        elif type == MessageType.EVENT:
+            if not isinstance(data, dict):
+                raise ValueError(f"Data must be a dictionary for type {type}")
+            if 'event' not in data:
+                raise ValueError(f"Data for type {type} must contain 'event' key")
+            if not isinstance(data['event'], str):
+                raise ValueError(f"Data 'event' must be a string for type {type}")
+        else:
+            raise ValueError(f"Unknown message type: {type}")
         
         # Form channel name
         channel = f"{self.list_key()}:messages:{obj_id}"
@@ -460,9 +486,8 @@ class Objects2RedisList(ABC, Generic[T]):
         # Create message payload with timestamp
         message_data = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": level,
-            "message": message,
-            "category": category
+            "type": type.value,
+            "data": data
         }
         
         # Serialize to JSON

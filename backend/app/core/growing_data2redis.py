@@ -291,10 +291,6 @@ class GrowingData2Redis:
         # Send start marker
         self._send_packet(PacketType.START)
         self._initialized = True
-        
-        logger.info(f"Reset completed: {len(self._simple_properties)} simple properties, "
-                   f"{len(self._list_sizes)} list properties, "
-                   f"{len(self._numpy_array_sizes)} numpy array properties")
     
     def send_changes(self) -> None:
         """
@@ -431,9 +427,6 @@ class GrowingData2Redis:
         # Send end marker
         self._send_packet(PacketType.END)
         
-        logger.info(f"Finish completed. Final list sizes: {self._list_sizes}, "
-                   f"Final numpy array sizes: {self._numpy_array_sizes}")
-
     # ==== Stream read helpers (read mode, asynchronous) ====
     
     async def read_stream_from_async(

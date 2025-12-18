@@ -4,7 +4,7 @@ Task management with Redis storage.
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Type, TYPE_CHECKING
 from pydantic import Field
-from app.core.objects2redis import Objects2Redis, Objects2RedisList
+from app.core.objects2redis import Objects2Redis, Objects2RedisList, MessageType
 from app.core.logger import get_logger
 
 if TYPE_CHECKING:
@@ -108,21 +108,57 @@ class Task(Objects2Redis):
             raise RuntimeError("Associated task list does not support clearing results.")
         self._list.clear_result(self.id)
     
-    def send_message(self, level: str, message: str, category: Optional[str] = None) -> None:
+    def send_message(self, type: MessageType, data: Dict) -> None:
         """
         Send message to Redis pub/sub channel for this task.
         
         Args:
-            level: Message level (info, warning, error, success, debug)
-            message: Message text
-            category: Optional message category (e.g., "backtesting"). Defaults to None.
+            type: Message type (MessageType.MESSAGE or MessageType.EVENT)
+            data: Dictionary with message data. Structure depends on type:
+                - For MessageType.MESSAGE: must contain 'level' (str) and 'message' (str)
+                - For MessageType.EVENT: must contain 'event' (str)
+            
+        Raises:
+            ValueError: If data structure is invalid for the given type
+            RuntimeError: If task is not associated with a list or publish fails
+        """
+        if self._list is None:
+            raise RuntimeError("Task is not associated with a list. Cannot send message.")
+        self._list.send_message(self.id, type, data)
+    
+    def message(self, message: str, level: str = "info") -> None:
+        """
+        Send message to user via Redis pub/sub channel.
+        Convenience method that wraps send_message for user messages.
+        
+        Args:
+            message: Message text to display to user
+            level: Message level (optional, default: "info")
+                  Valid levels: info, warning, error, success, debug
+            
+        Raises:
+            RuntimeError: If task is not associated with a list or publish fails
+        """
+        self.send_message(MessageType.MESSAGE, {"level": level, "message": message})
+    
+    def backtesting_error(self, message: str) -> None:
+        """
+        Send backtesting error notification. Sends two messages:
+        1. Event message with event='backtesting_error' for frontend to react (disable start button, etc.)
+        2. Message with error level to display to user.
+        
+        Args:
+            message: Error message text to display to user
             
         Raises:
             RuntimeError: If task is not associated with a list or publish fails
         """
         if self._list is None:
             raise RuntimeError("Task is not associated with a list. Cannot send message.")
-        self._list.send_message(self.id, level, message, category)
+        # Send event notification
+        self._list.send_message(self.id, MessageType.EVENT, {"event": "backtesting_error"})
+        # Send error message to user
+        self._list.send_message(self.id, MessageType.MESSAGE, {"level": "error", "message": message})
 
 
 class TaskList(Objects2RedisList[Task]):

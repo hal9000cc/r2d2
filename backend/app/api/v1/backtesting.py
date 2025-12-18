@@ -17,6 +17,7 @@ from app.services.quotes.client import Client
 from app.core.config import redis_params
 from app.core.logger import get_logger, setup_logging
 from app.core.growing_data2redis import GrowingData2Redis, PacketType
+from app.core.objects2redis import MessageType
 
 logger = get_logger(__name__)
 
@@ -430,7 +431,7 @@ def worker_backtesting_task(task_id: int, id_result: str) -> None:
         process_backtesting_task(task, id_result)
     except Exception as e:
         logger.error(f"Error running backtesting for task {task_id}: {str(e)}", exc_info=True)
-        task.send_message(level="error", message=f"Error running backtesting: {str(e)}", category="backtesting")
+        task.backtesting_error(f"Error running backtesting: {str(e)}")
     finally:
         # Reload task to get latest state
         task = task_list.load(task_id)
@@ -475,14 +476,14 @@ def process_backtesting_task(task: Task, id_result: str) -> None:
         raise
     
     message = f"Backtesting for task {task.id} started"
-    task.send_message(level="info", message=message, category="backtesting")
+    task.message(message)
     logger.info(message)
     
     # Run backtesting
     strategy.run()
     
     message = f"Backtesting for task {task.id} completed successfully"
-    task.send_message(level="info", message=message, category="backtesting")
+    task.message(message)
     logger.info(message)
 
 async def _send_error_and_close(websocket: WebSocket, message: str) -> None:

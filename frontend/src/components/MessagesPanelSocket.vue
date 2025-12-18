@@ -93,23 +93,35 @@ export default {
 
         socket.onmessage = (event) => {
           try {
-            const message = JSON.parse(event.data)
-            // Ensure message has required fields
-            if (message.timestamp && message.level && message.message) {
-              this.messages.push({
-                timestamp: message.timestamp,
-                level: message.level,
-                message: message.message,
-                category: message.category || null
-              })
-              
-              // Handle backtesting error messages (category="backtesting" and level="error")
-              // These errors occur before the results stream starts
-              if (message.category === 'backtesting' && message.level === 'error') {
+            const packet = JSON.parse(event.data)
+            
+            // New format: {timestamp, type, data}
+            if (!packet.timestamp || !packet.type || !packet.data) {
+              console.warn('Invalid message format:', packet)
+              return
+            }
+            
+            // Handle message type (for messages panel)
+            if (packet.type === 'message') {
+              const data = packet.data
+              if (data.level && data.message) {
+                this.messages.push({
+                  timestamp: packet.timestamp,
+                  level: data.level,
+                  message: data.message
+                })
+              }
+            }
+            
+            // Handle event type (for notifications)
+            if (packet.type === 'event') {
+              const data = packet.data
+              if (data.event === 'backtesting_error') {
                 // Emit event to parent component to handle backtesting error
+                // This handles errors that occur before the results stream starts
                 this.$emit('backtesting-error', {
-                  message: message.message,
-                  timestamp: message.timestamp
+                  message: 'Backtesting error occurred',
+                  timestamp: packet.timestamp
                 })
               }
             }
