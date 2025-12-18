@@ -435,6 +435,38 @@ class Objects2RedisList(ABC, Generic[T]):
         """
         logger.info(f"{self.list_key()} list shutdown")
     
+    def _validate_message_data(self, type: MessageType, data: Dict) -> None:
+        """
+        Validate message data structure based on message type.
+        
+        Args:
+            type: Message type (MessageType.MESSAGE or MessageType.EVENT)
+            data: Dictionary with message data
+            
+        Raises:
+            ValueError: If data structure is invalid for the given type
+        """
+        if type == MessageType.MESSAGE:
+            if not isinstance(data, dict):
+                raise ValueError(f"Data must be a dictionary for type {type}")
+            if 'level' not in data or 'message' not in data:
+                raise ValueError(f"Data for type {type} must contain 'level' and 'message' keys")
+            if not isinstance(data['level'], str) or not isinstance(data['message'], str):
+                raise ValueError(f"Data 'level' and 'message' must be strings for type {type}")
+            # Validate level
+            valid_levels = ['info', 'warning', 'error', 'success', 'debug']
+            if data['level'] not in valid_levels:
+                raise ValueError(f"Invalid message level '{data['level']}'. Must be one of: {', '.join(valid_levels)}")
+        elif type == MessageType.EVENT:
+            if not isinstance(data, dict):
+                raise ValueError(f"Data must be a dictionary for type {type}")
+            if 'event' not in data:
+                raise ValueError(f"Data for type {type} must contain 'event' key")
+            if not isinstance(data['event'], str):
+                raise ValueError(f"Data 'event' must be a string for type {type}")
+        else:
+            raise ValueError(f"Unknown message type: {type}")
+    
     def send_message(self, obj_id: int, type: MessageType, data: Dict) -> None:
         """
         Send message to Redis pub/sub channel for the object.
@@ -456,26 +488,7 @@ class Objects2RedisList(ABC, Generic[T]):
         self._check_initialized()
         
         # Validate data structure based on type
-        if type == MessageType.MESSAGE:
-            if not isinstance(data, dict):
-                raise ValueError(f"Data must be a dictionary for type {type}")
-            if 'level' not in data or 'message' not in data:
-                raise ValueError(f"Data for type {type} must contain 'level' and 'message' keys")
-            if not isinstance(data['level'], str) or not isinstance(data['message'], str):
-                raise ValueError(f"Data 'level' and 'message' must be strings for type {type}")
-            # Validate level
-            valid_levels = ['info', 'warning', 'error', 'success', 'debug']
-            if data['level'] not in valid_levels:
-                raise ValueError(f"Invalid message level '{data['level']}'. Must be one of: {', '.join(valid_levels)}")
-        elif type == MessageType.EVENT:
-            if not isinstance(data, dict):
-                raise ValueError(f"Data must be a dictionary for type {type}")
-            if 'event' not in data:
-                raise ValueError(f"Data for type {type} must contain 'event' key")
-            if not isinstance(data['event'], str):
-                raise ValueError(f"Data 'event' must be a string for type {type}")
-        else:
-            raise ValueError(f"Unknown message type: {type}")
+        self._validate_message_data(type, data)
         
         # Form channel name
         channel = f"{self.list_key()}:messages:{obj_id}"
@@ -494,7 +507,20 @@ class Objects2RedisList(ABC, Generic[T]):
             client = self._get_redis_client()
             # Publish to Redis pub/sub channel
             subscribers = client.publish(channel, message_json)
-            logger.debug(f"Published message to channel {channel} (subscribers: {subscribers})")
+            
+            # Log message details
+            if type == MessageType.MESSAGE:
+                logger.debug(
+                    f"Published message to channel {channel} (subscribers: {subscribers}): "
+                    f"type={type.value}, level={data.get('level')}, message={data.get('message')}"
+                )
+            elif type == MessageType.EVENT:
+                logger.debug(
+                    f"Published message to channel {channel} (subscribers: {subscribers}): "
+                    f"type={type.value}, event={data.get('event')}"
+                )
+            else:
+                logger.debug(f"Published message to channel {channel} (subscribers: {subscribers}): type={type.value}")
         except Exception as e:
             logger.error(f"Failed to publish message to channel {channel}: {str(e)}")
             raise RuntimeError(f"Failed to publish message to channel {channel}: {str(e)}") from e

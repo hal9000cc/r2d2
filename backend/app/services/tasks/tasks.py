@@ -2,13 +2,10 @@
 Task management with Redis storage.
 """
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, Type, TYPE_CHECKING
+from typing import Dict, Any, Optional, Type
 from pydantic import Field
 from app.core.objects2redis import Objects2Redis, Objects2RedisList, MessageType
 from app.core.logger import get_logger
-
-if TYPE_CHECKING:
-    import redis
 
 logger = get_logger(__name__)
 

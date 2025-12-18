@@ -417,7 +417,6 @@ class StrategyBacktest(Strategy):
         all_close = self.__quotes.close.values
         all_volume = self.__quotes.volume.values
         
-        # Call on_start before the testing loop
         self.on_start()
         
         for i in range(len(all_close)):

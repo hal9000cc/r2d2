@@ -476,9 +476,10 @@ def process_backtesting_task(task: Task, id_result: str) -> None:
     message = f"Backtesting for task {task.id} started"
     task.message(message)
     logger.info(message)
-    
-    # Run backtesting
+
+    task.send_message(MessageType.EVENT, {"event": "backtesting_started"})
     strategy.run()
+    task.send_message(MessageType.EVENT, {"event": "backtesting_completed"})
     
     message = f"Backtesting for task {task.id} completed successfully"
     task.message(message)

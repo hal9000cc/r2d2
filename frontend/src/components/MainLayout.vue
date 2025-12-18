@@ -13,7 +13,7 @@
       >
         <ChartPanel />
       </ResizablePanel>
-      <MessagesPanelSocket />
+      <MessagesPanel :messages="[]" />
     </div>
     <ResizablePanel
       direction="horizontal"
@@ -33,7 +33,7 @@
 import ResizablePanel from './ResizablePanel.vue'
 import ResultsPanel from './ResultsPanel.vue'
 import ChartPanel from './ChartPanel.vue'
-import MessagesPanelSocket from './MessagesPanelSocket.vue'
+import MessagesPanel from './MessagesPanel.vue'
 import ActiveStrategiesPanel from './ActiveStrategiesPanel.vue'
 
 export default {
@@ -42,7 +42,7 @@ export default {
     ResizablePanel,
     ResultsPanel,
     ChartPanel,
-    MessagesPanelSocket,
+    MessagesPanel,
     ActiveStrategiesPanel
   },
   data() {

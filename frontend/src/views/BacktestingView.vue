@@ -3,7 +3,7 @@
     <!-- Teleport form to navbar -->
     <Teleport to="#navbar-content-slot">
       <BacktestingNavForm 
-        ref="navForm" 
+        ref="navFormRef" 
         :disabled="buttonDisabled"
         :is-running="isBacktestingRunning"
         @start="handleStart"
@@ -137,7 +137,7 @@
             <div v-if="activeTab === 'messages'" class="header-actions">
               <button 
                 class="header-btn clear-btn" 
-                @click="clearMessages"
+                @click="clearAllMessages"
                 :disabled="!hasMessages"
                 title="Clear messages"
               >
@@ -149,13 +149,7 @@
             </div>
           </template>
           <template #messages>
-            <MessagesPanelSocket 
-              ref="messagesPanel" 
-              :task-id="currentTaskId" 
-              :local-messages="backtestMessages"
-              @backtesting-error="handleBacktestingErrorMessage"
-              @messages-count-changed="handleMessagesCountChanged"
-            />
+            <MessagesPanel :messages="allMessages" />
           </template>
         </Tabs>
       </div>
@@ -181,7 +175,7 @@
             @resize="handleParametersResize"
           >
             <StrategyParameters 
-              ref="strategyParameters"
+              ref="strategyParametersRef"
               :parameters-description="strategyParametersDescription"
               :strategy-name="currentStrategyName"
               :initial-parameters="currentTaskParameters"
@@ -195,10 +189,11 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import ResizablePanel from '../components/ResizablePanel.vue'
 import ChartPanel from '../components/ChartPanel.vue'
-import MessagesPanelSocket from '../components/MessagesPanelSocket.vue'
+import MessagesPanel from '../components/MessagesPanel.vue'
 import BacktestingNavForm from '../components/BacktestingNavForm.vue'
 import StrategyParameters from '../components/StrategyParameters.vue'
 import Tabs from '../components/Tabs.vue'
@@ -206,859 +201,839 @@ import CodeMirrorEditor from '../components/CodeMirrorEditor.vue'
 import BacktestingTaskList from '../components/BacktestingTaskList.vue'
 import { strategiesApi } from '../services/strategiesApi'
 import { backtestingApi } from '../services/backtestingApi'
+import { useBacktesting } from '../composables/useBacktesting'
+// Layout state
+const chartHeight = ref(null)
+const chartMaxHeight = ref(null)
+const rightPanelWidth = ref(250)
+const rightPanelMaxWidth = ref(null)
+const parametersHeight = ref(null)
+const parametersMaxHeight = ref(null)
 
-export default {
-  name: 'BacktestingView',
-  components: {
-    ResizablePanel,
-    ChartPanel,
-    MessagesPanelSocket,
-    BacktestingNavForm,
-    StrategyParameters,
-    Tabs,
-    CodeMirrorEditor,
-    BacktestingTaskList
-  },
-  data() {
-    return {
-      chartHeight: null,
-      chartMaxHeight: null,
-      rightPanelWidth: 250,
-      rightPanelMaxWidth: null,
-      parametersHeight: null,
-      parametersMaxHeight: null,
-      chartTabs: [
-        { id: 'strategy', label: 'Strategy' },
-        { id: 'chart', label: 'Chart' }
-      ],
-      tabs: [
-        { id: 'messages', label: 'Messages' }
-      ],
-      activeTab: 'messages',
-      strategyCode: '',
-      activeChartTab: 'strategy',
-      currentStrategyName: null,  // Strategy name for display
-      currentStrategyFilePath: null,  // Relative path to strategy file (with .py extension, for loading/saving)
-      isStrategyLoaded: false,
-      strategyLoadError: null,
-      previousStrategyName: null,
-      saveTimeout: null,
-      taskSaveTimeout: null,
-      backtestMessages: [],
-      strategyParametersDescription: null,
-      currentTaskParameters: null,
-      currentTaskId: null,
-      currentTask: null,
-      isTaskLoading: false, // Flag to prevent auto-save during task loading
-      selectMode: false,
-      selectedTasksCount: 0,
-      isBacktestingRunning: false, // Flag to indicate if backtesting is in progress
-      isSavingStrategy: false, // Flag to indicate if strategy is being saved
-      hasUnsavedChanges: false, // Flag to track if strategy code has been modified since last save
-      backtestProgress: 0,
-      backtestProgressState: 'idle', // 'idle' | 'running' | 'completed' | 'error'
-      backtestProgressErrorMessage: '',
-      backtestProgressErrorType: null, // 'error' | 'cancel' | null
-      backtestResultsSocket: null,
-      wsMessagesCount: 0, // Track WebSocket messages count reactively
-      chartData: [], // Array of {time, open, high, low, close} for chart
-      clearChartFlag: false // Flag to trigger chart clearing
+// Tabs
+const chartTabs = [
+  { id: 'strategy', label: 'Strategy' },
+  { id: 'chart', label: 'Chart' }
+]
+const tabs = [
+  { id: 'messages', label: 'Messages' }
+]
+const activeTab = ref('messages')
+const activeChartTab = ref('strategy')
+
+// Strategy state
+const strategyCode = ref('')
+const currentStrategyName = ref(null)  // Strategy name for display
+const currentStrategyFilePath = ref(null)  // Relative path to strategy file (with .py extension, for loading/saving)
+const isStrategyLoaded = ref(false)
+const strategyLoadError = ref(null)
+const previousStrategyName = ref(null)
+const strategyParametersDescription = ref(null)
+const hasUnsavedChanges = ref(false)
+
+// Task state
+const currentTaskId = ref(null)
+const currentTask = ref(null)
+const currentTaskParameters = ref(null)
+const isTaskLoading = ref(false) // Flag to prevent auto-save during task loading
+
+// Selection state
+const selectMode = ref(false)
+const selectedTasksCount = ref(0)
+
+// Saving state
+const isSavingStrategy = ref(false)
+const saveTimeout = ref(null)
+const taskSaveTimeout = ref(null)
+
+// Chart state
+const chartData = ref([]) // Array of {time, open, high, low, close} for chart
+const clearChartFlag = ref(false) // Flag to trigger chart clearing
+
+// Component refs
+const navFormRef = ref(null)
+const taskListRef = ref(null)
+const strategyParametersRef = ref(null)
+
+// Use backtesting composable
+const {
+  allMessages,
+  messagesCount,
+  isBacktestingRunning,
+  backtestProgress,
+  backtestProgressState,
+  backtestProgressErrorMessage,
+  backtestProgressErrorType,
+  clearMessages,
+  clearAllMessages,
+  addLocalMessage
+} = useBacktesting(currentTaskId)
+// Computed properties
+const isMac = computed(() => {
+  // Use modern userAgentData API if available, otherwise fall back to userAgent parsing
+  if (navigator.userAgentData?.platform) {
+    return navigator.userAgentData.platform.toUpperCase().indexOf('MAC') >= 0
+  }
+  // Fallback: parse userAgent
+  return /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
+})
+
+const buttonDisabled = computed(() => {
+  // If backtesting is running, button should be enabled (for Stop)
+  // If backtesting is not running, button is disabled if no strategy file is loaded
+  return !isBacktestingRunning.value && !currentStrategyFilePath.value
+})
+
+const errorDisplayMessage = computed(() => {
+  // Show simple "Error" message in progress bar
+  // Full error message is available in messages panel
+  return 'Error'
+})
+
+const hasMessages = computed(() => {
+  // Check if there are any messages (local or from WebSocket)
+  return messagesCount.value > 0
+})
+// Watch strategy code changes for auto-save
+watch(strategyCode, (newValue, oldValue) => {
+  // Mark as having unsaved changes when code is modified
+  // Only if task is fully loaded (not during loading) and code actually changed
+  if (currentStrategyFilePath.value && isStrategyLoaded.value && !isTaskLoading.value && newValue !== oldValue) {
+    hasUnsavedChanges.value = true
+    
+    // Auto-save strategy with debounce (5 seconds after last change)
+    if (saveTimeout.value) {
+      clearTimeout(saveTimeout.value)
     }
-  },
-  computed: {
-    isMac() {
-      // Use modern userAgentData API if available, otherwise fall back to userAgent parsing
-      if (navigator.userAgentData?.platform) {
-        return navigator.userAgentData.platform.toUpperCase().indexOf('MAC') >= 0
-      }
-      // Fallback: parse userAgent
-      return /Mac|iPhone|iPad|iPod/.test(navigator.userAgent)
-    },
-    buttonDisabled() {
-      // If backtesting is running, button should be enabled (for Stop)
-      // If backtesting is not running, button is disabled if no strategy file is loaded
-      return !this.isBacktestingRunning && !this.currentStrategyFilePath
-    },
-    errorDisplayMessage() {
-      // Show simple "Error" message in progress bar
-      // Full error message is available in messages panel
-      return 'Error'
-    },
-    hasMessages() {
-      // Check if there are any messages (local or from WebSocket)
-      const localCount = this.backtestMessages.length
-      const wsCount = this.wsMessagesCount
-      return localCount > 0 || wsCount > 0
+    saveTimeout.value = setTimeout(() => {
+      saveCurrentStrategy()
+    }, 5000)
+  }
+})
+
+// Lifecycle hooks
+onMounted(() => {
+  calculateSizes()
+  window.addEventListener('resize', calculateSizes)
+  // Save on page close
+  window.addEventListener('beforeunload', handleBeforeUnload)
+  // Add keyboard shortcut for saving
+  document.addEventListener('keydown', handleKeyDown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', calculateSizes)
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  document.removeEventListener('keydown', handleKeyDown)
+  // Clear auto-save timers
+  if (saveTimeout.value) {
+    clearTimeout(saveTimeout.value)
+  }
+  if (taskSaveTimeout.value) {
+    clearTimeout(taskSaveTimeout.value)
+  }
+  // Save all on component unmount
+  saveAllSync()
+})
+// Methods
+function calculateSizes() {
+  // Calculate available height (viewport height - navbar height 60px)
+  const viewportHeight = window.innerHeight
+  const navbarHeight = 60
+  const availableHeight = viewportHeight - navbarHeight
+  
+  // Calculate max height for Chart (available height - min Tabs height)
+  const tabsMinHeight = 200
+  chartMaxHeight.value = availableHeight - tabsMinHeight
+  
+  // Calculate max width for right panel (50% of viewport width)
+  rightPanelMaxWidth.value = Math.floor(window.innerWidth * 0.5)
+  
+  // Load saved sizes from localStorage or use defaults
+  if (chartHeight.value === null) {
+    const savedChartHeight = localStorage.getItem('backtesting-chart-panel-height')
+    if (savedChartHeight) {
+      const savedHeight = parseInt(savedChartHeight, 10)
+      chartHeight.value = Math.min(savedHeight, chartMaxHeight.value)
+    } else {
+      // Default: 75% of available height for chart
+      chartHeight.value = Math.floor(availableHeight * 0.75)
     }
-  },
-  mounted() {
-    this.calculateSizes()
-    window.addEventListener('resize', this.calculateSizes)
-    // Save on page close
-    window.addEventListener('beforeunload', this.handleBeforeUnload)
-    // Add keyboard shortcut for saving
-    document.addEventListener('keydown', this.handleKeyDown)
-  },
-  beforeUnmount() {
-    window.removeEventListener('resize', this.calculateSizes)
-    window.removeEventListener('beforeunload', this.handleBeforeUnload)
-    document.removeEventListener('keydown', this.handleKeyDown)
-    // Clear auto-save timers
-    if (this.saveTimeout) {
-      clearTimeout(this.saveTimeout)
+  } else {
+    if (chartHeight.value > chartMaxHeight.value) {
+      chartHeight.value = chartMaxHeight.value
     }
-    if (this.taskSaveTimeout) {
-      clearTimeout(this.taskSaveTimeout)
+  }
+  
+  // Load right panel width
+  if (rightPanelWidth.value === 250) {
+    const savedRightPanelWidth = localStorage.getItem('backtesting-right-panel-width')
+    if (savedRightPanelWidth) {
+      const savedWidth = parseInt(savedRightPanelWidth, 10)
+      rightPanelWidth.value = Math.min(savedWidth, rightPanelMaxWidth.value)
+    } else {
+      // Default: 20% of viewport width
+      rightPanelWidth.value = Math.floor(window.innerWidth * 0.2)
     }
-    // Save all on component unmount
-    this.saveAllSync()
-  },
-  watch: {
-    strategyCode(newValue, oldValue) {
-      // Mark as having unsaved changes when code is modified
-      // Only if task is fully loaded (not during loading) and code actually changed
-      if (this.currentStrategyFilePath && this.isStrategyLoaded && !this.isTaskLoading && newValue !== oldValue) {
-        this.hasUnsavedChanges = true
-        
-        // Auto-save strategy with debounce (5 seconds after last change)
-        if (this.saveTimeout) {
-          clearTimeout(this.saveTimeout)
-        }
-        this.saveTimeout = setTimeout(() => {
-          this.saveCurrentStrategy()
-        }, 5000)
-      }
-    },
-    // Form data changes are handled via event from BacktestingNavForm
-  },
-  methods: {
-    calculateSizes() {
-      // Calculate available height (viewport height - navbar height 60px)
-      const viewportHeight = window.innerHeight
-      const navbarHeight = 60
-      const availableHeight = viewportHeight - navbarHeight
+  } else {
+    if (rightPanelWidth.value > rightPanelMaxWidth.value) {
+      rightPanelWidth.value = rightPanelMaxWidth.value
+    }
+  }
+  
+  // Calculate parameters panel height
+  const resultsMinHeight = 150
+  parametersMaxHeight.value = availableHeight - resultsMinHeight
+  
+  if (parametersHeight.value === null) {
+    const savedParametersHeight = localStorage.getItem('backtesting-parameters-height')
+    if (savedParametersHeight) {
+      const savedHeight = parseInt(savedParametersHeight, 10)
+      parametersHeight.value = Math.min(savedHeight, parametersMaxHeight.value)
+    } else {
+      // Default: 50% of available height for parameters
+      parametersHeight.value = Math.floor(availableHeight * 0.5)
+    }
+  } else {
+    if (parametersHeight.value > parametersMaxHeight.value) {
+      parametersHeight.value = parametersMaxHeight.value
+    }
+  }
+}
+
+function handleChartResize(size) {
+  chartHeight.value = size
+}
+
+function handleRightPanelResize(size) {
+  rightPanelWidth.value = size
+}
+
+function handleParametersResize(size) {
+  parametersHeight.value = size
+}
+
+function handleChartTabChange(tabId) {
+  activeChartTab.value = tabId
+}
+async function handleCloseStrategy() {
+  // 1. Disable auto-save timers at the beginning
+  if (saveTimeout.value) {
+    clearTimeout(saveTimeout.value)
+    saveTimeout.value = null
+  }
+  if (taskSaveTimeout.value) {
+    clearTimeout(taskSaveTimeout.value)
+    taskSaveTimeout.value = null
+  }
+  
+  // 2. Set loading flag to prevent auto-save
+  isTaskLoading.value = true
+  
+  // Save all before closing
+  await saveAll()
+  
+  // Clear current strategy and return to task list
+  currentStrategyName.value = null
+  currentStrategyFilePath.value = null
+  isStrategyLoaded.value = false
+  strategyCode.value = ''
+  hasUnsavedChanges.value = false
+  strategyLoadError.value = null
+  previousStrategyName.value = null
+  strategyParametersDescription.value = null
+  currentTaskParameters.value = null
+  currentTaskId.value = null
+  currentTask.value = null
+  selectMode.value = false
+  selectedTasksCount.value = 0
+  
+  // Clear messages when closing strategy
+  clearAllMessages()
+  
+  // 6. Keep loading flag true (task is closed, no auto-save needed)
+  // isTaskLoading will be set to false when new task is loaded
+}
+
+function handleSelectionChanged(selectedIds) {
+  selectedTasksCount.value = selectedIds.length
+}
+
+function cancelSelection() {
+  selectMode.value = false
+  selectedTasksCount.value = 0
+}
+
+function deleteSelectedTasks() {
+  if (taskListRef.value) {
+    taskListRef.value.deleteSelected()
+  }
+}
+
+function handleTabChange(tabId) {
+  // Handle tab change
+  activeTab.value = tabId
+}
+
+// clearMessages is imported from composable
+// Use clearAllMessages if you need to clear both local and WebSocket messages
+async function handleStrategyCreated(strategyName) {
+  // Load strategy when new one is created
+  await loadStrategyFile(strategyName)
+}
+
+async function handleTaskSelected(task) {
+  // 1. Disable auto-save timers at the beginning
+  if (saveTimeout.value) {
+    clearTimeout(saveTimeout.value)
+    saveTimeout.value = null
+  }
+  if (taskSaveTimeout.value) {
+    clearTimeout(taskSaveTimeout.value)
+    taskSaveTimeout.value = null
+  }
+  
+  // 2. Set loading flag to prevent auto-save during loading
+  isTaskLoading.value = true
+  
+  // 3. Save previous task if switching to a different one
+  if (currentTaskId.value && currentTaskId.value !== task.id) {
+    await saveAll()
+    // Clear messages when switching to a different task
+    clearAllMessages()
+  }
+
+  // 4. Load fresh task data from API to ensure we have the latest version
+  let freshTask = task
+  try {
+    freshTask = await backtestingApi.getTask(task.id)
+  } catch (error) {
+    console.error('Failed to load fresh task data:', error)
+    // Fallback to task from list if API call fails
+  }
+
+  // 5. Store current task info
+  currentTaskId.value = freshTask.id
+  currentTask.value = freshTask
+
+  // 6. Update form with task data
+  if (navFormRef.value) {
+    // Set source first, then symbol in nextTick to avoid SymbolInput watcher clearing symbol
+    navFormRef.value.formData.source = freshTask.source || ''
+    
+    // Set symbol after source watcher has processed (SymbolInput clears symbol on source change)
+    nextTick(() => {
+      navFormRef.value.formData.symbol = freshTask.symbol || ''
+      navFormRef.value.formData.timeframe = freshTask.timeframe || ''
+    })
+
+    // Convert ISO dates to YYYY-MM-DD format for date inputs
+    if (freshTask.dateStart) {
+      const dateStart = new Date(freshTask.dateStart)
+      navFormRef.value.formData.dateFrom = dateStart.toISOString().split('T')[0]
+    }
+    if (freshTask.dateEnd) {
+      const dateEnd = new Date(freshTask.dateEnd)
+      navFormRef.value.formData.dateTo = dateEnd.toISOString().split('T')[0]
+    }
+  }
+
+  // 7. Load parameters from task
+  currentTaskParameters.value = freshTask.parameters || null
+
+  // 8. Load strategy if available
+  if (freshTask.file_name) {
+    // file_name is relative path (from STRATEGIES_DIR, with .py extension)
+    currentStrategyFilePath.value = freshTask.file_name
+    strategyLoadError.value = null
+    await loadStrategyFile(currentStrategyFilePath.value)
+  } else {
+    currentStrategyName.value = null
+    currentStrategyFilePath.value = null
+    isStrategyLoaded.value = false
+    strategyCode.value = ''
+    hasUnsavedChanges.value = false
+    strategyLoadError.value = null
+    currentTaskParameters.value = null
+  }
+  
+  // 9. Enable auto-save timers at the end (after all loading is complete)
+  isTaskLoading.value = false
+}
+async function loadStrategyFile(filePath) {
+  try {
+    // Try to load strategy file by path
+    const strategy = await strategiesApi.loadStrategy(filePath)
+    
+    if (strategy && strategy.text) {
+      strategyCode.value = strategy.text
+      hasUnsavedChanges.value = false // Reset flag when loading strategy
+      isStrategyLoaded.value = true
+      strategyLoadError.value = null
+      // Update both name (for display) and file_path (for operations)
+      currentStrategyName.value = strategy.name
+      currentStrategyFilePath.value = strategy.file_path
+      previousStrategyName.value = filePath
       
-      // Calculate max height for Chart (available height - min Tabs height)
-      const tabsMinHeight = 200
-      this.chartMaxHeight = availableHeight - tabsMinHeight
-      
-      // Calculate max width for right panel (50% of viewport width)
-      this.rightPanelMaxWidth = Math.floor(window.innerWidth * 0.5)
-      
-      // Load saved sizes from localStorage or use defaults
-      if (this.chartHeight === null) {
-        const savedChartHeight = localStorage.getItem('backtesting-chart-panel-height')
-        if (savedChartHeight) {
-          const savedHeight = parseInt(savedChartHeight, 10)
-          this.chartHeight = Math.min(savedHeight, this.chartMaxHeight)
-        } else {
-          // Default: 75% of available height for chart
-          this.chartHeight = Math.floor(availableHeight * 0.75)
-        }
+      // Update parameters description if available
+      if (strategy.parameters_description && Object.keys(strategy.parameters_description).length > 0) {
+        strategyParametersDescription.value = strategy.parameters_description
       } else {
-        if (this.chartHeight > this.chartMaxHeight) {
-          this.chartHeight = this.chartMaxHeight
-        }
+        strategyParametersDescription.value = null
       }
       
-      // Load right panel width
-      if (this.rightPanelWidth === 250) {
-        const savedRightPanelWidth = localStorage.getItem('backtesting-right-panel-width')
-        if (savedRightPanelWidth) {
-          const savedWidth = parseInt(savedRightPanelWidth, 10)
-          this.rightPanelWidth = Math.min(savedWidth, this.rightPanelMaxWidth)
-        } else {
-          // Default: 20% of viewport width
-          this.rightPanelWidth = Math.floor(window.innerWidth * 0.2)
-        }
-      } else {
-        if (this.rightPanelWidth > this.rightPanelMaxWidth) {
-          this.rightPanelWidth = this.rightPanelMaxWidth
-        }
-      }
-      
-      // Calculate parameters panel height
-      const resultsMinHeight = 150
-      this.parametersMaxHeight = availableHeight - resultsMinHeight
-      
-      if (this.parametersHeight === null) {
-        const savedParametersHeight = localStorage.getItem('backtesting-parameters-height')
-        if (savedParametersHeight) {
-          const savedHeight = parseInt(savedParametersHeight, 10)
-          this.parametersHeight = Math.min(savedHeight, this.parametersMaxHeight)
-        } else {
-          // Default: 50% of available height for parameters
-          this.parametersHeight = Math.floor(availableHeight * 0.5)
-        }
-      } else {
-        if (this.parametersHeight > this.parametersMaxHeight) {
-          this.parametersHeight = this.parametersMaxHeight
-        }
-      }
-    },
-    handleChartResize(size) {
-      this.chartHeight = size
-    },
-    handleRightPanelResize(size) {
-      this.rightPanelWidth = size
-    },
-    handleParametersResize(size) {
-      this.parametersHeight = size
-    },
-    handleChartTabChange(tabId) {
-      this.activeChartTab = tabId
-    },
-    async handleCloseStrategy() {
-      // 1. Disable auto-save timers at the beginning
-      if (this.saveTimeout) {
-        clearTimeout(this.saveTimeout)
-        this.saveTimeout = null
-      }
-      if (this.taskSaveTimeout) {
-        clearTimeout(this.taskSaveTimeout)
-        this.taskSaveTimeout = null
-      }
-      
-      // 2. Set loading flag to prevent auto-save
-      this.isTaskLoading = true
-      
-      // Save all before closing
-      await this.saveAll()
-      
-      // Clear current strategy and return to task list
-        this.currentStrategyName = null
-        this.currentStrategyFilePath = null
-        this.isStrategyLoaded = false
-        this.strategyCode = ''
-        this.hasUnsavedChanges = false
-        this.strategyLoadError = null
-        this.previousStrategyName = null
-      this.strategyParametersDescription = null
-      this.currentTaskParameters = null
-      this.currentTaskId = null
-      this.currentTask = null
-      this.selectMode = false
-      this.selectedTasksCount = 0
-      
-      // Clear messages when closing strategy
-      this.backtestMessages = []
-      if (this.$refs.messagesPanel) {
-        this.$refs.messagesPanel.clearMessages()
-      }
-      
-      // 6. Keep loading flag true (task is closed, no auto-save needed)
-      // isTaskLoading will be set to false when new task is loaded
-    },
-    handleSelectionChanged(selectedIds) {
-      this.selectedTasksCount = selectedIds.length
-    },
-    cancelSelection() {
-      this.selectMode = false
-      this.selectedTasksCount = 0
-    },
-    deleteSelectedTasks() {
-      if (this.$refs.taskList) {
-        this.$refs.taskList.deleteSelected()
-      }
-    },
-    handleTabChange(tabId) {
-      // Handle tab change
-      this.activeTab = tabId
-    },
-    clearMessages() {
-      // Clear local messages
-      this.backtestMessages = []
-      // Clear WebSocket messages in MessagesPanelSocket
-      // This will trigger events that update wsMessagesCount reactively
-      if (this.$refs.messagesPanel) {
-        this.$refs.messagesPanel.clearMessages()
-      }
-    },
-    handleMessagesCountChanged(count) {
-      // Update WebSocket messages count reactively
-      this.wsMessagesCount = count
-    },
-    handleBacktestingErrorMessage(errorData) {
-      // Handle error event from messages WebSocket with type="event" and data.event="backtesting_error"
-      // This handles errors that occur before the results stream starts
-      this.backtestProgressState = 'error'
-      this.backtestProgressErrorType = 'error'
-      this.backtestProgressErrorMessage = errorData.message || 'Unknown backtesting error'
-      this.isBacktestingRunning = false
-    },
-    async handleStrategyCreated(strategyName) {
-      // Load strategy when new one is created
-      await this.loadStrategyFile(strategyName)
-    },
-    async handleTaskSelected(task) {
-      // 1. Disable auto-save timers at the beginning
-      if (this.saveTimeout) {
-        clearTimeout(this.saveTimeout)
-        this.saveTimeout = null
-      }
-      if (this.taskSaveTimeout) {
-        clearTimeout(this.taskSaveTimeout)
-        this.taskSaveTimeout = null
-      }
-      
-      // 2. Set loading flag to prevent auto-save during loading
-      this.isTaskLoading = true
-      
-      // 3. Save previous task if switching to a different one
-      if (this.currentTaskId && this.currentTaskId !== task.id) {
-        await this.saveAll()
-        // Clear messages when switching to a different task
-        this.backtestMessages = []
-        if (this.$refs.messagesPanel) {
-          this.$refs.messagesPanel.clearMessages()
-        }
-      }
-
-      // 4. Load fresh task data from API to ensure we have the latest version
-      let freshTask = task
-      try {
-        freshTask = await backtestingApi.getTask(task.id)
-      } catch (error) {
-        console.error('Failed to load fresh task data:', error)
-        // Fallback to task from list if API call fails
-      }
-
-      // 5. Store current task info
-      this.currentTaskId = freshTask.id
-      this.currentTask = freshTask
-
-      // 6. Update form with task data
-      if (this.$refs.navForm) {
-        // Set source first, then symbol in nextTick to avoid SymbolInput watcher clearing symbol
-        this.$refs.navForm.formData.source = freshTask.source || ''
-        
-        // Set symbol after source watcher has processed (SymbolInput clears symbol on source change)
-        this.$nextTick(() => {
-          this.$refs.navForm.formData.symbol = freshTask.symbol || ''
-          this.$refs.navForm.formData.timeframe = freshTask.timeframe || ''
+      // Show loading errors as warnings in messages panel
+      if (strategy.loading_errors && strategy.loading_errors.length > 0) {
+        strategy.loading_errors.forEach(error => {
+          addLocalMessage({
+            level: 'warning',
+            message: `Strategy loading warning: ${error}`
+          })
         })
-
-        // Convert ISO dates to YYYY-MM-DD format for date inputs
-        if (freshTask.dateStart) {
-          const dateStart = new Date(freshTask.dateStart)
-          this.$refs.navForm.formData.dateFrom = dateStart.toISOString().split('T')[0]
-        }
-        if (freshTask.dateEnd) {
-          const dateEnd = new Date(freshTask.dateEnd)
-          this.$refs.navForm.formData.dateTo = dateEnd.toISOString().split('T')[0]
-        }
       }
-
-      // 7. Load parameters from task
-      this.currentTaskParameters = freshTask.parameters || null
-
-      // 8. Load strategy if available
-      if (freshTask.file_name) {
-        // file_name is relative path (from STRATEGIES_DIR, with .py extension)
-        this.currentStrategyFilePath = freshTask.file_name
-        this.strategyLoadError = null
-        await this.loadStrategyFile(this.currentStrategyFilePath)
+    } else {
+      throw new Error('Strategy file is empty or invalid')
+    }
+  } catch (error) {
+    console.error('Failed to load strategy file:', error)
+    isStrategyLoaded.value = false
+    strategyCode.value = ''
+    hasUnsavedChanges.value = false
+    strategyParametersDescription.value = null
+    
+    // Set error message for display
+    if (error.response) {
+      if (error.response.status === 404) {
+        const detail = error.response.data?.detail || ''
+        strategyLoadError.value = detail || `Strategy file "${filePath}" not found in strategies directory`
+      } else if (error.response.status === 400) {
+        const detail = error.response.data?.detail || ''
+        strategyLoadError.value = detail || 'Invalid strategy name or path'
       } else {
-        this.currentStrategyName = null
-        this.currentStrategyFilePath = null
-        this.isStrategyLoaded = false
-        this.strategyCode = ''
-        this.hasUnsavedChanges = false
-        this.strategyLoadError = null
-        this.currentTaskParameters = null
+        const detail = error.response.data?.detail || ''
+        strategyLoadError.value = detail || `Server error: ${error.response.status}`
       }
-      
-      // 9. Enable auto-save timers at the end (after all loading is complete)
-      this.isTaskLoading = false
-    },
-    async loadStrategyFile(filePath) {
-      try {
-        // Try to load strategy file by path
-        const strategy = await strategiesApi.loadStrategy(filePath)
-        
-        if (strategy && strategy.text) {
-          this.strategyCode = strategy.text
-          this.hasUnsavedChanges = false // Reset flag when loading strategy
-          this.isStrategyLoaded = true
-          this.strategyLoadError = null
-          // Update both name (for display) and file_path (for operations)
-          this.currentStrategyName = strategy.name
-          this.currentStrategyFilePath = strategy.file_path
-          this.previousStrategyName = filePath
-          
-          // Update parameters description if available
-          if (strategy.parameters_description && Object.keys(strategy.parameters_description).length > 0) {
-            this.strategyParametersDescription = strategy.parameters_description
+    } else if (error.message) {
+      strategyLoadError.value = error.message
+    } else {
+      strategyLoadError.value = 'Unknown error occurred while loading strategy'
+    }
+  }
+}
+async function saveCurrentStrategy() {
+  if (!currentStrategyName.value || !isStrategyLoaded.value) {
+    return false
+  }
+
+  try {
+    const response = await strategiesApi.saveStrategy(currentStrategyFilePath.value, strategyCode.value)
+    
+    // Add syntax errors if any
+    if (response.syntax_errors && response.syntax_errors.length > 0) {
+      response.syntax_errors.forEach(error => {
+        addLocalMessage({
+          level: 'error',
+          message: `Syntax error: ${error}`
+        })
+      })
+    }
+    
+    // Refresh parameters description after successful save
+    // This ensures we have the latest parameter definitions from the saved strategy
+    await refreshParametersDescription()
+    
+    // Mark as saved after successful save
+    hasUnsavedChanges.value = false
+    
+    return true
+  } catch (error) {
+    console.error('Failed to save strategy:', error)
+    // Extract error message properly
+    let errorMessage = 'Unknown error'
+    if (error.response?.data?.detail) {
+      errorMessage = error.response.data.detail
+    } else if (error.message) {
+      errorMessage = error.message
+    } else if (typeof error === 'string') {
+      errorMessage = error
+    }
+    
+    // Add error message to panel
+    addLocalMessage({
+      level: 'error',
+      message: `Failed to save strategy: ${errorMessage}`
+    })
+    return false
+  }
+}
+async function saveCurrentTask() {
+  if (!currentTaskId.value || !navFormRef.value) {
+    return
+  }
+
+  try {
+    // Get general parameters from form
+    const formData = navFormRef.value.formData
+    
+    // Get custom parameters from StrategyParameters component
+    let customParameters = {}
+    if (strategyParametersRef.value) {
+      // Get raw parameter values
+      const rawValues = strategyParametersRef.value.parameterValues || {}
+      // Convert values to proper types based on parameter descriptions
+      const parametersDesc = strategyParametersDescription.value || {}
+      customParameters = {}
+      for (const paramName in rawValues) {
+        const value = rawValues[paramName]
+        if (parametersDesc[paramName]) {
+          const paramDesc = parametersDesc[paramName]
+          const typeLower = paramDesc.type?.toLowerCase() || 'string'
+          // Convert to proper type
+          if (typeLower === 'int' || typeLower === 'integer') {
+            const parsed = parseInt(value, 10)
+            customParameters[paramName] = isNaN(parsed) ? value : parsed
+          } else if (typeLower === 'float' || typeLower === 'double') {
+            const parsed = parseFloat(value)
+            customParameters[paramName] = isNaN(parsed) ? value : parsed
+          } else if (typeLower === 'bool' || typeLower === 'boolean') {
+            customParameters[paramName] = Boolean(value)
           } else {
-            this.strategyParametersDescription = null
-          }
-          
-          // Show loading errors as warnings in messages panel
-          if (strategy.loading_errors && strategy.loading_errors.length > 0) {
-            strategy.loading_errors.forEach(error => {
-              this.backtestMessages.push({
-                timestamp: new Date().toISOString(),
-                level: 'warning',
-                message: `Strategy loading warning: ${error}`
-              })
-            })
+            customParameters[paramName] = String(value)
           }
         } else {
-          throw new Error('Strategy file is empty or invalid')
-        }
-      } catch (error) {
-        console.error('Failed to load strategy file:', error)
-        this.isStrategyLoaded = false
-        this.strategyCode = ''
-        this.hasUnsavedChanges = false
-        this.strategyParametersDescription = null
-        
-        // Set error message for display
-        if (error.response) {
-          if (error.response.status === 404) {
-            const detail = error.response.data?.detail || ''
-            this.strategyLoadError = detail || `Strategy file "${filePath}" not found in strategies directory`
-          } else if (error.response.status === 400) {
-            const detail = error.response.data?.detail || ''
-            this.strategyLoadError = detail || 'Invalid strategy name or path'
-          } else {
-            const detail = error.response.data?.detail || ''
-            this.strategyLoadError = detail || `Server error: ${error.response.status}`
-          }
-        } else if (error.message) {
-          this.strategyLoadError = error.message
-        } else {
-          this.strategyLoadError = 'Unknown error occurred while loading strategy'
+          // If no description, keep as is
+          customParameters[paramName] = value
         }
       }
-    },
-    async saveCurrentStrategy() {
-      if (!this.currentStrategyName || !this.isStrategyLoaded) {
-        return false
-      }
+    } else {
+      // Fallback: use currentTaskParameters if component ref not available
+      customParameters = currentTaskParameters.value || {}
+    }
 
+    // Prepare task data
+    // file_name is relative path (from STRATEGIES_DIR, with .py extension)
+    const taskData = {
+      file_name: currentStrategyFilePath.value || '',
+      name: currentTask.value?.name || '',
+      source: formData.source || '',
+      symbol: formData.symbol || '',
+      timeframe: formData.timeframe || '',
+      dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
+      dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
+      parameters: customParameters
+    }
+
+    const updatedTask = await backtestingApi.updateTask(currentTaskId.value, taskData)
+    
+    // Update currentTaskParameters from response to keep it in sync
+    // Create a new object to ensure Vue reactivity
+    if (updatedTask && updatedTask.parameters) {
+      currentTaskParameters.value = { ...updatedTask.parameters }
+    } else if (updatedTask && !updatedTask.parameters) {
+      currentTaskParameters.value = {}
+    }
+  } catch (error) {
+    console.error('Failed to save task:', error)
+    // Add error message to panel
+    addLocalMessage({
+      level: 'error',
+      message: `Failed to save task: ${error.response?.data?.detail || error.message}`
+    })
+  }
+}
+
+async function saveAll() {
+  // Save both strategy and task
+  await Promise.all([
+    saveCurrentStrategy(),
+    saveCurrentTask()
+  ])
+}
+async function saveAllSync() {
+  // Save all synchronously (for beforeunload/unmount)
+  if (!currentStrategyFilePath.value || !isStrategyLoaded.value) {
+    return
+  }
+
+  try {
+    // Save strategy using sendBeacon or sync XHR
+    const strategyData = JSON.stringify({
+      file_path: currentStrategyFilePath.value,
+      text: strategyCode.value
+    })
+    
+    if (navigator.sendBeacon) {
+      const blob = new Blob([strategyData], { type: 'application/json' })
+      const url = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`
+      navigator.sendBeacon(url, blob)
+    } else {
       try {
-        const response = await strategiesApi.saveStrategy(this.currentStrategyFilePath, this.strategyCode)
-        
-        // Add syntax errors if any
-        if (response.syntax_errors && response.syntax_errors.length > 0) {
-          response.syntax_errors.forEach(error => {
-            this.backtestMessages.push({
-              timestamp: new Date().toISOString(),
-              level: 'error',
-              message: `Syntax error: ${error}`
-            })
-          })
-        }
-        
-        // Refresh parameters description after successful save
-        // This ensures we have the latest parameter definitions from the saved strategy
-        await this.refreshParametersDescription()
-        
-        // Mark as saved after successful save
-        this.hasUnsavedChanges = false
-        
-        return true
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`, false)
+        xhr.setRequestHeader('Content-Type', 'application/json')
+        xhr.send(strategyData)
       } catch (error) {
-        console.error('Failed to save strategy:', error)
-        // Extract error message properly
-        let errorMessage = 'Unknown error'
-        if (error.response?.data?.detail) {
-          errorMessage = error.response.data.detail
-        } else if (error.message) {
-          errorMessage = error.message
-        } else if (typeof error === 'string') {
-          errorMessage = error
-        }
-        
-        // Add error message to panel
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: `Failed to save strategy: ${errorMessage}`
-        })
-        return false
+        console.error('Failed to save strategy on page unload:', error)
       }
-    },
-    async saveCurrentTask() {
-      if (!this.currentTaskId || !this.$refs.navForm) {
-        return
+    }
+
+    // Save task if available
+    if (currentTaskId.value && navFormRef.value) {
+      const formData = navFormRef.value.formData
+      let customParameters = {}
+      if (strategyParametersRef.value) {
+        customParameters = strategyParametersRef.value.parameterValues || {}
+      } else {
+        customParameters = currentTaskParameters.value || {}
       }
 
+      // file_name is relative path (from STRATEGIES_DIR, with .py extension)
+      const taskData = JSON.stringify({
+        file_name: currentStrategyFilePath.value || '',
+        name: currentTask.value?.name || '',
+        source: formData.source || '',
+        symbol: formData.symbol || '',
+        timeframe: formData.timeframe || '',
+        dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
+        dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
+        parameters: customParameters
+      })
+
+      // sendBeacon doesn't support PUT, use sync XHR
       try {
-        // Get general parameters from form
-        const formData = this.$refs.navForm.formData
-        
-        // Get custom parameters from StrategyParameters component
-        let customParameters = {}
-        if (this.$refs.strategyParameters) {
-          // Get raw parameter values
-          const rawValues = this.$refs.strategyParameters.parameterValues || {}
-          // Convert values to proper types based on parameter descriptions
-          const parametersDesc = this.strategyParametersDescription || {}
-          customParameters = {}
-          for (const paramName in rawValues) {
-            const value = rawValues[paramName]
-            if (parametersDesc[paramName]) {
-              const paramDesc = parametersDesc[paramName]
-              const typeLower = paramDesc.type?.toLowerCase() || 'string'
-              // Convert to proper type
-              if (typeLower === 'int' || typeLower === 'integer') {
-                const parsed = parseInt(value, 10)
-                customParameters[paramName] = isNaN(parsed) ? value : parsed
-              } else if (typeLower === 'float' || typeLower === 'double') {
-                const parsed = parseFloat(value)
-                customParameters[paramName] = isNaN(parsed) ? value : parsed
-              } else if (typeLower === 'bool' || typeLower === 'boolean') {
-                customParameters[paramName] = Boolean(value)
-              } else {
-                customParameters[paramName] = String(value)
-              }
-            } else {
-              // If no description, keep as is
-              customParameters[paramName] = value
-            }
-          }
-        } else {
-          // Fallback: use currentTaskParameters if component ref not available
-          customParameters = this.currentTaskParameters || {}
-        }
-
-        // Prepare task data
-        // file_name is relative path (from STRATEGIES_DIR, with .py extension)
-        const taskData = {
-          file_name: this.currentStrategyFilePath || '',
-          name: this.currentTask?.name || '',
-          source: formData.source || '',
-          symbol: formData.symbol || '',
-          timeframe: formData.timeframe || '',
-          dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
-          dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
-          parameters: customParameters
-        }
-
-        const updatedTask = await backtestingApi.updateTask(this.currentTaskId, taskData)
-        
-        // Update currentTaskParameters from response to keep it in sync
-        // Create a new object to ensure Vue reactivity
-        if (updatedTask && updatedTask.parameters) {
-          this.currentTaskParameters = { ...updatedTask.parameters }
-        } else if (updatedTask && !updatedTask.parameters) {
-          this.currentTaskParameters = {}
-        }
+        const xhr = new XMLHttpRequest()
+        xhr.open('PUT', `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/backtesting/tasks/${currentTaskId.value}`, false)
+        xhr.setRequestHeader('Content-Type', 'application/json')
+        xhr.send(taskData)
       } catch (error) {
-        console.error('Failed to save task:', error)
-        // Add error message to panel
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
+        console.error('Failed to save task on page unload:', error)
+      }
+    }
+  } catch (error) {
+    console.error('Failed to save on unmount:', error)
+  }
+}
+
+function handleBeforeUnload(event) {
+  // Save all before page close
+  saveAllSync()
+}
+async function handleStart(formData) {
+  // Validate that we have a current task
+  if (!currentTaskId.value) {
+    addLocalMessage({
+      level: 'error',
+      message: 'No task selected. Please select or create a task first.'
+    })
+    return
+  }
+
+  // Validate that we have a strategy file
+  if (!currentStrategyFilePath.value) {
+    addLocalMessage({
+      level: 'error',
+      message: 'No strategy file selected. Please select a strategy first.'
+    })
+    return
+  }
+
+  // Validate form data
+  if (!formData.source || !formData.symbol || !formData.timeframe || !formData.dateFrom || !formData.dateTo) {
+    addLocalMessage({
+      level: 'error',
+      message: 'Please fill in all required fields: Source, Symbol, Timeframe, Date From, Date To'
+    })
+    return
+  }
+
+  // Save current task before starting backtest
+  try {
+    await saveAll()
+  } catch (error) {
+    console.error('Failed to save before starting backtest:', error)
+    addLocalMessage({
+      level: 'error',
+      message: `Failed to save task before starting backtest: ${error.message}`
+    })
+    return
+  }
+
+  // State will be set by composable when backtesting_started event is received
+  try {
+    // Call API to start backtesting
+    await backtestingApi.startBacktest(currentTaskId.value)
+  } catch (error) {
+    console.error('Failed to start backtesting:', error)
+    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
+    addLocalMessage({
+      level: 'error',
+      message: `Failed to start backtesting: ${errorMessage}`
+    })
+  }
+}
+
+async function handleStop() {
+  // Validate that we have a current task
+  if (!currentTaskId.value) {
+    addLocalMessage({
+      level: 'error',
+      message: 'No task selected. Cannot stop backtesting.'
+    })
+    return
+  }
+
+  try {
+    // Call API to stop backtesting
+    // All UI changes will happen via WebSocket packets (error packet)
+    await backtestingApi.stopBacktest(currentTaskId.value)
+  } catch (error) {
+    console.error('Failed to stop backtesting:', error)
+    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
+    addLocalMessage({
+      level: 'error',
+      message: `Failed to stop backtesting: ${errorMessage}`
+    })
+  }
+}
+async function handleUpdateParameters() {
+  // Update parameters description from strategy
+  if (!currentStrategyName.value || !isStrategyLoaded.value) {
+    return
+  }
+  
+  try {
+    // Save strategy first to ensure we get the latest parameters
+    await strategiesApi.saveStrategy(currentStrategyFilePath.value, strategyCode.value)
+    
+    // Mark as saved after successful save
+    hasUnsavedChanges.value = false
+    
+    // Now load strategy to get updated parameters
+    await refreshParametersDescription()
+  } catch (error) {
+    console.error('Failed to update parameters:', error)
+    // Add error message to panel
+    addLocalMessage({
+      level: 'error',
+      message: `Failed to update parameters: ${error.message}`
+    })
+  }
+}
+
+async function refreshParametersDescription() {
+  // Refresh parameters description from strategy file
+  if (!currentStrategyFilePath.value) {
+    return
+  }
+
+  try {
+    const strategy = await strategiesApi.loadStrategy(currentStrategyFilePath.value)
+    
+    // Only update if parameters were successfully loaded (no errors)
+    if (strategy.loading_errors && strategy.loading_errors.length > 0) {
+      // Don't update parameters if there are errors
+      strategyParametersDescription.value = null
+      // Add loading errors
+      strategy.loading_errors.forEach(error => {
+        addLocalMessage({
           level: 'error',
-          message: `Failed to save task: ${error.response?.data?.detail || error.message}`
+          message: `Failed to load parameters: ${error}`
         })
-      }
-    },
-    async saveAll() {
-      // Save both strategy and task
-      await Promise.all([
-        this.saveCurrentStrategy(),
-        this.saveCurrentTask()
-      ])
-    },
-    async saveAllSync() {
-      // Save all synchronously (for beforeunload/unmount)
-      if (!this.currentStrategyFilePath || !this.isStrategyLoaded) {
-        return
-      }
+      })
+    } else if (strategy.parameters_description && Object.keys(strategy.parameters_description).length > 0) {
+      // Update parameters only if no errors
+      strategyParametersDescription.value = strategy.parameters_description
+    } else {
+      strategyParametersDescription.value = null
+    }
+  } catch (error) {
+    console.error('Failed to refresh parameters description:', error)
+    addLocalMessage({
+      level: 'error',
+      message: `Failed to refresh parameters: ${error.message}`
+    })
+  }
+}
 
-      try {
-        // Save strategy using sendBeacon or sync XHR
-        const strategyData = JSON.stringify({
-          file_path: this.currentStrategyFilePath,
-          text: this.strategyCode
-        })
-        
-        if (navigator.sendBeacon) {
-          const blob = new Blob([strategyData], { type: 'application/json' })
-          const url = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`
-          navigator.sendBeacon(url, blob)
-        } else {
-          try {
-            const xhr = new XMLHttpRequest()
-            xhr.open('POST', `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`, false)
-            xhr.setRequestHeader('Content-Type', 'application/json')
-            xhr.send(strategyData)
-          } catch (error) {
-            console.error('Failed to save strategy on page unload:', error)
-          }
-        }
+function handleFormDataChanged() {
+  // Triggered when general parameters change in BacktestingNavForm
+  // Auto-save task with debounce (5 seconds)
+  // Only if task is fully loaded (not during loading)
+  if (currentTaskId.value && !isTaskLoading.value) {
+    if (taskSaveTimeout.value) {
+      clearTimeout(taskSaveTimeout.value)
+    }
+    taskSaveTimeout.value = setTimeout(() => {
+      saveCurrentTask()
+    }, 5000)
+  }
+}
 
-        // Save task if available
-        if (this.currentTaskId && this.$refs.navForm) {
-          const formData = this.$refs.navForm.formData
-          let customParameters = {}
-          if (this.$refs.strategyParameters) {
-            customParameters = this.$refs.strategyParameters.parameterValues || {}
-          } else {
-            customParameters = this.currentTaskParameters || {}
-          }
+function handleParametersChanged() {
+  // Triggered when custom parameters change in StrategyParameters component
+  // Auto-save task with debounce (5 seconds)
+  // Only if task is fully loaded (not during loading)
+  if (currentTaskId.value && !isTaskLoading.value) {
+    if (taskSaveTimeout.value) {
+      clearTimeout(taskSaveTimeout.value)
+    }
+    taskSaveTimeout.value = setTimeout(() => {
+      saveCurrentTask()
+    }, 5000)
+  }
+}
+function handleKeyDown(event) {
+  // Handle Ctrl+S (or Cmd+S on Mac) to save strategy
+  // This is a fallback for cases when CodeMirror doesn't handle it
+  // Only if we're not in an input/textarea/select element
+  const target = event.target
+  const isInputElement = target.tagName === 'INPUT' || 
+                         target.tagName === 'TEXTAREA' || 
+                         target.tagName === 'SELECT' ||
+                         target.isContentEditable
+  
+  // Check if we're in CodeMirror editor (CodeMirror 6 uses .cm-editor class)
+  const isInCodeMirror = target.closest('.cm-editor') || target.closest('.cm-content')
+  
+  if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+    // Only save if strategy is loaded, we're on strategy tab, and there are unsaved changes
+    if (currentStrategyFilePath.value && isStrategyLoaded.value && activeChartTab.value === 'strategy' && hasUnsavedChanges.value) {
+      // If we're in CodeMirror, it should handle it, but prevent default anyway
+      // If we're not in an input field, handle it
+      if (isInCodeMirror || !isInputElement) {
+        event.preventDefault()
+        handleSaveStrategy()
+      }
+    }
+  }
+}
 
-          // file_name is relative path (from STRATEGIES_DIR, with .py extension)
-          const taskData = JSON.stringify({
-            file_name: this.currentStrategyFilePath || '',
-            name: this.currentTask?.name || '',
-            source: formData.source || '',
-            symbol: formData.symbol || '',
-            timeframe: formData.timeframe || '',
-            dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
-            dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
-            parameters: customParameters
-          })
-
-          // sendBeacon doesn't support PUT, use sync XHR
-          try {
-            const xhr = new XMLHttpRequest()
-            xhr.open('PUT', `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/backtesting/tasks/${this.currentTaskId}`, false)
-            xhr.setRequestHeader('Content-Type', 'application/json')
-            xhr.send(taskData)
-          } catch (error) {
-            console.error('Failed to save task on page unload:', error)
-          }
-        }
-      } catch (error) {
-        console.error('Failed to save on unmount:', error)
-      }
-    },
-    handleBeforeUnload(event) {
-      // Save all before page close
-      this.saveAllSync()
-    },
-    async handleStart(formData) {
-      // Validate that we have a current task
-      if (!this.currentTaskId) {
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: 'No task selected. Please select or create a task first.'
-        })
-        return
-      }
-
-      // Validate that we have a strategy file
-      if (!this.currentStrategyFilePath) {
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: 'No strategy file selected. Please select a strategy first.'
-        })
-        return
-      }
-
-      // Validate form data
-      if (!formData.source || !formData.symbol || !formData.timeframe || !formData.dateFrom || !formData.dateTo) {
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: 'Please fill in all required fields: Source, Symbol, Timeframe, Date From, Date To'
-        })
-        return
-      }
-
-      // Save current task before starting backtest
-      try {
-        await this.saveAll()
-      } catch (error) {
-        console.error('Failed to save before starting backtest:', error)
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: `Failed to save task before starting backtest: ${error.message}`
-        })
-        return
-      }
-
-      // Set running flag
-      this.isBacktestingRunning = true
-
-      try {
-        // Call API to start backtesting
-        await backtestingApi.startBacktest(this.currentTaskId)
-      } catch (error) {
-        console.error('Failed to start backtesting:', error)
-        const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: `Failed to start backtesting: ${errorMessage}`
-        })
-      } finally {
-        // isBacktestingRunning will be reset when results stream finishes or on error
-      }
-    },
-    async handleStop() {
-      // Validate that we have a current task
-      if (!this.currentTaskId) {
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: 'No task selected. Cannot stop backtesting.'
-        })
-        return
-      }
-
-      try {
-        // Call API to stop backtesting
-        // All UI changes will happen via WebSocket packets (error packet)
-        await backtestingApi.stopBacktest(this.currentTaskId)
-      } catch (error) {
-        console.error('Failed to stop backtesting:', error)
-        const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: `Failed to stop backtesting: ${errorMessage}`
-        })
-      }
-    },
-    async handleUpdateParameters() {
-      // Update parameters description from strategy
-      if (!this.currentStrategyName || !this.isStrategyLoaded) {
-        return
-      }
-      
-      try {
-        // Save strategy first to ensure we get the latest parameters
-        await strategiesApi.saveStrategy(this.currentStrategyFilePath, this.strategyCode)
-        
-        // Mark as saved after successful save
-        this.hasUnsavedChanges = false
-        
-        // Now load strategy to get updated parameters
-        await this.refreshParametersDescription()
-      } catch (error) {
-        console.error('Failed to update parameters:', error)
-        // Add error message to panel
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: `Failed to update parameters: ${error.message}`
-        })
-      }
-    },
-    async refreshParametersDescription() {
-      // Refresh parameters description from strategy file
-      if (!this.currentStrategyFilePath) {
-        return
-      }
-
-      try {
-        const strategy = await strategiesApi.loadStrategy(this.currentStrategyFilePath)
-        
-        // Only update if parameters were successfully loaded (no errors)
-        if (strategy.loading_errors && strategy.loading_errors.length > 0) {
-          // Don't update parameters if there are errors
-          this.strategyParametersDescription = null
-          // Add loading errors
-          strategy.loading_errors.forEach(error => {
-            this.backtestMessages.push({
-              timestamp: new Date().toISOString(),
-              level: 'error',
-              message: `Failed to load parameters: ${error}`
-            })
-          })
-        } else if (strategy.parameters_description && Object.keys(strategy.parameters_description).length > 0) {
-          // Update parameters only if no errors
-          this.strategyParametersDescription = strategy.parameters_description
-        } else {
-          this.strategyParametersDescription = null
-        }
-      } catch (error) {
-        console.error('Failed to refresh parameters description:', error)
-        this.backtestMessages.push({
-          timestamp: new Date().toISOString(),
-          level: 'error',
-          message: `Failed to refresh parameters: ${error.message}`
-        })
-      }
-    },
-    handleFormDataChanged() {
-      // Triggered when general parameters change in BacktestingNavForm
-      // Auto-save task with debounce (5 seconds)
-      // Only if task is fully loaded (not during loading)
-      if (this.currentTaskId && !this.isTaskLoading) {
-        if (this.taskSaveTimeout) {
-          clearTimeout(this.taskSaveTimeout)
-        }
-        this.taskSaveTimeout = setTimeout(() => {
-          this.saveCurrentTask()
-        }, 5000)
-      }
-    },
-    handleParametersChanged() {
-      // Triggered when custom parameters change in StrategyParameters component
-      // Auto-save task with debounce (5 seconds)
-      // Only if task is fully loaded (not during loading)
-      if (this.currentTaskId && !this.isTaskLoading) {
-        if (this.taskSaveTimeout) {
-          clearTimeout(this.taskSaveTimeout)
-        }
-        this.taskSaveTimeout = setTimeout(() => {
-          this.saveCurrentTask()
-        }, 5000)
-      }
-    },
-    handleKeyDown(event) {
-      // Handle Ctrl+S (or Cmd+S on Mac) to save strategy
-      // This is a fallback for cases when CodeMirror doesn't handle it
-      // Only if we're not in an input/textarea/select element
-      const target = event.target
-      const isInputElement = target.tagName === 'INPUT' || 
-                             target.tagName === 'TEXTAREA' || 
-                             target.tagName === 'SELECT' ||
-                             target.isContentEditable
-      
-      // Check if we're in CodeMirror editor (CodeMirror 6 uses .cm-editor class)
-      const isInCodeMirror = target.closest('.cm-editor') || target.closest('.cm-content')
-      
-      if ((event.ctrlKey || event.metaKey) && event.key === 's') {
-        // Only save if strategy is loaded, we're on strategy tab, and there are unsaved changes
-        if (this.currentStrategyFilePath && this.isStrategyLoaded && this.activeChartTab === 'strategy' && this.hasUnsavedChanges) {
-          // If we're in CodeMirror, it should handle it, but prevent default anyway
-          // If we're not in an input field, handle it
-          if (isInCodeMirror || !isInputElement) {
-            event.preventDefault()
-            this.handleSaveStrategy()
-          }
-        }
-      }
-    },
-    async handleSaveStrategy() {
-      if (!this.currentStrategyFilePath || !this.isStrategyLoaded || this.isSavingStrategy || !this.hasUnsavedChanges) {
-        return
-      }
-      
-      // Clear auto-save timeout since we're saving manually
-      if (this.saveTimeout) {
-        clearTimeout(this.saveTimeout)
-        this.saveTimeout = null
-      }
-      
-      this.isSavingStrategy = true
-      try {
-        const success = await this.saveCurrentStrategy()
-        // Show success message only if save was successful
-        if (success) {
-          this.backtestMessages.push({
-            timestamp: new Date().toISOString(),
-            level: 'info',
-            message: 'Strategy saved successfully'
-          })
-        }
-      } catch (error) {
-        // Error is already handled in saveCurrentStrategy
-        console.error('Failed to save strategy:', error)
-      } finally {
-        this.isSavingStrategy = false
-      }
-    },
+async function handleSaveStrategy() {
+  if (!currentStrategyFilePath.value || !isStrategyLoaded.value || isSavingStrategy.value || !hasUnsavedChanges.value) {
+    return
+  }
+  
+  // Clear auto-save timeout since we're saving manually
+  if (saveTimeout.value) {
+    clearTimeout(saveTimeout.value)
+    saveTimeout.value = null
+  }
+  
+  isSavingStrategy.value = true
+  try {
+    const success = await saveCurrentStrategy()
+    // Show success message only if save was successful
+    if (success) {
+      addLocalMessage({
+        level: 'info',
+        message: 'Strategy saved successfully'
+      })
+    }
+  } catch (error) {
+    // Error is already handled in saveCurrentStrategy
+    console.error('Failed to save strategy:', error)
+  } finally {
+    isSavingStrategy.value = false
   }
 }
 </script>
