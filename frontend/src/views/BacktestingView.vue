@@ -266,7 +266,9 @@ const {
   backtestProgressErrorType,
   clearMessages,
   clearAllMessages,
-  addLocalMessage
+  addLocalMessage,
+  setBacktestingStarted,
+  resetBacktestingState
 } = useBacktesting(currentTaskId)
 // Computed properties
 const isMac = computed(() => {
@@ -858,12 +860,18 @@ async function handleStart(formData) {
     return
   }
 
-  // State will be set by composable when backtesting_started event is received
+  // Set backtesting state immediately for instant UI feedback
+  setBacktestingStarted()
+  
   try {
     // Call API to start backtesting
     await backtestingApi.startBacktest(currentTaskId.value)
+    // State will also be updated by composable when backtesting_started event is received via WebSocket
+    // But we set it immediately above for instant UI feedback
   } catch (error) {
     console.error('Failed to start backtesting:', error)
+    // Reset state on error
+    resetBacktestingState()
     const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
     addLocalMessage({
       level: 'error',

@@ -1,4 +1,4 @@
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 
 /**
  * Composable for managing backtesting WebSocket connection, messages, and state
@@ -158,7 +158,30 @@ export function useBacktesting(taskId) {
     })
   }
   
+  /**
+   * Set backtesting state to started (called immediately after API call)
+   */
+  function setBacktestingStarted() {
+    isBacktestingRunning.value = true
+    backtestProgressState.value = 'running'
+    backtestProgress.value = 0
+    backtestProgressErrorMessage.value = ''
+    backtestProgressErrorType.value = null
+  }
+  
+  /**
+   * Reset backtesting state (called on error or cancellation)
+   */
+  function resetBacktestingState() {
+    isBacktestingRunning.value = false
+    backtestProgressState.value = 'idle'
+    backtestProgress.value = 0
+    backtestProgressErrorMessage.value = ''
+    backtestProgressErrorType.value = null
+  }
+  
   // Watch taskId changes and reconnect
+  // immediate: true ensures connection on mount if taskId is already set
   watch(taskId, (newTaskId, oldTaskId) => {
     if (newTaskId !== oldTaskId) {
       disconnect()
@@ -167,14 +190,7 @@ export function useBacktesting(taskId) {
         connect(newTaskId)
       }
     }
-  }, { immediate: false })
-  
-  // Connect on mount if taskId is set
-  onMounted(() => {
-    if (taskId.value) {
-      connect(taskId.value)
-    }
-  })
+  }, { immediate: true })
   
   // Disconnect on unmount
   onUnmounted(() => {
@@ -200,6 +216,8 @@ export function useBacktesting(taskId) {
     disconnect,
     clearMessages,
     clearAllMessages,
-    addLocalMessage
+    addLocalMessage,
+    setBacktestingStarted,
+    resetBacktestingState
   }
 }
