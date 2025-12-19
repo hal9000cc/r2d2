@@ -32,11 +32,28 @@ logger = get_logger(__name__)
 _redis_process = None
 
 
-def startup_redis():
+def startup_redis(redis_host: Optional[str] = None, redis_port: Optional[int] = None, redis_db: Optional[int] = None, register_atexit: bool = True) -> subprocess.Popen:
     """
     Start Redis server with data directory in STATE_DIR.
+    
+    Args:
+        redis_host: Redis host (default: from config)
+        redis_port: Redis port (default: from config)
+        redis_db: Redis database number (default: from config)
+        register_atexit: If True, register atexit handler (default: True)
+    
+    Returns:
+        subprocess.Popen: Redis process object
+    
+    Raises:
+        RuntimeError: If Redis fails to start
     """
     global _redis_process
+    
+    # Use provided parameters or fall back to config
+    host = redis_host if redis_host is not None else REDIS_HOST
+    port = redis_port if redis_port is not None else REDIS_PORT
+    db = redis_db if redis_db is not None else REDIS_DB
     
     # Check if redis-server is available
     redis_server_path = shutil.which('redis-server')
@@ -47,25 +64,26 @@ def startup_redis():
     # Check if Redis is already running on the port
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        result = sock.connect_ex((REDIS_HOST, REDIS_PORT))
+        result = sock.connect_ex((host, port))
         sock.close()
     except Exception as e:
         logger.debug(f"Could not check Redis port: {e}")
+        result = -1
 
     if result == 0:
-        raise RuntimeError(f"Port {REDIS_HOST}:{REDIS_PORT} is already in use")
+        raise RuntimeError(f"Port {host}:{port} is already in use")
     
     # Prepare Redis data directory (use STATE_DIR directly)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     
     # Prepare Redis command line arguments
-    redis_bind = REDIS_HOST if REDIS_HOST != 'localhost' else '127.0.0.1'
+    redis_bind = host if host != 'localhost' else '127.0.0.1'
     redis_pidfile = STATE_DIR / 'redis.pid'
     
     # Build Redis command with arguments
     redis_args = [
         redis_server_path,
-        '--port', str(REDIS_PORT),
+        '--port', str(port),
         '--dir', str(STATE_DIR),
         '--bind', redis_bind,
         '--daemonize', 'no',
@@ -75,8 +93,8 @@ def startup_redis():
     
     try:
         # Start Redis server
-        logger.info(f"Starting Redis server on {REDIS_HOST}:{REDIS_PORT} with data dir: {STATE_DIR}")
-        _redis_process = subprocess.Popen(
+        logger.info(f"Starting Redis server on {host}:{port} with data dir: {STATE_DIR}")
+        redis_process = subprocess.Popen(
             redis_args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -85,17 +103,20 @@ def startup_redis():
             # This allows Redis to be child process that will be terminated with parent
         )
         
-        # Register cleanup to ensure Redis is stopped on exit
-        atexit.register(shutdown_redis)
+        # Store in global variable if register_atexit is True (for backward compatibility)
+        if register_atexit:
+            _redis_process = redis_process
+            # Register cleanup to ensure Redis is stopped on exit
+            atexit.register(shutdown_redis)
         
         # Wait a bit and check if process is still running
         time.sleep(1.0)  # Give Redis more time to start
         
         # Check if process is still running
-        if _redis_process.poll() is not None:
+        if redis_process.poll() is not None:
             # Process exited, try to get error message
             error_msg = ""
-            returncode = _redis_process.returncode
+            returncode = redis_process.returncode
             
             # Try to read from stderr (may be empty if process exited quickly)
             try:
@@ -104,8 +125,8 @@ def startup_redis():
                 
                 def read_stderr():
                     try:
-                        if _redis_process.stderr:
-                            data = _redis_process.stderr.read()
+                        if redis_process.stderr:
+                            data = redis_process.stderr.read()
                             if data:
                                 stderr_data.append(data)
                     except Exception:
@@ -129,19 +150,21 @@ def startup_redis():
         # Verify Redis is actually running by trying to connect
         try:
             import redis
-            test_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, socket_connect_timeout=2)
+            test_client = redis.Redis(host=host, port=port, db=db, socket_connect_timeout=2)
             test_client.ping()
             logger.info("Redis server started successfully and is responding")
         except Exception as e:
             # If process is still running but not responding, kill it
-            if _redis_process.poll() is None:
+            if redis_process.poll() is None:
                 logger.warning(f"Redis process is running but not responding: {e}")
                 try:
-                    _redis_process.terminate()
-                    _redis_process.wait(timeout=2)
+                    redis_process.terminate()
+                    redis_process.wait(timeout=2)
                 except Exception:
                     pass
             raise RuntimeError(f"Redis server started but is not responding: {e}")
+        
+        return redis_process
         
     except Exception as e:
         logger.error(f"Failed to start Redis server: {e}")
