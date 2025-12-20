@@ -8,7 +8,7 @@ from typing import Dict, Tuple, Any
 from app.services.tasks.tasks import Task
 from app.services.tasks.strategy import Strategy, OrderSide
 from app.core.startup import startup, shutdown
-from app.services.quotes.client import Client
+from app.services.quotes.client import QuotesClient
 from app.core.config import redis_params
 import talib
 

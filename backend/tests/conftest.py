@@ -27,7 +27,7 @@ from app.core.config import (
     DEFAULT_REDIS_PORT,
 )
 from app.core.logger import setup_logging
-from app.services.quotes.client import Client
+from app.services.quotes.client import QuotesClient
 from app.services.quotes.server import start_quotes_service, stop_quotes_service, QuotesServer
 
 
@@ -35,20 +35,20 @@ def pytest_collection_modifyitems(config, items):
     """
     Automatically set order for tests based on file name.
     Tests from test_quotes.py get order=1, all others get order=2, 
-    test_quotes_performance.py gets order=3.
+    test_quotes_performance.py and test_get_quotes.py get order=3.
     This ensures test_quotes.py runs first, then all other tests, then performance tests.
     Works with both sequential and parallel test execution (pytest-xdist).
     """
     for item in items:
         # Get the file path - try different attributes for compatibility
         file_path = str(getattr(item, "fspath", None) or getattr(item, "path", None) or "")
-
+        
         # Check if it's test_quotes.py
         if "test_quotes" in file_path and "performance" not in file_path:
             # Add order=1 marker if not already present
             if not any(mark.name == "order" for mark in item.iter_markers()):
                 item.add_marker(pytest.mark.order(1))
-        elif "test_quotes_performance" in file_path:
+        elif "test_quotes_performance" in file_path or "test_get_quotes" in file_path:
             # Add order=3 marker if not already present
             if not any(mark.name == "order" for mark in item.iter_markers()):
                 item.add_marker(pytest.mark.order(3))
@@ -159,7 +159,7 @@ def _setup_quotes_service(
         pytest.skip("Could not start quotes service")
     
     # Initialize quotes client
-    Client(
+    QuotesClient(
         redis_params=redis_params_dict,
         request_list=REDIS_QUOTE_REQUEST_LIST,
         response_prefix=REDIS_QUOTE_RESPONSE_PREFIX,
@@ -237,6 +237,9 @@ def quotes_service_production():
         "password": os.getenv("CLICKHOUSE_PASSWORD", ""),
         "database": os.getenv("CLICKHOUSE_DATABASE", "quotes"),
     }
+    
+    # Stop any existing quotes service before starting production one
+    _teardown_quotes_service()
     
     _setup_quotes_service(
         redis_params_dict=redis_params_dict,

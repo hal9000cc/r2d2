@@ -52,3 +52,20 @@ def parse_utc_datetime64(date_str: str) -> np.datetime64:
     # Use parse_utc_datetime and convert to numpy datetime64
     date_dt = parse_utc_datetime(date_str)
     return np.datetime64(date_dt, 'ns')
+
+
+def datetime64_to_iso(dt64: np.datetime64) -> str:
+    """
+    Convert numpy datetime64 to ISO format string.
+    
+    Args:
+        dt64: numpy datetime64 object
+        
+    Returns:
+        str: ISO format string (YYYY-MM-DDTHH:MM:SS+00:00)
+    """
+    # Convert to seconds timestamp
+    timestamp_s = dt64.astype('datetime64[s]').astype(int)
+    # Convert to datetime and format as ISO
+    dt = datetime.fromtimestamp(timestamp_s, tz=timezone.utc)
+    return dt.isoformat()

@@ -12,7 +12,7 @@ from app.core.config import (
     redis_params
 )
 from app.services.quotes.server import start_quotes_service, stop_quotes_service
-from app.services.quotes.client import Client
+from app.services.quotes.client import QuotesClient
 
 logger = get_logger(__name__)
 
@@ -90,7 +90,7 @@ def startup():
     backtesting_task_list.startup()
     
     # Initialize quotes client with configuration
-    Client(
+    QuotesClient(
         redis_params=params,
         request_list=REDIS_QUOTE_REQUEST_LIST,
         response_prefix=REDIS_QUOTE_RESPONSE_PREFIX

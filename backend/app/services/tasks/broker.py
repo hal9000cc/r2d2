@@ -4,13 +4,13 @@ Broker class for handling trading operations and backtesting execution.
 from typing import Optional, Dict, Callable, List
 import numpy as np
 import time
-from app.services.quotes.client import Client
+from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
 from app.services.tasks.strategy import Deal, OrderSide
 from app.core.logger import get_logger
-from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64
+from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64, datetime64_to_iso
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 
@@ -231,8 +231,20 @@ class Broker:
         # Clamp to [0, 100] and round to 1 decimal place
         self.progress = round(max(0.0, min(100.0, progress)), 1)
         
+        # Convert datetime64 to ISO strings for frontend
+        date_start_iso = datetime64_to_iso(self.date_start) if self.date_start is not None else None
+        current_time_iso = datetime64_to_iso(self.current_time) if self.current_time is not None else None
+        
         # Send progress update via event
-        self.task.send_message(MessageType.EVENT, {"event": "backtesting_progress", "progress": self.progress})
+        self.task.send_message(
+            MessageType.EVENT, 
+            {
+                "event": "backtesting_progress", 
+                "progress": self.progress,
+                "date_start": date_start_iso,
+                "current_time": current_time_iso
+            }
+        )
         
         # Load task from Redis to get current state
         current_task = self.task.load()
@@ -301,7 +313,7 @@ class Broker:
             raise RuntimeError(f"Failed to parse dateStart/dateEnd: {e}") from e
         
         # Get quotes data directly from Client
-        client = Client()
+        client = QuotesClient()
         logger.debug(f"Getting quotes for {task.source}:{task.symbol}:{task.timeframe} from {history_start} to {history_end}")
         quotes_data = client.get_quotes(task.source, task.symbol, timeframe, history_start, history_end)
         logger.debug(f"Quotes received: {len(quotes_data['time'])} bars")

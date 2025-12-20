@@ -12,7 +12,7 @@ from app.services.tasks.tasks import BacktestingTaskList, Task
 from app.services.tasks.strategy import Strategy
 from app.services.strategies import validate_relative_path, load_strategy
 from app.services.strategies.exceptions import StrategyFileError, StrategyNotFoundError
-from app.services.quotes.client import Client
+from app.services.quotes.client import QuotesClient
 from app.core.config import redis_params
 from app.core.logger import get_logger, setup_logging
 from app.core.objects2redis import MessageType
@@ -417,7 +417,7 @@ def worker_backtesting_task(task_id: int, result_id: str) -> None:
         
         # Ensure BacktestingTaskList and Quotes Client are initialized in this process
         BacktestingTaskList(redis_params=redis_params())
-        Client(redis_params=redis_params())
+        QuotesClient(redis_params=redis_params())
 
         task = task_list.load(task_id)
         if task is None:

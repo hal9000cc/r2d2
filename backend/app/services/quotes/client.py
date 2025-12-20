@@ -39,17 +39,17 @@ def parse_datetime(value: Optional[Union[datetime, date, str]]) -> Optional[date
     
     raise TypeError(f"Unsupported type for datetime conversion: {type(value)}")
 
-class Client:
+class QuotesClient:
     _instance = None
     _initialized = False
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Client, cls).__new__(cls)
+            cls._instance = super(QuotesClient, cls).__new__(cls)
         return cls._instance
 
     def __init__(self, redis_params: Optional[Dict] = None, request_list: str = 'quotes:requests', response_prefix: str = 'quotes:responses', timeout: int = 30):
-        if not Client._initialized:
+        if not QuotesClient._initialized:
             if redis_params is None:
                 raise RuntimeError("Quotes Client must be initialized with redis_params on first call")
 
@@ -74,7 +74,7 @@ class Client:
             self.request_list = request_list
             self.response_prefix = response_prefix
             self.timeout = timeout
-            Client._initialized = True
+            QuotesClient._initialized = True
             logger.debug(f"Quotes client initialized with Redis connection parameters: host {self.redis_host}, port {self.redis_port}, db {self.redis_db}")
 
     def get_redis_key(self, source: str, symbol: str, timeframe: Timeframe, history_start: datetime, history_end: Optional[datetime] = None) -> str:
@@ -427,7 +427,7 @@ class QuotesBackTest(Quotes):
         self.history_start = parse_datetime(history_start)
         self.history_end = parse_datetime(history_end)
 
-        self.client = Client()
+        self.client = QuotesClient()
         logger.debug(f"Getting quotes for {self.source}:{self.symbol}:{self.timeframe} from {self.history_start} to {self.history_end}")
         self._quotes_data = self.client.get_quotes(self.source, self.symbol, self.timeframe, self.history_start, self.history_end, timeout)
         logger.debug(f"Quotes received: {len(self._quotes_data['time'])} bars")
