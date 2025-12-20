@@ -51,6 +51,7 @@ class Task(Objects2Redis):
         """
         if self._list is None:
             raise RuntimeError("Task is not associated with a list. Cannot load from Redis.")
+            
         return self._list.load(self.id)
     
     def get_redis_client(self):

@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).parent.parent.parent
 CONFIG_DIR = Path.home() / ".config" / "r2d2"
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_REDIS_PORT = 7379
+DEFAULT_REDIS_PORT = 6379
 
 # Default paths
 _DEFAULT_DATA_DIR = str(Path.home() / ".local" / "share" / "r2d2")
@@ -52,7 +52,7 @@ CLICKHOUSE_DATABASE=quotes
 
 # Redis configuration
 REDIS_HOST=localhost
-REDIS_PORT={DEFAULT_REDIS_PORT} # Must be free, because r2d2 starts separate redis server
+REDIS_PORT={DEFAULT_REDIS_PORT} # Standard Redis port
 REDIS_DB=0
 REDIS_PASSWORD=
 REDIS_QUOTE_REQUEST_LIST=quotes:requests

@@ -8,12 +8,12 @@ Pytest configuration and shared fixtures.
 import os
 import time
 import logging
-import subprocess
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict
 
 import clickhouse_connect
 import pytest
+import redis
 from dotenv import load_dotenv
 
 from app.core.config import (
@@ -24,11 +24,9 @@ from app.core.config import (
     CLICKHOUSE_USERNAME,
     CLICKHOUSE_PASSWORD,
     redis_params as get_redis_params,
-    STATE_DIR,
     DEFAULT_REDIS_PORT,
 )
 from app.core.logger import setup_logging
-from app.core.startup import startup_redis, shutdown_redis
 from app.services.quotes.client import Client
 from app.services.quotes.server import start_quotes_service, stop_quotes_service, QuotesServer
 
@@ -65,8 +63,8 @@ def load_test_env():
     env_file = Path(__file__).parent.parent / ".env"
     if env_file.exists():
         load_dotenv(env_file)
-    # Always set REDIS_DB to 1 for tests, overriding any value from .env
-    os.environ["REDIS_DB"] = "1"
+    # Always set REDIS_DB to 3 for tests, overriding any value from .env
+    os.environ["REDIS_DB"] = "3"
     # Use defaults if .env doesn't exist
     os.environ.setdefault("REDIS_HOST", "localhost")
     os.environ.setdefault("REDIS_PORT", "6379")
@@ -86,28 +84,35 @@ def load_production_env():
     load_dotenv(ENV_FILE, override=True)
 
 
-def _stop_redis_manual(redis_process: subprocess.Popen):
-    """Stop Redis process manually."""
-    logger = logging.getLogger(__name__)
+def _check_redis_connection(redis_params_dict: Dict):
+    """
+    Check if Redis is available and responding.
+    
+    Args:
+        redis_params_dict: Redis connection parameters
+        
+    Raises:
+        pytest.skip: If Redis is not available
+    """
     try:
-        redis_process.terminate()
-        redis_process.wait(timeout=5)
-        logger.info("Redis stopped")
-    except subprocess.TimeoutExpired:
-        redis_process.kill()
-        redis_process.wait()
-        logger.info("Redis force stopped")
+        test_client = redis.Redis(
+            host=redis_params_dict["host"],
+            port=redis_params_dict["port"],
+            db=redis_params_dict["db"],
+            password=redis_params_dict.get("password"),
+            socket_connect_timeout=5
+        )
+        test_client.ping()
     except Exception as e:
-        logger.warning(f"Error stopping Redis: {e}")
+        pytest.skip(f"Redis is not available at {redis_params_dict['host']}:{redis_params_dict['port']} (db={redis_params_dict['db']}): {e}")
 
 
 def _setup_quotes_service(
     redis_params_dict: Dict,
     clickhouse_params: Dict,
     drop_database: bool = False,
-    use_startup_redis: bool = True,
     log_level: int = logging.DEBUG
-) -> Tuple[bool, Optional[subprocess.Popen]]:
+):
     """
     Common function to setup quotes service with given parameters.
     
@@ -115,17 +120,15 @@ def _setup_quotes_service(
         redis_params_dict: Redis connection parameters
         clickhouse_params: ClickHouse connection parameters
         drop_database: Whether to drop database before starting
-        use_startup_redis: If True, use startup_redis() function, else start manually
         log_level: Logging level
-    
-    Returns:
-        Tuple (redis_started, redis_process) where:
-        - redis_started: True if we started Redis (always True)
-        - redis_process: Popen object if we started Redis manually, None if using startup_redis with atexit
     """
     setup_logging()
     logger = logging.getLogger(__name__)
     logger.setLevel(log_level)
+    
+    # Check Redis connection
+    _check_redis_connection(redis_params_dict)
+    logger.info(f"Redis connection verified at {redis_params_dict['host']}:{redis_params_dict['port']} (db={redis_params_dict['db']})")
     
     # Drop database if requested
     if drop_database:
@@ -140,19 +143,6 @@ def _setup_quotes_service(
         except Exception:
             pass  # Ignore errors if database doesn't exist
     
-    # Start Redis using startup_redis() with given parameters
-    try:
-        redis_process = startup_redis(
-            redis_host=redis_params_dict["host"],
-            redis_port=redis_params_dict["port"],
-            redis_db=redis_params_dict["db"],
-            register_atexit=use_startup_redis  # Only register atexit if using startup_redis mode
-        )
-        redis_started = True
-        logger.info(f"Redis started on {redis_params_dict['host']}:{redis_params_dict['port']}")
-    except RuntimeError as e:
-        pytest.skip(f"Could not start Redis server: {e}")
-    
     # Reset QuotesServer singleton if needed
     QuotesServer._instance = None
     QuotesServer._initialized = False
@@ -166,12 +156,6 @@ def _setup_quotes_service(
     )
     
     if not service_started:
-        if redis_started:
-            if redis_process:
-                redis_process.terminate()
-                redis_process.wait(timeout=2)
-            else:
-                shutdown_redis()
         pytest.skip("Could not start quotes service")
     
     # Initialize quotes client
@@ -182,22 +166,11 @@ def _setup_quotes_service(
     )
     
     time.sleep(0.1)
-    
-    return redis_started, redis_process
 
 
-def _teardown_quotes_service(redis_started: bool, redis_process: Optional[subprocess.Popen], use_startup_redis: bool = True):
+def _teardown_quotes_service():
     """Common function to teardown quotes service."""
-    logger = logging.getLogger(__name__)
-    
     stop_quotes_service(timeout=5.0)
-    
-    if redis_started:
-        if use_startup_redis:
-            shutdown_redis()
-        elif redis_process:
-            _stop_redis_manual(redis_process)
-    
     QuotesServer._instance = None
     QuotesServer._initialized = False
 
@@ -227,17 +200,16 @@ def quotes_service():
         "database": "quotes_test",
     }
     
-    redis_started, redis_process = _setup_quotes_service(
+    _setup_quotes_service(
         redis_params_dict=redis_params_dict,
         clickhouse_params=clickhouse_params,
         drop_database=True,
-        use_startup_redis=True,
         log_level=logging.DEBUG
     )
     
     yield
     
-    _teardown_quotes_service(redis_started, redis_process, use_startup_redis=True)
+    _teardown_quotes_service()
 
 
 @pytest.fixture(scope="session")
@@ -255,7 +227,7 @@ def quotes_service_production():
     redis_params_dict = {
         "host": os.getenv("REDIS_HOST", "localhost"),
         "port": int(os.getenv("REDIS_PORT", str(DEFAULT_REDIS_PORT))),
-        "db": int(os.getenv("REDIS_DB", "1")),
+        "db": int(os.getenv("REDIS_DB", "0")),
         "password": os.getenv("REDIS_PASSWORD") or None,
     }
     clickhouse_params = {
@@ -266,14 +238,13 @@ def quotes_service_production():
         "database": os.getenv("CLICKHOUSE_DATABASE", "quotes"),
     }
     
-    redis_started, redis_process = _setup_quotes_service(
+    _setup_quotes_service(
         redis_params_dict=redis_params_dict,
         clickhouse_params=clickhouse_params,
         drop_database=False,
-        use_startup_redis=False,  # Use manual start to use production port
         log_level=logging.INFO
     )
     
     yield
     
-    _teardown_quotes_service(redis_started, redis_process, use_startup_redis=False)
+    _teardown_quotes_service()
