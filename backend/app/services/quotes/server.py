@@ -4,7 +4,7 @@ import redis.asyncio as redis
 import numpy as np
 import msgpack
 import logging
-import threading
+import multiprocessing
 from pathlib import Path
 import clickhouse_connect
 import ccxt.async_support as ccxt
@@ -16,9 +16,9 @@ from .constants import TIME_TYPE, TIME_TYPE_UNIT, TIME_UNITS_IN_ONE_SECOND
 logger = logging.getLogger(__name__)
 
 # Global variables for service management
-_service_thread: Optional[threading.Thread] = None
-_stop_event: Optional[threading.Event] = None
-_ready_event: Optional[threading.Event] = None
+_service_process: Optional[multiprocessing.Process] = None
+_stop_event: Optional[multiprocessing.Event] = None
+_ready_event: Optional[multiprocessing.Event] = None
 
 
 class QuotesServer:
@@ -677,7 +677,8 @@ async def run_quotes_service(
     response_prefix: str = 'quotes:responses',
     timeout: int = 0,
     response_ttl: int = 300,
-    stop_event: Optional[threading.Event] = None
+    stop_event: Optional[multiprocessing.Event] = None,
+    ready_event: Optional[multiprocessing.Event] = None
 ):
     """
     Run quotes service that processes requests via Redis lists (LPUSH/BRPOP).
@@ -711,7 +712,8 @@ async def run_quotes_service(
         response_prefix: Prefix for response list names (each request gets its own list)
         timeout: BRPOP timeout in seconds (0 = block indefinitely)
         response_ttl: TTL for response lists in seconds (default: 300 = 5 minutes)
-        stop_event: Threading event to signal service stop
+        stop_event: Multiprocessing event to signal service stop
+        ready_event: Multiprocessing event to signal service is ready
     
     Raises:
         ValueError: If redis_params or clickhouse_params are not provided
@@ -739,9 +741,8 @@ async def run_quotes_service(
     logger.info(f"Quotes service started. Listening on list: {request_list}")
     
     # Signal that service is ready to process requests
-    global _ready_event
-    if _ready_event:
-        _ready_event.set()
+    if ready_event:
+        ready_event.set()
     
     try:
         while stop_event is None or not stop_event.is_set():
@@ -787,11 +788,42 @@ async def run_quotes_service(
         logger.info("Quotes service stopped by keyboard interrupt")
     except Exception as e:
         logger.error(f"Quotes service crashed with exception: {e}", exc_info=True)
-        raise  # Re-raise to ensure thread exits
+        raise  # Re-raise to ensure process exits
     finally:
         if stop_event:
             stop_event.clear()
         logger.info("Quotes service finished")
+        if ready_event:
+            ready_event.clear()
+
+
+def _quotes_service_worker(
+    redis_params: Dict,
+    clickhouse_params: Dict,
+    request_list: str,
+    response_prefix: str,
+    timeout: int,
+    response_ttl: int,
+    stop_event: multiprocessing.Event,
+    ready_event: multiprocessing.Event
+):
+    """
+    Worker function for quotes service process.
+    This function must be at module level to be picklable by multiprocessing.
+    """
+    try:
+        asyncio.run(run_quotes_service(
+            redis_params=redis_params,
+            clickhouse_params=clickhouse_params,
+            request_list=request_list,
+            response_prefix=response_prefix,
+            timeout=timeout,
+            response_ttl=response_ttl,
+            stop_event=stop_event,
+            ready_event=ready_event
+        ))
+    except Exception as e:
+        logger.critical(f"Quotes service process crashed: {e}", exc_info=True)
 
 
 def start_quotes_service(
@@ -805,7 +837,7 @@ def start_quotes_service(
     ready_timeout: float = 30.0
 ) -> bool:
     """
-    Start quotes service in a separate thread.
+    Start quotes service in a separate process.
     
     Args:
         redis_params: Dictionary with Redis connection parameters (host, port, db, password) - REQUIRED
@@ -828,34 +860,31 @@ def start_quotes_service(
     if not clickhouse_params:
         raise ValueError("clickhouse_params must be provided and cannot be empty")
     
-    global _service_thread, _stop_event, _ready_event
+    global _service_process, _stop_event, _ready_event
     
-    if _service_thread is not None and _service_thread.is_alive():
+    if _service_process is not None and _service_process.is_alive():
         logger.warning("Quotes service is already running")
         return False
     
-    _stop_event = threading.Event()
-    _ready_event = threading.Event()
+    _stop_event = multiprocessing.Event()
+    _ready_event = multiprocessing.Event()
 
-    def service_wrapper():
-        # Run async function in event loop
-        try:
-            asyncio.run(run_quotes_service(
-                redis_params=redis_params,
-                clickhouse_params=clickhouse_params,
-                request_list=request_list,
-                response_prefix=response_prefix,
-                timeout=timeout,
-                response_ttl=response_ttl,
-                stop_event=_stop_event
-            ))
-        except Exception as e:
-            logger.critical(f"Quotes service thread crashed: {e}", exc_info=True)
-            # Thread will exit, but we log the error for debugging
-    
-    _service_thread = threading.Thread(target=service_wrapper, daemon=False)
-    _service_thread.start()
-    logger.info("Quotes service thread started")
+    _service_process = multiprocessing.Process(
+        target=_quotes_service_worker,
+        args=(
+            redis_params,
+            clickhouse_params,
+            request_list,
+            response_prefix,
+            timeout,
+            response_ttl,
+            _stop_event,
+            _ready_event
+        ),
+        daemon=False
+    )
+    _service_process.start()
+    logger.info("Quotes service process started")
     
     # Wait for service to be ready if requested
     if wait_ready:
@@ -878,22 +907,27 @@ def stop_quotes_service(timeout: float = 5.0) -> bool:
     Returns:
         True if service stopped successfully, False otherwise
     """
-    global _service_thread, _stop_event
+    global _service_process, _stop_event, _ready_event
     
-    if _service_thread is None or not _service_thread.is_alive():
+    if _service_process is None or not _service_process.is_alive():
         logger.warning("Quotes service is not running")
         return False
     
     logger.info("Stopping quotes service...")
     _stop_event.set()
     
-    _service_thread.join(timeout=timeout)
+    _service_process.join(timeout=timeout)
     
-    if _service_thread.is_alive():
-        logger.error(f"Quotes service did not stop within {timeout} seconds")
-        return False
+    if _service_process.is_alive():
+        logger.error(f"Quotes service did not stop within {timeout} seconds, terminating...")
+        _service_process.terminate()
+        _service_process.join(timeout=2.0)
+        if _service_process.is_alive():
+            logger.error("Quotes service did not terminate, killing...")
+            _service_process.kill()
+            _service_process.join()
     
-    _service_thread = None
+    _service_process = None
     _stop_event = None
     _ready_event = None
     logger.info("Quotes service stopped")
