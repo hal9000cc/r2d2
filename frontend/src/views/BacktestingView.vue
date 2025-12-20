@@ -124,7 +124,16 @@
               </div>
             </template>
             <template #chart>
-              <ChartPanel :chart-data="chartData" :clear-chart="clearChartFlag" @chart-cleared="clearChartFlag = false" />
+              <ChartPanel 
+                :source="currentTask?.source || null"
+                :symbol="currentTask?.symbol || null"
+                :timeframe="currentTask?.timeframe || null"
+                :backtesting-progress="backtestingProgressData"
+                :clear-chart="clearChartFlag" 
+                @chart-cleared="clearChartFlag = false"
+                @quotes-load-error="handleQuotesLoadError"
+                @chart-message="handleChartMessage"
+              />
             </template>
           </Tabs>
         </ResizablePanel>
@@ -247,8 +256,19 @@ const saveTimeout = ref(null)
 const taskSaveTimeout = ref(null)
 
 // Chart state
-const chartData = ref([]) // Array of {time, open, high, low, close} for chart
+const chartData = ref([]) // Array of {time, open, high, low, close} for chart (deprecated, kept for compatibility)
 const clearChartFlag = ref(false) // Flag to trigger chart clearing
+
+// Computed: backtesting progress data for chart
+const backtestingProgressData = computed(() => {
+  if (backtestProgressDateStart.value && backtestProgressCurrentTime.value) {
+    return {
+      date_start: backtestProgressDateStart.value,
+      current_time: backtestProgressCurrentTime.value
+    }
+  }
+  return null
+})
 
 // Component refs
 const navFormRef = ref(null)
@@ -264,6 +284,8 @@ const {
   backtestProgressState,
   backtestProgressErrorMessage,
   backtestProgressErrorType,
+  backtestProgressDateStart,
+  backtestProgressCurrentTime,
   clearMessages,
   clearAllMessages,
   addLocalMessage,
@@ -990,6 +1012,23 @@ function handleParametersChanged() {
     }, 5000)
   }
 }
+
+function handleQuotesLoadError(error) {
+  // Handle error from chart when loading quotes
+  const errorMessage = error.response?.data?.detail || error.message || 'Failed to load quotes data'
+  addLocalMessage({
+    level: 'error',
+    message: `Chart data loading error: ${errorMessage}`
+  })
+}
+
+function handleChartMessage(message) {
+  addLocalMessage({
+    level: message.level || 'info',
+    message: message.message
+  })
+}
+
 function handleKeyDown(event) {
   // Handle Ctrl+S (or Cmd+S on Mac) to save strategy
   // This is a fallback for cases when CodeMirror doesn't handle it

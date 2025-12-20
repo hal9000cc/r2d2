@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Optional
 import ccxt
 import numpy as np
 from app.services.quotes.timeframe import Timeframe
@@ -87,20 +87,21 @@ async def get_quotes(
     symbol: str = Query(..., description="Trading symbol (e.g., 'BTC/USDT')"),
     timeframe: str = Query(..., description="Timeframe (e.g., '1h', '1d', '5m')"),
     date_start: str = Query(..., description="Start date/time in ISO format (e.g., '2024-01-01T00:00:00Z')"),
-    date_end: str = Query(..., description="End date/time in ISO format (e.g., '2024-01-31T23:59:59Z')")
+    date_end: str = Query(..., description="End date/time in ISO format (e.g., '2024-01-31T23:59:59Z')"),
+    fields: Optional[str] = Query(None, description="Comma-separated list of fields to return (e.g., 'time,open,high,low,close'). If not specified, all fields are returned.")
 ):
     """
     Get quotes data for a symbol and timeframe.
     
     Returns array of quote objects, each containing:
-    - time: ISO format datetime string
+    - time: Unix timestamp in seconds (for lightweight-charts compatibility)
     - open: Opening price
     - high: Highest price
     - low: Lowest price
     - close: Closing price
     - volume: Trading volume
     
-    Format is optimized for charting libraries.
+    Format is optimized for lightweight-charts library.
     """
     try:
         # Parse timeframe
@@ -148,24 +149,56 @@ async def get_quotes(
         # Get length (all arrays should have same length)
         length = len(time_array)
         
+        # Parse requested fields
+        requested_fields = None
+        if fields:
+            # Split by comma and strip whitespace
+            requested_fields = [f.strip().lower() for f in fields.split(',') if f.strip()]
+            # Validate fields
+            valid_fields = {'time', 'open', 'high', 'low', 'close', 'volume'}
+            invalid_fields = [f for f in requested_fields if f not in valid_fields]
+            if invalid_fields:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid fields: {', '.join(invalid_fields)}. Valid fields are: {', '.join(sorted(valid_fields))}"
+                )
+        
         # Convert to list of dictionaries
+        # Format optimized for lightweight-charts: time as Unix timestamp in seconds
         result = []
         for i in range(length):
-            # Convert numpy datetime64 to ISO string
+            # Convert numpy datetime64 to Unix timestamp in seconds
             time_dt64 = time_array[i]
             if isinstance(time_dt64, np.datetime64):
-                time_str = datetime64_to_iso(time_dt64).replace('+00:00', 'Z')
+                # Convert to seconds timestamp (Unix epoch)
+                time_timestamp = int(time_dt64.astype('datetime64[s]').astype(int))
             else:
-                time_str = str(time_dt64)
+                # Fallback: try to parse as datetime and convert
+                time_timestamp = int(np.datetime64(time_dt64).astype('datetime64[s]').astype(int))
             
-            result.append({
-                "time": time_str,
-                "open": float(open_array[i]),
-                "high": float(high_array[i]),
-                "low": float(low_array[i]),
-                "close": float(close_array[i]),
-                "volume": float(volume_array[i])
-            })
+            # Build result dictionary with only requested fields
+            quote_dict = {}
+            
+            # Always include time if requested (or if no fields specified)
+            if not requested_fields or 'time' in requested_fields:
+                quote_dict["time"] = time_timestamp
+            
+            if not requested_fields or 'open' in requested_fields:
+                quote_dict["open"] = float(open_array[i])
+            
+            if not requested_fields or 'high' in requested_fields:
+                quote_dict["high"] = float(high_array[i])
+            
+            if not requested_fields or 'low' in requested_fields:
+                quote_dict["low"] = float(low_array[i])
+            
+            if not requested_fields or 'close' in requested_fields:
+                quote_dict["close"] = float(close_array[i])
+            
+            if not requested_fields or 'volume' in requested_fields:
+                quote_dict["volume"] = float(volume_array[i])
+            
+            result.append(quote_dict)
         
         return result
         

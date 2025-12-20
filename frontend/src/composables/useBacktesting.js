@@ -20,6 +20,8 @@ export function useBacktesting(taskId) {
   const backtestProgressState = ref('idle') // 'idle' | 'running' | 'completed' | 'error'
   const backtestProgressErrorMessage = ref('')
   const backtestProgressErrorType = ref(null) // 'error' | 'cancel' | null
+  const backtestProgressDateStart = ref(null) // ISO string: date_start from backtesting_progress
+  const backtestProgressCurrentTime = ref(null) // ISO string: current_time from backtesting_progress
   
   // Computed: combined messages sorted by timestamp
   const allMessages = computed(() => {
@@ -98,6 +100,8 @@ export function useBacktesting(taskId) {
               backtestProgress.value = 0
               backtestProgressErrorMessage.value = ''
               backtestProgressErrorType.value = null
+              backtestProgressDateStart.value = null
+              backtestProgressCurrentTime.value = null
             } else if (event === 'backtesting_progress') {
               // Only update progress if backtesting is running
               if (backtestProgressState.value === 'running' && isBacktestingRunning.value) {
@@ -113,6 +117,14 @@ export function useBacktesting(taskId) {
                 // Clamp to [0, 100]
                 progress = Math.max(0, Math.min(100, progress))
                 backtestProgress.value = progress
+                
+                // Save date_start and current_time from progress message
+                if (data.date_start) {
+                  backtestProgressDateStart.value = data.date_start
+                }
+                if (data.current_time) {
+                  backtestProgressCurrentTime.value = data.current_time
+                }
               } else {
                 // Progress update received outside of running state - log as error
                 addLocalMessage({
@@ -189,6 +201,8 @@ export function useBacktesting(taskId) {
     backtestProgress.value = 0
     backtestProgressErrorMessage.value = ''
     backtestProgressErrorType.value = null
+    backtestProgressDateStart.value = null
+    backtestProgressCurrentTime.value = null
   }
   
   /**
@@ -200,6 +214,8 @@ export function useBacktesting(taskId) {
     backtestProgress.value = 0
     backtestProgressErrorMessage.value = ''
     backtestProgressErrorType.value = null
+    backtestProgressDateStart.value = null
+    backtestProgressCurrentTime.value = null
   }
   
   // Watch taskId changes and reconnect
@@ -232,6 +248,8 @@ export function useBacktesting(taskId) {
     backtestProgressState,
     backtestProgressErrorMessage,
     backtestProgressErrorType,
+    backtestProgressDateStart,
+    backtestProgressCurrentTime,
     
     // Methods
     connect,
