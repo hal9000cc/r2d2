@@ -105,11 +105,12 @@ def shutdown():
     """
     Cleanup procedures on application shutdown.
     This function is called when FastAPI application shuts down.
+    Uses shorter timeout for quotes service to allow faster reload.
     """
     logger.info("Shutting down R2D2 backend application")
     
-    # Stop quotes service
-    if stop_quotes_service():
+    # Stop quotes service with shorter timeout for faster shutdown
+    if stop_quotes_service(timeout=2.0):
         logger.info("Quotes service stopped successfully")
     else:
         logger.warning("Quotes service was not running or failed to stop")

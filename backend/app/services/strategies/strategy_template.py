@@ -1,9 +1,8 @@
-from app.services.tasks.strategy import StrategyBacktest, OrderSide
-from app.services.tasks.tasks import Task
+from app.services.tasks.strategy import Strategy, OrderSide
 from typing import Dict, Tuple, Any
 
 
-class MyStrategy(StrategyBacktest):
+class MyStrategy(Strategy):
     """
     My strategy template
     
@@ -11,8 +10,8 @@ class MyStrategy(StrategyBacktest):
     Replace MyStrategy with your strategy class name.
     """
     
-    def __init__(self, task: Task, id_result: str):
-        super().__init__(task, id_result)
+    def __init__(self):
+        super().__init__()
     
     @staticmethod
     def get_parameters_description() -> Dict[str, Tuple[Any, str]]:

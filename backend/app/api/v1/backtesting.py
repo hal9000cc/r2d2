@@ -9,13 +9,14 @@ from datetime import datetime, timezone
 from multiprocessing import Process
 import redis.asyncio as redis_async
 from app.services.tasks.tasks import BacktestingTaskList, Task
-from app.services.tasks.strategy import StrategyBacktest
+from app.services.tasks.strategy import Strategy
 from app.services.strategies import validate_relative_path, load_strategy
 from app.services.strategies.exceptions import StrategyFileError, StrategyNotFoundError
 from app.services.quotes.client import Client
 from app.core.config import redis_params
 from app.core.logger import get_logger, setup_logging
 from app.core.objects2redis import MessageType
+from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 
 logger = get_logger(__name__)
 
@@ -175,7 +176,7 @@ def load_strategy_class(file_path: str):
         file_path: Relative path to strategy file (from STRATEGIES_DIR, with .py extension)
         
     Returns:
-        Strategy class that inherits from StrategyBacktest
+        Strategy class that inherits from Strategy
         
     Raises:
         StrategyNotFoundError: If strategy file not found
@@ -214,14 +215,14 @@ def load_strategy_class(file_path: str):
     except Exception as e:
         raise RuntimeError(f"Failed to load strategy module: {str(e)}") from e
     
-    # Find the strategy class (should inherit from StrategyBacktest)
+    # Find the strategy class (should inherit from Strategy)
     strategy_class = None
     for attr_name in dir(module):
         try:
             attr = getattr(module, attr_name)
             if (isinstance(attr, type) and 
-                issubclass(attr, StrategyBacktest) and 
-                attr != StrategyBacktest):
+                issubclass(attr, Strategy) and 
+                attr != Strategy):
                 strategy_class = attr
                 break
         except Exception:
@@ -229,7 +230,7 @@ def load_strategy_class(file_path: str):
     
     if strategy_class is None:
         raise ValueError(
-            "Strategy class not found: no class inheriting from StrategyBacktest found in the code"
+            "Strategy class not found: no class inheriting from Strategy found in the code"
         )
     
     return strategy_class
@@ -388,27 +389,27 @@ def start_backtesting_worker(task_id: int) -> None:
         raise HTTPException(status_code=500, detail="Failed to clear previous backtesting results")
     
     # Generate unique ID for this backtesting run
-    id_result = str(uuid.uuid4())
+    result_id = str(uuid.uuid4())
     
-    # Write id_result to task and save
-    task.id_result = id_result
+    # Write result_id to task and save
+    task.result_id = result_id
     task.save()
-    logger.info(f"Generated id_result {id_result} for task {task_id}")
+    logger.info(f"Generated result_id {result_id} for task {task_id}")
     
     # Start worker in separate process
-    process = Process(target=worker_backtesting_task, args=(task_id, id_result))
+    process = Process(target=worker_backtesting_task, args=(task_id, result_id))
     process.start()
-    logger.info(f"Started backtesting worker process for task {task_id} (PID: {process.pid}) with id_result {id_result}")
+    logger.info(f"Started backtesting worker process for task {task_id} (PID: {process.pid}) with result_id {result_id}")
 
 
-def worker_backtesting_task(task_id: int, id_result: str) -> None:
+def worker_backtesting_task(task_id: int, result_id: str) -> None:
     """
     Worker function that runs in a separate process.
     Handles task status updates and calls process_backtesting_task.
     
     Args:
         task_id: Task ID to run backtesting for
-        id_result: Unique ID for this backtesting run (GUID)
+        result_id: Unique ID for this backtesting run (GUID)
     """
     try:
         # Initialize logging in this process
@@ -425,8 +426,8 @@ def worker_backtesting_task(task_id: int, id_result: str) -> None:
             
         task.isRunning = True
         task.save()
-        logger.info(f"Starting background backtesting for task {task_id} with id_result {id_result}")
-        process_backtesting_task(task, id_result)
+        logger.info(f"Starting background backtesting for task {task_id} with result_id {result_id}")
+        process_backtesting_task(task, result_id)
     except Exception as e:
         logger.error(f"Error running backtesting for task {task_id}: {str(e)}", exc_info=True)
         task.backtesting_error(f"Error running backtesting: {str(e)}")
@@ -439,14 +440,14 @@ def worker_backtesting_task(task_id: int, id_result: str) -> None:
             logger.info(f"Task {task_id} status updated: isRunning=False")
     
     
-def process_backtesting_task(task: Task, id_result: str) -> None:
+def process_backtesting_task(task: Task, result_id: str) -> None:
     """
     Background procedure for running backtesting task.
     This function is designed to run in a separate process.
     
     Args:
         task: Task instance to run backtesting for
-        id_result: Unique ID for this backtesting run (GUID)
+        result_id: Unique ID for this backtesting run (GUID)
         
     This function runs synchronously in a separate process and does not return any value.
     Task status is updated in Redis (isRunning flag).
@@ -460,14 +461,14 @@ def process_backtesting_task(task: Task, id_result: str) -> None:
     # All exceptions will be caught in worker_backtesting_task and handled appropriately
     strategy_class = load_strategy_class(task.file_name)
     
-    # Create strategy instance with id_result
+    # Create strategy instance
     try:
-        strategy = strategy_class(task, id_result)
+        strategy = strategy_class()
     except TypeError as e:
         if "__init__()" in str(e) and "positional arguments" in str(e):
             error_msg = (
                 f"Strategy class {strategy_class.__name__} constructor is outdated. "
-                f"It must accept 'id_result' parameter: def __init__(self, task: Task, id_result: str)"
+                f"It must accept no parameters: def __init__(self)"
             )
             logger.error(f"{error_msg}. Error: {e}")
             raise ValueError(error_msg) from e
@@ -478,7 +479,21 @@ def process_backtesting_task(task: Task, id_result: str) -> None:
     logger.info(message)
 
     task.send_message(MessageType.EVENT, {"event": "backtesting_started"})
-    strategy.run()
+    
+    # Create broker with strategy callbacks
+    from app.services.tasks.broker import Broker
+    callbacks = Strategy.create_strategy_callbacks(strategy)
+    broker = Broker(
+        fee=0.001,
+        task=task,
+        result_id=result_id,
+        callbacks_dict=callbacks,
+        results_save_period=TRADE_RESULTS_SAVE_PERIOD
+    )
+    # Set broker reference in strategy
+    strategy.broker = broker
+    broker.run(task)
+    
     task.send_message(MessageType.EVENT, {"event": "backtesting_completed"})
     
     message = f"Backtesting for task {task.id} completed successfully"
@@ -553,11 +568,22 @@ async def task_messages_websocket(websocket: WebSocket, task_id: int):
                         logger.debug(f"WebSocket disconnected while sending message for task {task_id}: {e}")
                         break
                     except Exception as e:
-                        # Check if it's a WebSocket close error (code 1001 "going away")
+                        # Check if it's a WebSocket close error
+                        # 1001 = "going away" (normal closure)
+                        # 1005 = "no status received [internal]" (connection closed without close frame)
+                        # 1012 = "service restart" (server restarting)
                         error_str = str(e).lower()
                         if "1001" in error_str or "going away" in error_str:
                             # Normal WebSocket closure, exit loop
                             logger.debug(f"WebSocket closed normally for task {task_id}: {e}")
+                            break
+                        elif "1005" in error_str or "no status received" in error_str:
+                            # Connection closed without close frame - treat as normal closure
+                            logger.debug(f"WebSocket closed without close frame for task {task_id}: {e}")
+                            break
+                        elif "1012" in error_str or "service restart" in error_str:
+                            # Server restarting - treat as normal closure
+                            logger.debug(f"WebSocket closed due to service restart for task {task_id}: {e}")
                             break
                         # Other errors - log and continue
                         logger.error(f"Error processing message from channel {channel}: {e}")
@@ -565,6 +591,10 @@ async def task_messages_websocket(websocket: WebSocket, task_id: int):
                 # Check if WebSocket is still open (non-blocking)
                 # If connection is closed, get_message will raise on next iteration
                 
+            except asyncio.CancelledError:
+                # WebSocket is being cancelled (e.g., during shutdown)
+                logger.debug(f"WebSocket cancelled for task {task_id}")
+                break
             except asyncio.TimeoutError:
                 # Timeout is normal, continue listening
                 continue
@@ -584,6 +614,9 @@ async def task_messages_websocket(websocket: WebSocket, task_id: int):
                     pass
                 break
                 
+    except asyncio.CancelledError:
+        # WebSocket is being cancelled (e.g., during shutdown)
+        logger.debug(f"WebSocket cancelled for task {task_id}")
     except WebSocketDisconnect:
         # Client disconnected normally
         pass

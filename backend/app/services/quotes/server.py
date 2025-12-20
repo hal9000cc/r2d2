@@ -1,5 +1,5 @@
 from datetime import datetime, UTC
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Callable, TypeVar, Any
 import redis.asyncio as redis
 import numpy as np
 import msgpack
@@ -12,6 +12,9 @@ import asyncio
 from .timeframe import Timeframe
 from .exceptions import R2D2QuotesException, R2D2QuotesExceptionDataNotReceived
 from .constants import TIME_TYPE, TIME_TYPE_UNIT, TIME_UNITS_IN_ONE_SECOND
+from app.core.config import QUOTES_FETCH_RETRY_ATTEMPTS, QUOTES_FETCH_RETRY_DELAY
+
+T = TypeVar('T')
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,52 @@ logger = logging.getLogger(__name__)
 _service_process: Optional[multiprocessing.Process] = None
 _stop_event: Optional[multiprocessing.Event] = None
 _ready_event: Optional[multiprocessing.Event] = None
+
+
+async def retry_async(
+    func: Callable[..., Any],
+    max_attempts: int = QUOTES_FETCH_RETRY_ATTEMPTS,
+    delay: float = QUOTES_FETCH_RETRY_DELAY,
+    *args,
+    **kwargs
+) -> Any:
+    """
+    Retry an async function with fixed delay between attempts.
+    
+    Args:
+        func: Async function to retry
+        max_attempts: Maximum number of attempts (default: from config)
+        delay: Delay in seconds between retries (default: from config)
+        *args: Positional arguments to pass to func
+        **kwargs: Keyword arguments to pass to func
+        
+    Returns:
+        Result of func(*args, **kwargs)
+        
+    Raises:
+        Exception: Last exception if all attempts fail
+    """
+    last_exception = None
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            last_exception = e
+            if attempt < max_attempts:
+                logger.warning(
+                    f"Attempt {attempt}/{max_attempts} failed: {e}. "
+                    f"Retrying in {delay} seconds..."
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(
+                    f"All {max_attempts} attempts failed. Last error: {e}",
+                    exc_info=True
+                )
+    
+    # If we get here, all attempts failed
+    raise last_exception
 
 
 class QuotesServer:
@@ -531,17 +580,16 @@ class QuotesServer:
             bars_needed = int(time_diff_ms / timeframe_ms) + 2  # +2 because we need to fetch +1 bars more to be sure that we have the last complete bar
             request_limit = min(bars_needed, max_bars)
             
-            try:
-                # Use asynchronous CCXT client (ccxt.async_support)
-                bars = await exchange.fetch_ohlcv(
-                    symbol=symbol,
-                    timeframe=tf_str,
-                    since=current_since,
-                    limit=request_limit
-                )
-            except Exception as e:
-                logger.error(f"Error fetching bars from {exchange_name}/{symbol}/{tf_str}: {e}", exc_info=True)
-                raise
+            # Use retry mechanism for fetching bars
+            bars = await retry_async(
+                exchange.fetch_ohlcv,
+                max_attempts=QUOTES_FETCH_RETRY_ATTEMPTS,
+                delay=QUOTES_FETCH_RETRY_DELAY,
+                symbol=symbol,
+                timeframe=tf_str,
+                since=current_since,
+                limit=request_limit
+            )
             
             if not bars or len(bars) == 0:
                 break
@@ -748,6 +796,7 @@ async def run_quotes_service(
         while stop_event is None or not stop_event.is_set():
             try:
                 # Blocking pop from request list (async I/O using asynchronous Redis client)
+                # Use shorter timeout to check stop_event more frequently
                 result = await server.redis_client.brpop(
                     request_list,
                     timeout=timeout if timeout > 0 else 1
@@ -778,6 +827,10 @@ async def run_quotes_service(
                 except Exception as e:
                     logger.error(f"Error parsing request: {e}", exc_info=True)
                     
+            except asyncio.CancelledError:
+                # Service is being cancelled (e.g., during shutdown)
+                logger.info("Quotes service cancelled")
+                break
             except Exception as e:
                 # Catch any exceptions in the main loop to prevent service from crashing
                 logger.error(f"Error in quotes service main loop: {e}", exc_info=True)
@@ -786,6 +839,8 @@ async def run_quotes_service(
                 
     except KeyboardInterrupt:
         logger.info("Quotes service stopped by keyboard interrupt")
+    except asyncio.CancelledError:
+        logger.info("Quotes service cancelled")
     except Exception as e:
         logger.error(f"Quotes service crashed with exception: {e}", exc_info=True)
         raise  # Re-raise to ensure process exits

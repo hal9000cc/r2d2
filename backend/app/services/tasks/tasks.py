@@ -22,7 +22,7 @@ class Task(Objects2Redis):
     symbol: str = ""
     timeframe: str = ""
     isRunning: bool = False
-    id_result: str = ""  # Unique ID for this backtesting run (GUID), used to detect duplicate workers
+    result_id: str = ""  # Unique ID for this backtesting run (GUID), used to detect duplicate workers
     dateStart: str = Field(
         default_factory=lambda: (datetime.now() + timedelta(days=-30)).isoformat()
     )
@@ -104,6 +104,7 @@ class Task(Objects2Redis):
             raise RuntimeError("Task is not associated with a list. Cannot clear result.")
         if not hasattr(self._list, "clear_result"):
             raise RuntimeError("Associated task list does not support clearing results.")
+            
         self._list.clear_result(self.id)
     
     def send_message(self, type: MessageType, data: Dict) -> None:

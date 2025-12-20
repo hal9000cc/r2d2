@@ -376,23 +376,23 @@ def get_strategy_parameters_description(name: str, text: str) -> Tuple[Optional[
             errors.append(f"Failed to load strategy module: {str(e)}")
             return None, errors
         
-        # Find the strategy class (should inherit from StrategyBacktest)
-        from app.services.tasks.strategy import StrategyBacktest
+        # Find the strategy class (should inherit from Strategy)
+        from app.services.tasks.strategy import Strategy
         
         strategy_class = None
         for attr_name in dir(module):
             try:
                 attr = getattr(module, attr_name)
                 if (isinstance(attr, type) and 
-                    issubclass(attr, StrategyBacktest) and 
-                    attr != StrategyBacktest):
+                    issubclass(attr, Strategy) and 
+                    attr != Strategy):
                     strategy_class = attr
                     break
             except Exception:
                 continue
         
         if strategy_class is None:
-            errors.append("Strategy class not found: no class inheriting from StrategyBacktest found in the code")
+            errors.append("Strategy class not found: no class inheriting from Strategy found in the code")
             return None, errors
         
         # Get parameters description

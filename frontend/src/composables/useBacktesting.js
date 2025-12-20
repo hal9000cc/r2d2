@@ -98,6 +98,28 @@ export function useBacktesting(taskId) {
               backtestProgress.value = 0
               backtestProgressErrorMessage.value = ''
               backtestProgressErrorType.value = null
+            } else if (event === 'backtesting_progress') {
+              // Only update progress if backtesting is running
+              if (backtestProgressState.value === 'running' && isBacktestingRunning.value) {
+                // Validate and clamp progress value
+                let progress = data.progress
+                if (typeof progress !== 'number' || isNaN(progress)) {
+                  addLocalMessage({
+                    level: 'error',
+                    message: `Invalid progress value received: ${progress}`
+                  })
+                  return
+                }
+                // Clamp to [0, 100]
+                progress = Math.max(0, Math.min(100, progress))
+                backtestProgress.value = progress
+              } else {
+                // Progress update received outside of running state - log as error
+                addLocalMessage({
+                  level: 'error',
+                  message: `Progress update received but backtesting is not running (state: ${backtestProgressState.value})`
+                })
+              }
             } else if (event === 'backtesting_completed') {
               isBacktestingRunning.value = false
               backtestProgressState.value = 'completed'

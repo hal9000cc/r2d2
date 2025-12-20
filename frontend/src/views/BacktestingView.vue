@@ -1108,7 +1108,6 @@ async function handleSaveStrategy() {
   border-radius: inherit;
   /* Simple solid color for better visibility */
   background-color: #3b82f6; /* blue-500 */
-  transition: width 0.2s ease-out;
 }
 
 .backtesting-layout {

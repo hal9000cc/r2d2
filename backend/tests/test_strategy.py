@@ -1,12 +1,12 @@
 """
-Test for StrategyBacktest with moving average crossover strategy.
+Test for Strategy with moving average crossover strategy.
 """
 import pytest
 import numpy as np
 from datetime import datetime
 from typing import Dict, Tuple, Any
 from app.services.tasks.tasks import Task
-from app.services.tasks.strategy import StrategyBacktest, OrderSide
+from app.services.tasks.strategy import Strategy, OrderSide
 from app.core.startup import startup, shutdown
 from app.services.quotes.client import Client
 from app.core.config import redis_params
@@ -23,19 +23,26 @@ def app_startup(quotes_service):
     yield
 
 
-class MovingAverageCrossoverStrategy(StrategyBacktest):
+class MovingAverageCrossoverStrategy(Strategy):
     """
     Simple moving average crossover strategy.
     Buys when fast MA crosses above slow MA, sells when fast MA crosses below slow MA.
     """
     
-    def __init__(self, task: Task, id_result: str):
-        super().__init__(task, id_result)
-        self.ma_fast_period = task.parameters['ma_fast']
-        self.ma_slow_period = task.parameters['ma_slow']
+    def __init__(self):
+        super().__init__()
+        self.ma_fast_period = None
+        self.ma_slow_period = None
         self.ma_fast = None
         self.ma_slow = None
         self.position = None  # 'long', 'short', or None
+    
+    def on_start(self):
+        """
+        Initialize strategy parameters from self.parameters.
+        """
+        self.ma_fast_period = self.parameters['ma_fast']
+        self.ma_slow_period = self.parameters['ma_slow']
     
     @staticmethod
     def get_parameters_description() -> Dict[str, Tuple[Any, str]]:
@@ -123,30 +130,44 @@ def test_moving_average_crossover_strategy(app_startup):
     )
     
     # Create strategy instance
-    strategy = MovingAverageCrossoverStrategy(task, id_result="test-id-result")
+    strategy = MovingAverageCrossoverStrategy()
     
-    # Run strategy
-    strategy.run()
+    # Create broker with strategy callbacks and run
+    from app.services.tasks.broker import Broker
+    from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
+    callbacks = Strategy.create_strategy_callbacks(strategy)
+    broker = Broker(
+        fee=0.001,
+        task=task,
+        result_id="test-result-id",
+        callbacks_dict=callbacks,
+        results_save_period=TRADE_RESULTS_SAVE_PERIOD
+    )
+    strategy.broker = broker
+    broker.run(task)
     
     # Basic assertions - strategy should have processed data
     assert strategy.close is not None, "Close prices should be loaded"
     assert len(strategy.close) > 0, "Should have at least some price data"
     
+    # Check that broker was created
+    assert strategy.broker is not None, "Broker should be created after run()"
+    
     # Check that global deal is closed (symbol_balance == 0)
     # Deal stores current symbol balance in internal field _symbol_balance
-    assert strategy.global_deal._symbol_balance == 0, "Global deal should be closed (symbol_balance == 0)"
+    assert strategy.broker.global_deal._symbol_balance == 0, "Global deal should be closed (symbol_balance == 0)"
     
     # Check that current deal is None
-    assert strategy.current_deal is None, "Current deal should be None after run()"
+    assert strategy.broker.current_deal is None, "Current deal should be None after run()"
     
     # Check that all deals in the list are closed
-    for deal in strategy.deals:
+    for deal in strategy.broker.deals:
         assert deal.exit_time is not None, f"Deal should have exit_time set"
         assert deal.exit_price is not None, f"Deal should have exit_price set"
         # Internal symbol balance field
         assert deal._symbol_balance == 0, f"Deal should have symbol_balance == 0 (got {deal._symbol_balance})"
     
     # Check that sum of all closed deals' profit equals global deal's profit
-    total_deals_balance = sum(deal.profit for deal in strategy.deals)
-    assert abs(total_deals_balance - strategy.global_deal.profit) < 1e-10, \
-        f"Sum of closed deals' balance ({total_deals_balance}) should equal global deal's balance ({strategy.global_deal.profit})"
+    total_deals_balance = sum(deal.profit for deal in strategy.broker.deals)
+    assert abs(total_deals_balance - strategy.broker.global_deal.profit) < 1e-10, \
+        f"Sum of closed deals' balance ({total_deals_balance}) should equal global deal's balance ({strategy.broker.global_deal.profit})"

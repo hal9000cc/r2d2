@@ -57,6 +57,10 @@ REDIS_DB=0
 REDIS_PASSWORD=
 REDIS_QUOTE_REQUEST_LIST=quotes:requests
 REDIS_QUOTE_RESPONSE_PREFIX=quotes:responses
+
+# Quotes fetch retry configuration
+QUOTES_FETCH_RETRY_ATTEMPTS=3
+QUOTES_FETCH_RETRY_DELAY=1
 """
     
     # Generate .env content by commenting all parameter lines but keeping default values visible
@@ -143,6 +147,10 @@ REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
 REDIS_QUOTE_REQUEST_LIST = os.getenv("REDIS_QUOTE_REQUEST_LIST", "quotes:requests")
 REDIS_QUOTE_RESPONSE_PREFIX = os.getenv("REDIS_QUOTE_RESPONSE_PREFIX", "quotes:responses")
+
+# Quotes fetch retry configuration
+QUOTES_FETCH_RETRY_ATTEMPTS = int(os.getenv("QUOTES_FETCH_RETRY_ATTEMPTS", "3"))
+QUOTES_FETCH_RETRY_DELAY = float(os.getenv("QUOTES_FETCH_RETRY_DELAY", "1.0"))
 
 
 def redis_params() -> dict:
