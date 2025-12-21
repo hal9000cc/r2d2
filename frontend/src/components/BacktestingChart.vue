@@ -8,6 +8,11 @@ import axios from 'axios'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'
 
+// Constants for dynamic data loading thresholds
+const LOAD_THRESHOLD_MULTIPLIER = 1.0  // Multiplier for load threshold (minimum distance from edge to trigger load)
+const LOAD_BARS_MULTIPLIER = 2.0       // Multiplier for number of bars to load
+const CLEANUP_THRESHOLD_MULTIPLIER = 5.0  // Multiplier for cleanup threshold (when to remove old data)
+
 export default {
   name: 'BacktestingChart',
   props: {
@@ -55,9 +60,6 @@ export default {
       // Loading state
       isLoading: false,
       loadRequestId: 0, // For canceling outdated requests
-      
-      // Threshold for loading more data (number of bars from start)
-      loadThreshold: 10,
       
       // Flag to prevent event handling during data updates
       isUpdatingData: false
@@ -150,24 +152,34 @@ export default {
         
         const dataLength = this.currentData.length
         
+        // Calculate visible length and dynamic thresholds
+        const visibleLength = logicalRange.to - logicalRange.from
+        const loadThreshold = Math.max(visibleLength * LOAD_THRESHOLD_MULTIPLIER, 300)
+        //const numberBarsToLoad = Math.max(visibleLength * LOAD_BARS_MULTIPLIER, 600)
+        
         // Load more data when approaching the start (scrolling left)
-        if (logicalRange.from < this.loadThreshold) {
-          const barsPastStart = Math.max(0, -logicalRange.from)
-          const numberBarsToLoad = 50 + barsPastStart
-          this.loadMoreHistory(numberBarsToLoad)
+        // Calculate left boundary condition: logicalRange.from - visibleLength * LOAD_THRESHOLD_MULTIPLIER
+        const leftBoundaryIndex = logicalRange.from - visibleLength * LOAD_THRESHOLD_MULTIPLIER
+        
+        if (leftBoundaryIndex < 0) {
+          // Need to load more history
+          // Calculate index of bar to load: logicalRange.from - visibleLength * LOAD_BARS_MULTIPLIER
+          const loadBarIndex = logicalRange.from - visibleLength * LOAD_BARS_MULTIPLIER
+          const barsToLoad = Math.abs(loadBarIndex) // This is negative, so we need absolute value
+          
+          this.loadMoreHistory(barsToLoad)
         }
         
         // Load more data when approaching the end (scrolling right)
-        // FIX: logical range to can be greater than dataLength!
+        // Check if bars after right boundary are less than threshold
         if (logicalRange.to !== null && logicalRange.to > 0) {
-          // Calculate how far we've scrolled beyond current data
-          const distanceBeyondEnd = Math.max(0, logicalRange.to - dataLength)
+          const barsAfterRightBoundary = dataLength - logicalRange.to
           
           // If we're within threshold of end (or already beyond it)
-          if (distanceBeyondEnd > 0 || dataLength - logicalRange.to < this.loadThreshold) {
-            // Load at least 20 bars or enough to cover distanceBeyondEnd
-            const numberBarsToLoad = Math.max(20, Math.ceil(distanceBeyondEnd * 1.5))
-            this.loadMoreFuture(numberBarsToLoad)
+          if (barsAfterRightBoundary < loadThreshold) {
+            // Calculate right boundary for loading: logicalRange.to + visibleLength * LOAD_BARS_MULTIPLIER
+            const rightBoundaryIndex = logicalRange.to + visibleLength * LOAD_BARS_MULTIPLIER
+            this.loadMoreFuture(rightBoundaryIndex)
           }
         }
       })
@@ -210,25 +222,53 @@ export default {
         return
       }
       
-      // Load initial data: from date_start to current_time
-      const quotes = await this.loadQuotes(this.backtestingDateStart, this.backtestingDateEnd)
+      // Limit initial load to maximum 5000 bars
+      const timeframeSeconds = this.getTimeframeSeconds()
+      const maxBars = 5000
+      const maxTimeRange = maxBars * timeframeSeconds
+      const maxDateEnd = this.backtestingDateStart + maxTimeRange
+      const limitedDateEnd = Math.min(this.backtestingDateEnd, maxDateEnd)
+      
+      // Load initial data: from date_start to limited date_end (max 5000 bars)
+      const quotes = await this.loadQuotes(this.backtestingDateStart, limitedDateEnd)
       
       if (quotes.length > 0) {
-        // Emit message with date range
-        const dateFrom = quotes.length > 0 ? new Date(quotes[0].time * 1000).toISOString() : 'N/A'
-        const dateTo = quotes.length > 0 ? new Date(quotes[quotes.length - 1].time * 1000).toISOString() : 'N/A'
-        this.$emit('chart-message', {
-          level: 'info',
-          message: `setData: ${quotes.length} bars, date range: ${dateFrom} to ${dateTo}`
-        })
-        
         this.currentData = quotes
-        this.candlestickSeries.setData(quotes)
         
-        // Auto-fit content on first load
+        // Set initial single bar to determine visible range
+        this.candlestickSeries.setData([quotes[0]])
+        
+        // Get visible logical range with single bar
         this.$nextTick(() => {
           if (this.chart) {
-            this.chart.timeScale().fitContent()
+            const logicalRange = this.chart.timeScale().getVisibleLogicalRange()
+            if (logicalRange) {
+              // Calculate visible range (number of bars)
+              const visibleRange = logicalRange.to - logicalRange.from
+              
+              // Set all data
+              this.candlestickSeries.setData(quotes)
+              
+              // Set visible range from 0 to visibleRange
+              const finalLogicalRange = {
+                from: 0,
+                to: visibleRange
+              }
+              this.chart.timeScale().setVisibleLogicalRange(finalLogicalRange)
+              
+              // Emit data state
+              this.emitDataState(quotes, finalLogicalRange)
+            } else {
+              // Fallback: if logical range is not available, use fitContent
+              this.candlestickSeries.setData(quotes)
+              this.chart.timeScale().fitContent()
+              
+              // Emit data state with current logical range
+              this.$nextTick(() => {
+                const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
+                this.emitDataState(quotes, currentLogicalRange)
+              })
+            }
           }
         })
       }
@@ -236,8 +276,9 @@ export default {
     
     /**
      * Load more future data (when scrolling right)
+     * @param {number} rightBoundaryIndex - Target bar index (logicalRange.to + visibleLength * LOAD_BARS_MULTIPLIER)
      */
-    async loadMoreFuture(numberOfBars) {
+    async loadMoreFuture(rightBoundaryIndex) {
       if (!this.source || !this.symbol || !this.timeframe) {
         return
       }
@@ -256,12 +297,23 @@ export default {
         return
       }
       
-      // Calculate time range to load (after current latest data)
-      // FIX: Start loading from the next period after the latest known time
-      const latestTime = this.currentData[this.currentData.length - 1].time
-      const loadFrom = latestTime + timeframeSeconds // +1 period
-      const timeRangeToLoad = numberOfBars * timeframeSeconds
-      const loadTo = loadFrom + timeRangeToLoad
+      const dataLength = this.currentData.length
+      const latestTime = this.currentData[dataLength - 1].time
+      
+      // Start loading from the next period after the latest known time
+      const loadFrom = latestTime + timeframeSeconds
+      
+      // Calculate loadTo based on rightBoundaryIndex
+      let loadTo
+      if (rightBoundaryIndex >= dataLength) {
+        // Target index is at or beyond current data, calculate time
+        // We need to load at least 1 bar, so if rightBoundaryIndex === dataLength, load 1 bar
+        const barsToLoad = Math.max(1, rightBoundaryIndex - dataLength)
+        loadTo = latestTime + barsToLoad * timeframeSeconds
+      } else {
+        // Target index is within current data, use that bar's time
+        loadTo = this.currentData[rightBoundaryIndex].time
+      }
       
       // Clamp to maximum backtesting date if available
       let finalTo = loadTo
@@ -271,10 +323,6 @@ export default {
       
       // If we've reached the limit - don't load
       if (loadFrom >= finalTo) {
-        this.$emit('chart-message', {
-          level: 'info',
-          message: 'Reached end of available data'
-        })
         return
       }
       
@@ -308,30 +356,31 @@ export default {
         // Update chart with all data (like in the example)
         setTimeout(() => {
           if (requestId === this.loadRequestId) {
-            // Emit message with date range
-            const dateFrom = mergedData.length > 0 ? new Date(mergedData[0].time * 1000).toISOString() : 'N/A'
-            const dateTo = mergedData.length > 0 ? new Date(mergedData[mergedData.length - 1].time * 1000).toISOString() : 'N/A'
-            const oldDataLength = this.currentData.length
-            const newDataLength = mergedData.length
-            
-            this.$emit('chart-message', {
-              level: 'info',
-              message: `setData (future): ${oldDataLength} -> ${newDataLength} bars, date range: ${dateFrom} to ${dateTo}`
-            })
-            
             // Set flag to prevent event handling during update
             this.isUpdatingData = true
             
-            // Save logical range before setData
+            // Save logical range before cleanup
             const savedLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
             
-            this.currentData = mergedData
-            this.candlestickSeries.setData(mergedData)
+            // Cleanup old data if needed (remove data beyond cleanup threshold)
+            // Get visibleLength from saved logical range
+            const visibleLength = savedLogicalRange ? (savedLogicalRange.to - savedLogicalRange.from) : 0
+            const cleanupResult = this.cleanupOldData('future', visibleLength, mergedData, savedLogicalRange)
+            
+            // Use cleaned data and adjusted logical range
+            const finalData = cleanupResult.cleanedData
+            const finalLogicalRange = cleanupResult.adjustedLogicalRange || savedLogicalRange
+            
+            this.currentData = finalData
+            this.candlestickSeries.setData(finalData)
             
             // Restore logical range after setData
-            if (savedLogicalRange) {
-              this.chart.timeScale().setVisibleLogicalRange(savedLogicalRange)
+            if (finalLogicalRange) {
+              this.chart.timeScale().setVisibleLogicalRange(finalLogicalRange)
             }
+            
+            // Emit data state after cleanup
+            this.emitDataState(finalData, finalLogicalRange)
             
             // Re-enable event handling after a delay
             setTimeout(() => {
@@ -352,8 +401,9 @@ export default {
     
     /**
      * Load more history data (when scrolling left)
+     * @param {number} barsToLoad - Number of bars to load (absolute value of negative index)
      */
-    async loadMoreHistory(numberOfBars) {
+    async loadMoreHistory(barsToLoad) {
       if (!this.source || !this.symbol || !this.timeframe) {
         return
       }
@@ -373,11 +423,25 @@ export default {
       }
       
       // Calculate time range to load (before current earliest data)
+      // loadTo = time of first bar - timeframe (last bar to load)
       const earliestTime = this.currentData[0].time
-      const timeRangeToLoad = numberOfBars * timeframeSeconds
-      const loadTo = earliestTime
-      const loadFrom = Math.max(earliestTime - timeRangeToLoad, this.backtestingDateStart)
+      const loadTo = earliestTime - timeframeSeconds
       
+      // loadFrom = earliestTime - (barsToLoad * timeframeSeconds)
+      const timeRangeToLoad = barsToLoad * timeframeSeconds
+      let loadFrom = earliestTime - timeRangeToLoad
+      
+      // If we've reached the start of backtesting period, we cannot load more
+      if (this.backtestingDateStart && earliestTime <= this.backtestingDateStart) {
+        return
+      }
+      
+      // Clamp loadFrom to backtesting start date if needed
+      if (this.backtestingDateStart && loadFrom < this.backtestingDateStart) {
+        loadFrom = this.backtestingDateStart
+      }
+      
+      // Final check: if loadFrom >= loadTo, we can't load
       if (loadFrom >= loadTo) {
         return // Can't load more (reached start of backtesting)
       }
@@ -405,37 +469,47 @@ export default {
         
         // Combine: new data (older) + existing data (newer)
         const mergedData = [...uniqueNewQuotes, ...this.currentData]
-        
+        const barsAdded = mergedData.length - this.currentData.length
+        if (barsAdded === 0) {
+          return
+        }
+
         // Sort by time to ensure correct order
         mergedData.sort((a, b) => a.time - b.time)
         
         // Update chart with all data (like in the example)
         setTimeout(() => {
           if (requestId === this.loadRequestId) {
-            // Emit message with date range
-            const dateFrom = mergedData.length > 0 ? new Date(mergedData[0].time * 1000).toISOString() : 'N/A'
-            const dateTo = mergedData.length > 0 ? new Date(mergedData[mergedData.length - 1].time * 1000).toISOString() : 'N/A'
-            const oldDataLength = this.currentData.length
-            const newDataLength = mergedData.length
-            
-            this.$emit('chart-message', {
-              level: 'info',
-              message: `setData (history): ${oldDataLength} -> ${newDataLength} bars, date range: ${dateFrom} to ${dateTo}`
-            })
-            
             // Set flag to prevent event handling during update
             this.isUpdatingData = true
             
-            // Save logical range before setData
+            // Save logical range before cleanup
             const savedLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
             
-            this.currentData = mergedData
-            this.candlestickSeries.setData(mergedData)
+            // Cleanup old data if needed (remove data beyond cleanup threshold)
+            // Get visibleLength from saved logical range
+            const visibleLength = savedLogicalRange ? (savedLogicalRange.to - savedLogicalRange.from) : 0
+            const cleanupResult = this.cleanupOldData('history', visibleLength, mergedData, savedLogicalRange)
+            
+            // Use cleaned data and adjusted logical range
+            const finalData = cleanupResult.cleanedData
+            const afterCleanupLogicalRange = cleanupResult.adjustedLogicalRange || savedLogicalRange
+            
+            const finalLogicalRange = {
+              from: afterCleanupLogicalRange.from + barsAdded,
+              to: afterCleanupLogicalRange.to + barsAdded
+            }
+
+            this.currentData = finalData
+            this.candlestickSeries.setData(finalData)
             
             // Restore logical range after setData
-            if (savedLogicalRange) {
-              this.chart.timeScale().setVisibleLogicalRange(savedLogicalRange)
+            if (finalLogicalRange) {
+              this.chart.timeScale().setVisibleLogicalRange(finalLogicalRange)
             }
+            
+            // Emit data state after cleanup
+            this.emitDataState(finalData, finalLogicalRange)
             
             // Re-enable event handling after a delay
             setTimeout(() => {
@@ -452,6 +526,121 @@ export default {
           this.isLoading = false
         }
       }
+    },
+    
+    /**
+     * Cleanup old data to free memory
+     * @param {string} direction - 'future' or 'history'
+     * @param {number} visibleLength - Number of visible bars
+     * @param {Array} dataToClean - Data array to clean (mergedData)
+     * @param {Object} savedLogicalRange - Saved logical range (for history cleanup)
+     * @returns {Object} { cleanedData, adjustedLogicalRange }
+     */
+    cleanupOldData(direction, visibleLength, dataToClean, savedLogicalRange = null) {
+      // Default return: no cleanup performed
+      const defaultResult = {
+        cleanedData: dataToClean,
+        adjustedLogicalRange: savedLogicalRange
+      }
+      
+      if (!dataToClean || dataToClean.length === 0 || visibleLength === 0) {
+        return defaultResult
+      }
+      
+      // Calculate cleanup threshold
+      const cleanupThreshold = visibleLength * CLEANUP_THRESHOLD_MULTIPLIER
+      
+      if (!savedLogicalRange) {
+        return defaultResult
+      }
+      
+      let cleanedData = []
+      let barsRemoved = 0
+      let adjustedLogicalRange = savedLogicalRange
+      
+      if (direction === 'future') {
+        // Remove old data from the beginning (keep visible area + buffer)
+        // Keep data from (logicalRange.from - visibleLength) to end
+        const keepFromIndex = Math.max(0, Math.floor(savedLogicalRange.from) - Math.floor(cleanupThreshold))
+        if (keepFromIndex === 0) {
+          return defaultResult
+        }
+        cleanedData = dataToClean.slice(keepFromIndex)
+        barsRemoved = keepFromIndex
+        // For future cleanup: we remove data from start, so indices shift left
+        // Adjust logical range: subtract removed bars from both boundaries
+        adjustedLogicalRange = {
+          from: savedLogicalRange.from - barsRemoved,
+          to: savedLogicalRange.to - barsRemoved
+        }
+        // Ensure adjusted range is valid
+        if (adjustedLogicalRange.from < 0 || adjustedLogicalRange.to <= adjustedLogicalRange.from) {
+          adjustedLogicalRange = savedLogicalRange
+        }
+      } else if (direction === 'history') {
+        // Remove new data from the end (keep visible area + buffer)
+        // Keep data from start to (logicalRange.to + visibleLength)
+        const keepToIndex = Math.min(
+          dataToClean.length,
+          Math.ceil(savedLogicalRange.to) + Math.ceil(cleanupThreshold)
+        )
+        cleanedData = dataToClean.slice(0, keepToIndex)
+        barsRemoved = dataToClean.length - keepToIndex
+        // For history cleanup: we remove data from end, indices at start don't change
+        // But savedLogicalRange was calculated before new data was added to start
+        // After adding data to start, indices shift right by number of new bars
+        // After removing data from end, indices at start remain the same
+        // So savedLogicalRange remains valid (no adjustment needed)
+        adjustedLogicalRange = savedLogicalRange
+      }
+      
+      // Only return cleaned data if we actually removed data
+      if (barsRemoved > 0 && cleanedData.length < dataToClean.length) {
+        return {
+          cleanedData,
+          adjustedLogicalRange
+        }
+      }
+      
+      return defaultResult
+    },
+    
+    /**
+     * Emit data state message with comprehensive information
+     * @param {Array} data - Data array used in setData
+     * @param {Object} logicalRange - Visible logical range
+     */
+    emitDataState(data, logicalRange) {
+      if (!data || data.length === 0) {
+        return
+      }
+      
+      // Calculate data info
+      const barCount = data.length
+      const firstBarDate = new Date(data[0].time * 1000).toISOString()
+      const lastBarDate = new Date(data[data.length - 1].time * 1000).toISOString()
+      
+      // Calculate visible range info
+      let visibleRangeStart = 'N/A'
+      let visibleRangeEnd = 'N/A'
+      
+      if (logicalRange && logicalRange.from !== null && logicalRange.to !== null) {
+        const fromIndex = Math.max(0, Math.floor(logicalRange.from))
+        const toIndex = Math.min(data.length - 1, Math.ceil(logicalRange.to))
+        
+        if (fromIndex < data.length && toIndex < data.length && fromIndex <= toIndex) {
+          visibleRangeStart = new Date(data[fromIndex].time * 1000).toISOString()
+          visibleRangeEnd = new Date(data[toIndex].time * 1000).toISOString()
+        }
+      }
+      
+      // Format message: bars count, first bar date, last bar date, visible range start, visible range end
+      const message = `${barCount} bars | First: ${firstBarDate} | Last: ${lastBarDate} | Visible: ${visibleRangeStart} to ${visibleRangeEnd}`
+      
+      this.$emit('chart-message', {
+        level: 'info',
+        message
+      })
     },
     
     /**
