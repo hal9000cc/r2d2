@@ -1,6 +1,7 @@
 <template>
   <div class="chart-panel">
     <BacktestingChart 
+      ref="chartRef"
       :source="source"
       :symbol="symbol"
       :timeframe="timeframe"
@@ -9,6 +10,7 @@
       @chart-cleared="handleChartCleared"
       @quotes-load-error="handleQuotesLoadError"
       @chart-message="handleChartMessage"
+      @log-scale-changed="handleLogScaleChanged"
     />
   </div>
 </template>
@@ -43,7 +45,7 @@ export default {
       default: false
     }
   },
-  emits: ['chart-cleared', 'quotes-load-error', 'chart-message'],
+  emits: ['chart-cleared', 'quotes-load-error', 'chart-message', 'log-scale-changed'],
   methods: {
     handleChartCleared() {
       this.$emit('chart-cleared')
@@ -53,6 +55,45 @@ export default {
     },
     handleChartMessage(message) {
       this.$emit('chart-message', message)
+    },
+    handleLogScaleChanged(isLogScale) {
+      this.$emit('log-scale-changed', isLogScale)
+    },
+    // Proxy methods for chart control
+    goToDate(timestamp) {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.goToDate(timestamp)
+      }
+    },
+    goToStart() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.goToStart()
+      }
+    },
+    goToEnd() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.goToEnd()
+      }
+    },
+    toggleLogScale() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.toggleLogScale()
+      }
+    },
+    autoScale() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.autoScale()
+      }
+    },
+    pageDown() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.pageDown()
+      }
+    },
+    pageUp() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.pageUp()
+      }
     }
   }
 }

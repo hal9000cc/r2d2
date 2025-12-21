@@ -98,6 +98,69 @@
                   </button>
                 </template>
               </div>
+              <!-- Chart controls -->
+              <div v-if="activeChartTab === 'chart'" class="header-actions chart-controls">
+                <!-- Date/time input and Go button -->
+                <div class="chart-date-input-wrapper">
+                  <input
+                    type="datetime-local"
+                    v-model="chartDateInput"
+                    class="chart-date-input"
+                    @keyup.enter="handleGoToDate"
+                    title="Enter date and time to navigate"
+                  />
+                  <button
+                    class="chart-control-btn"
+                    @click="handleGoToDate"
+                    title="Go to date"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-small">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                    </svg>
+                  </button>
+                </div>
+                <!-- Go to start button -->
+                <button
+                  class="chart-control-btn"
+                  @click="handleGoToStart"
+                  title="Go to start (Home)"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-small">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 19.5L.75 12l7.5-7.5" />
+                  </svg>
+                </button>
+                <!-- Go to end button -->
+                <button
+                  class="chart-control-btn"
+                  @click="handleGoToEnd"
+                  title="Go to end (End)"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-small">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 4.5l7.5 7.5-7.5 7.5" />
+                  </svg>
+                </button>
+                <!-- Toggle log scale button -->
+                <button
+                  class="chart-control-btn"
+                  @click="handleToggleLogScale"
+                  :class="{ active: isLogScale }"
+                  title="Toggle logarithmic scale"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-small">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                  </svg>
+                </button>
+                <!-- Auto scale button -->
+                <button
+                  class="chart-control-btn"
+                  @click="handleAutoScale"
+                  title="Auto scale"
+                >
+                  <span class="chart-control-letter">A</span>
+                </button>
+              </div>
             </template>
             
             <template #strategy>
@@ -125,6 +188,7 @@
             </template>
             <template #chart>
               <ChartPanel 
+                ref="chartPanelRef"
                 :source="currentTask?.source || null"
                 :symbol="currentTask?.symbol || null"
                 :timeframe="currentTask?.timeframe || null"
@@ -133,6 +197,7 @@
                 @chart-cleared="clearChartFlag = false"
                 @quotes-load-error="handleQuotesLoadError"
                 @chart-message="handleChartMessage"
+                @log-scale-changed="isLogScale = $event"
               />
             </template>
           </Tabs>
@@ -274,6 +339,7 @@ const backtestingProgressData = computed(() => {
 const navFormRef = ref(null)
 const taskListRef = ref(null)
 const strategyParametersRef = ref(null)
+const chartPanelRef = ref(null)
 
 // Use backtesting composable
 const {
@@ -343,12 +409,15 @@ onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   // Add keyboard shortcut for saving
   document.addEventListener('keydown', handleKeyDown)
+  // Add keyboard shortcuts for chart navigation
+  window.addEventListener('keydown', handleChartKeyboardShortcuts)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', calculateSizes)
   window.removeEventListener('beforeunload', handleBeforeUnload)
   document.removeEventListener('keydown', handleKeyDown)
+  window.removeEventListener('keydown', handleChartKeyboardShortcuts)
   // Clear auto-save timers
   if (saveTimeout.value) {
     clearTimeout(saveTimeout.value)
@@ -439,6 +508,102 @@ function handleParametersResize(size) {
 
 function handleChartTabChange(tabId) {
   activeChartTab.value = tabId
+}
+
+// Chart controls state
+const chartDateInput = ref('')
+const isLogScale = ref(false)
+
+// Chart control handlers
+function handleGoToDate() {
+  if (!chartPanelRef.value || !chartDateInput.value) {
+    return
+  }
+  
+  // Convert datetime-local input (YYYY-MM-DDTHH:mm) to Unix timestamp (seconds) in UTC
+  // datetime-local returns local time, but we need to interpret it as UTC
+  const [datePart, timePart] = chartDateInput.value.split('T')
+  if (!datePart || !timePart) {
+    return
+  }
+  
+  const [year, month, day] = datePart.split('-').map(Number)
+  const [hours, minutes] = timePart.split(':').map(Number)
+  
+  // Use Date.UTC to create timestamp in UTC (not local time)
+  const timestamp = Math.floor(Date.UTC(year, month - 1, day, hours, minutes) / 1000)
+  chartPanelRef.value.goToDate(timestamp)
+}
+
+function handleGoToStart() {
+  if (chartPanelRef.value) {
+    chartPanelRef.value.goToStart()
+  }
+}
+
+function handleGoToEnd() {
+  if (chartPanelRef.value) {
+    chartPanelRef.value.goToEnd()
+  }
+}
+
+function handleToggleLogScale() {
+  if (chartPanelRef.value) {
+    chartPanelRef.value.toggleLogScale()
+    // isLogScale will be updated via @log-scale-changed event
+  }
+}
+
+function handleAutoScale() {
+  if (chartPanelRef.value) {
+    chartPanelRef.value.autoScale()
+  }
+}
+
+// Keyboard shortcuts handler for chart navigation
+function handleChartKeyboardShortcuts(event) {
+  // Only handle if chart tab is active
+  if (activeChartTab.value !== 'chart') {
+    return
+  }
+  
+  // Don't handle if user is typing in an input field
+  const target = event.target
+  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+    return
+  }
+  
+  // Handle Home key - go to start
+  if (event.key === 'Home' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+    event.preventDefault()
+    handleGoToStart()
+    return
+  }
+  
+  // Handle End key - go to end
+  if (event.key === 'End' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+    event.preventDefault()
+    handleGoToEnd()
+    return
+  }
+  
+  // Handle PageDown key - scroll backward one page (to older data)
+  if (event.key === 'PageDown' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+    event.preventDefault()
+    if (chartPanelRef.value) {
+      chartPanelRef.value.pageUp()
+    }
+    return
+  }
+  
+  // Handle PageUp key - scroll forward one page (to newer data)
+  if (event.key === 'PageUp' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+    event.preventDefault()
+    if (chartPanelRef.value) {
+      chartPanelRef.value.pageDown()
+    }
+    return
+  }
 }
 async function handleCloseStrategy() {
   // 1. Disable auto-save timers at the beginning
@@ -882,6 +1047,9 @@ async function handleStart(formData) {
     return
   }
 
+  // Clear chart before starting new backtest
+  clearChartFlag.value = true
+  
   // Set backtesting state immediately for instant UI feedback
   setBacktestingStarted()
   
@@ -1270,6 +1438,73 @@ async function handleSaveStrategy() {
   border-radius: var(--border-radius);
   border-left: var(--spacing-xs) solid var(--color-danger);
   max-width: 37.5rem; /* 600px */
+}
+
+/* Chart controls */
+.chart-controls {
+  gap: var(--spacing-xs);
+}
+
+.chart-date-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.chart-date-input {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  width: 180px;
+  transition: all var(--transition-base);
+}
+
+.chart-date-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  background: var(--bg-hover);
+}
+
+.chart-control-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  flex-shrink: 0;
+}
+
+.chart-control-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--color-primary);
+}
+
+.chart-control-btn.active {
+  background: var(--color-primary);
+  color: white;
+  border-color: var(--color-primary);
+}
+
+.chart-control-btn .icon-small {
+  width: 16px;
+  height: 16px;
+}
+
+.chart-control-letter {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1;
 }
 
 </style>
