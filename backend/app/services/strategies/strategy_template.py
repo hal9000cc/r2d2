@@ -1,4 +1,5 @@
-from app.services.tasks.strategy import Strategy, OrderSide
+from app.services.tasks.strategy import Strategy
+from app.services.tasks.broker import OrderSide
 from typing import Dict, Tuple, Any
 
 

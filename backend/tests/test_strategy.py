@@ -6,7 +6,8 @@ import numpy as np
 from datetime import datetime
 from typing import Dict, Tuple, Any
 from app.services.tasks.tasks import Task
-from app.services.tasks.strategy import Strategy, OrderSide
+from app.services.tasks.strategy import Strategy
+from app.services.tasks.broker import OrderSide
 from app.core.startup import startup, shutdown
 from app.services.quotes.client import QuotesClient
 from app.core.config import redis_params
@@ -133,10 +134,10 @@ def test_moving_average_crossover_strategy(app_startup):
     strategy = MovingAverageCrossoverStrategy()
     
     # Create broker with strategy callbacks and run
-    from app.services.tasks.broker import Broker
+    from app.services.tasks.broker import BrokerOld
     from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
     callbacks = Strategy.create_strategy_callbacks(strategy)
-    broker = Broker(
+    broker = BrokerOld(
         fee=0.001,
         task=task,
         result_id="test-result-id",
