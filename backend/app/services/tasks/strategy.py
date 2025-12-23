@@ -9,7 +9,7 @@ from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 
 if TYPE_CHECKING:
-    from app.services.tasks.broker import Broker
+    from app.services.tasks.broker_backtesting import BrokerBacktesting as Broker
 
 logger = get_logger(__name__)
 

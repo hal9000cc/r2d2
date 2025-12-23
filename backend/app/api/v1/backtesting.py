@@ -10,7 +10,7 @@ from multiprocessing import Process
 import redis.asyncio as redis_async
 from app.services.tasks.tasks import BacktestingTaskList, Task
 from app.services.tasks.strategy import Strategy
-from app.services.tasks.broker import Broker
+from app.services.tasks.broker_backtesting import BrokerBacktesting
 from app.services.strategies import validate_relative_path, load_strategy
 from app.services.strategies.exceptions import StrategyFileError, StrategyNotFoundError
 from app.services.quotes.client import QuotesClient
@@ -483,7 +483,7 @@ def process_backtesting_task(task: Task, result_id: str) -> None:
     
     # Create broker with strategy callbacks
     callbacks = Strategy.create_strategy_callbacks(strategy)
-    broker = Broker(
+    broker = BrokerBacktesting(
         fee=0.001,
         task=task,
         result_id=result_id,

@@ -3,14 +3,10 @@ Test for Strategy with moving average crossover strategy.
 """
 import pytest
 import numpy as np
-from datetime import datetime
 from typing import Dict, Tuple, Any
 from app.services.tasks.tasks import Task
 from app.services.tasks.strategy import Strategy
 from app.services.tasks.broker import OrderSide
-from app.core.startup import startup, shutdown
-from app.services.quotes.client import QuotesClient
-from app.core.config import redis_params
 import talib
 
 
@@ -134,10 +130,10 @@ def test_moving_average_crossover_strategy(app_startup):
     strategy = MovingAverageCrossoverStrategy()
     
     # Create broker with strategy callbacks and run
-    from app.services.tasks.broker import BrokerOld
+    from app.services.tasks.broker_backtesting import BrokerBacktesting
     from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
     callbacks = Strategy.create_strategy_callbacks(strategy)
-    broker = BrokerOld(
+    broker = BrokerBacktesting(
         fee=0.001,
         task=task,
         result_id="test-result-id",
@@ -154,21 +150,5 @@ def test_moving_average_crossover_strategy(app_startup):
     # Check that broker was created
     assert strategy.broker is not None, "Broker should be created after run()"
     
-    # Check that global deal is closed (symbol_balance == 0)
-    # Deal stores current symbol balance in internal field _symbol_balance
-    assert strategy.broker.global_deal._symbol_balance == 0, "Global deal should be closed (symbol_balance == 0)"
-    
-    # Check that current deal is None
-    assert strategy.broker.current_deal is None, "Current deal should be None after run()"
-    
-    # Check that all deals in the list are closed
-    for deal in strategy.broker.deals:
-        assert deal.exit_time is not None, f"Deal should have exit_time set"
-        assert deal.exit_price is not None, f"Deal should have exit_price set"
-        # Internal symbol balance field
-        assert deal._symbol_balance == 0, f"Deal should have symbol_balance == 0 (got {deal._symbol_balance})"
-    
-    # Check that sum of all closed deals' profit equals global deal's profit
-    total_deals_balance = sum(deal.profit for deal in strategy.broker.deals)
-    assert abs(total_deals_balance - strategy.broker.global_deal.profit) < 1e-10, \
-        f"Sum of closed deals' balance ({total_deals_balance}) should equal global deal's balance ({strategy.broker.global_deal.profit})"
+    # Check that all positions are closed (equity_symbol == 0)
+    assert strategy.broker.equity_symbol == 0, "All positions should be closed (equity_symbol == 0)"

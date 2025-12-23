@@ -1,6 +1,6 @@
 """
-Класс для записи и чтения результатов бэктестинга в Redis.
-Использует Sorted Set для хранения операций покупки и продажи.
+Class for writing and reading backtesting results to/from Redis.
+Uses Sorted Set to store buy and sell operations.
 """
 from typing import Optional, Dict
 import numpy as np
@@ -12,23 +12,23 @@ logger = get_logger(__name__)
 
 class BackTestingResults:
     """
-    Класс для записи и чтения результатов бэктестинга в Redis.
-    Использует Sorted Set (ZADD) для хранения операций покупки и продажи.
+    Class for writing and reading backtesting results to/from Redis.
+    Uses Sorted Set (ZADD) to store buy and sell operations.
     """
     
     def __init__(self, task: Task):
         """
-        Конструктор.
+        Constructor.
         
         Args:
-            task: Task instance (должен иметь метод get_result_key() и метод get_redis_client())
+            task: Task instance (must have get_result_key() and get_redis_client() methods)
         """
         self.task = task
         self._redis_client = None
     
     def _get_redis_client(self):
         """
-        Получить Redis клиент.
+        Get Redis client.
         
         Returns:
             redis.Redis: Redis client instance
@@ -42,36 +42,36 @@ class BackTestingResults:
     
     def _datetime64_to_timestamp(self, dt64: np.datetime64) -> int:
         """
-        Преобразовать np.datetime64 в Unix timestamp (секунды).
+        Convert np.datetime64 to Unix timestamp (seconds).
         
         Args:
             dt64: numpy datetime64 object
             
         Returns:
-            int: Unix timestamp в секундах
+            int: Unix timestamp in seconds
         """
-        # Преобразуем в секунды и затем в int
+        # Convert to seconds and then to int
         return int(dt64.astype('datetime64[s]').astype(int))
     
     def _datetime64_to_iso(self, dt64: np.datetime64) -> str:
         """
-        Преобразовать np.datetime64 в ISO строку.
+        Convert np.datetime64 to ISO string.
         
         Args:
             dt64: numpy datetime64 object
             
         Returns:
-            str: ISO формат строки (YYYY-MM-DDTHH:MM:SS)
+            str: ISO format string (YYYY-MM-DDTHH:MM:SS)
         """
-        # Преобразуем в datetime и форматируем
+        # Convert to datetime and format
         dt = dt64.astype('datetime64[s]').astype(int)
         from datetime import datetime, timezone
         return datetime.fromtimestamp(dt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
     
     def reset(self) -> None:
         """
-        Удаляет все результаты для задачи.
-        Удаляет все ключи по паттерну {task.get_result_key()}:*
+        Remove all results for the task.
+        Deletes all keys matching pattern {task.get_result_key()}:*
         
         Raises:
             RuntimeError: If reset operation fails
@@ -81,11 +81,11 @@ class BackTestingResults:
             result_key_prefix = self.task.get_result_key()
             pattern = f"{result_key_prefix}:*"
             
-            # Найти все ключи по паттерну
+            # Find all keys matching pattern
             keys = client.keys(pattern)
             
             if keys:
-                # Удалить все найденные ключи
+                # Delete all found keys
                 deleted = client.delete(*keys)
                 logger.debug(f"Reset backtesting results: deleted {deleted} keys matching pattern {pattern}")
             else:
@@ -104,15 +104,15 @@ class BackTestingResults:
         deal_id: str
     ) -> None:
         """
-        Добавляет операцию покупки в Redis Sorted Set.
+        Append buy operation to Redis Sorted Set.
         
         Args:
-            result_id: ID результата (обычно task.result_id)
-            time: Время операции (np.datetime64)
-            price: Цена покупки
-            volume: Объем покупки
-            fee: Комиссия
-            deal_id: ID сделки (для связи операций)
+            result_id: Result ID (usually task.result_id)
+            time: Operation time (np.datetime64)
+            price: Buy price
+            volume: Buy volume
+            fee: Fee
+            deal_id: Deal ID (for linking operations)
             
         Raises:
             RuntimeError: If append operation fails
@@ -122,14 +122,14 @@ class BackTestingResults:
             result_key_prefix = self.task.get_result_key()
             key = f"{result_key_prefix}:{result_id}:buy"
             
-            # Преобразуем время в timestamp для score
+            # Convert time to timestamp for score
             score = self._datetime64_to_timestamp(time)
             
-            # Формируем member: time_iso:price:volume:fee:deal_id
+            # Format member: time_iso:price:volume:fee:deal_id
             time_iso = self._datetime64_to_iso(time)
             member = f"{time_iso}:{price}:{volume}:{fee}:{deal_id}"
             
-            # Добавляем в Sorted Set
+            # Add to Sorted Set
             client.zadd(key, {member: score})
             
             logger.debug(f"Appended buy operation to {key}: time={time_iso}, price={price}, volume={volume}, fee={fee}, deal_id={deal_id}")
@@ -147,15 +147,15 @@ class BackTestingResults:
         deal_id: str
     ) -> None:
         """
-        Добавляет операцию продажи в Redis Sorted Set.
+        Append sell operation to Redis Sorted Set.
         
         Args:
-            result_id: ID результата (обычно task.result_id)
-            time: Время операции (np.datetime64)
-            price: Цена продажи
-            volume: Объем продажи
-            fee: Комиссия
-            deal_id: ID сделки (для связи операций)
+            result_id: Result ID (usually task.result_id)
+            time: Operation time (np.datetime64)
+            price: Sell price
+            volume: Sell volume
+            fee: Fee
+            deal_id: Deal ID (for linking operations)
             
         Raises:
             RuntimeError: If append operation fails
@@ -165,14 +165,14 @@ class BackTestingResults:
             result_key_prefix = self.task.get_result_key()
             key = f"{result_key_prefix}:{result_id}:sell"
             
-            # Преобразуем время в timestamp для score
+            # Convert time to timestamp for score
             score = self._datetime64_to_timestamp(time)
             
-            # Формируем member: time_iso:price:volume:fee:deal_id
+            # Format member: time_iso:price:volume:fee:deal_id
             time_iso = self._datetime64_to_iso(time)
             member = f"{time_iso}:{price}:{volume}:{fee}:{deal_id}"
             
-            # Добавляем в Sorted Set
+            # Add to Sorted Set
             client.zadd(key, {member: score})
             
             logger.debug(f"Appended sell operation to {key}: time={time_iso}, price={price}, volume={volume}, fee={fee}, deal_id={deal_id}")
@@ -187,17 +187,17 @@ class BackTestingResults:
         time_end: Optional[np.datetime64] = None
     ) -> Dict:
         """
-        Получает результаты за указанный интервал времени.
-        Пока заглушка - возвращает пустой словарь.
+        Get results for the specified time interval.
+        Currently a stub - returns empty dictionary.
         
         Args:
-            result_id: ID результата
-            time_begin: Начало интервала (опционально)
-            time_end: Конец интервала (опционально)
+            result_id: Result ID
+            time_begin: Interval start (optional)
+            time_end: Interval end (optional)
             
         Returns:
-            Словарь с результатами (пока пустой)
+            Dictionary with results (currently empty)
         """
-        # Заглушка
+        # Stub
         return {}
 
