@@ -8,7 +8,7 @@ from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
-from app.services.tasks.broker import Broker, Trade, OrderSide
+from app.services.tasks.broker import Broker, OrderSide
 from app.core.logger import get_logger
 from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64, datetime64_to_iso
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
@@ -44,10 +44,9 @@ class BrokerBacktesting(Broker):
                 - 'on_finish': Callable with no arguments
             results_save_period: Period for saving results in seconds (default: TRADE_RESULTS_SAVE_PERIOD)
         """
-        super().__init__()
+        super().__init__(result_id)
         self.fee = fee
         self.task = task
-        self.result_id = result_id
         self.results_save_period = results_save_period
         self.callbacks = callbacks_dict
         
@@ -63,7 +62,6 @@ class BrokerBacktesting(Broker):
         # Equity tracking
         self.equity_usd: PRICE_TYPE = 0.0
         self.equity_symbol: VOLUME_TYPE = 0.0
-        self.trades: List[Trade] = []
     
     def __reset(self) -> None:
         """
@@ -86,7 +84,6 @@ class BrokerBacktesting(Broker):
         # Reset equity
         self.equity_usd = 0.0
         self.equity_symbol = 0.0
-        self.trades = []
     
     def buy(self, quantity: VOLUME_TYPE):
         """
@@ -304,13 +301,21 @@ class BrokerBacktesting(Broker):
                 last_update_time = current_time
                 state_update_period = min(state_update_period + 1.0, self.results_save_period)
         
-        # Call on_finish callback
-        if 'on_finish' in self.callbacks:
-            self.callbacks['on_finish']()
-        
         # Close all open positions
         self.close_deals()
         
+        # Check trading results for consistency
+        errors = self.check_trading_results()
+        if errors:
+            error_message = f"Trading results validation failed:\n" + "\n".join(errors)
+            logger.error(error_message)
+            self.task.backtesting_error(error_message)
+            raise RuntimeError(error_message)
+
+        # Call on_finish callback
+        if 'on_finish' in self.callbacks:
+            self.callbacks['on_finish']()
+                
         # Set current_time to date_end to ensure progress is 100% for final update
         self.current_time = self.date_end
         self.update_state() 

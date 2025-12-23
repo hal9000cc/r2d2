@@ -1,11 +1,14 @@
 """
 Class for writing and reading backtesting results to/from Redis.
-Uses Sorted Set to store buy and sell operations.
+Uses Sorted Set to store trades and deals.
 """
 from typing import Optional, Dict
+import weakref
 import numpy as np
 from app.services.tasks.tasks import Task
+from app.services.tasks.broker import Broker, OrderSide
 from app.core.logger import get_logger
+from app.core.datetime_utils import datetime64_to_iso
 
 logger = get_logger(__name__)
 
@@ -13,7 +16,7 @@ logger = get_logger(__name__)
 class BackTestingResults:
     """
     Class for writing and reading backtesting results to/from Redis.
-    Uses Sorted Set (ZADD) to store buy and sell operations.
+    Uses Sorted Set (ZADD) to store trades and deals.
     """
     
     def __init__(self, task: Task):
@@ -25,6 +28,8 @@ class BackTestingResults:
         """
         self.task = task
         self._redis_client = None
+        self._broker_ref: Optional[weakref.ref] = None
+        self._trades_start_index: int = 0
     
     def _get_redis_client(self):
         """
@@ -40,18 +45,16 @@ class BackTestingResults:
             self._redis_client = self.task.get_redis_client()
         return self._redis_client
     
-    def _datetime64_to_timestamp(self, dt64: np.datetime64) -> int:
+    def _format_value(self, value) -> str:
         """
-        Convert np.datetime64 to Unix timestamp (seconds).
-        
-        Args:
-            dt64: numpy datetime64 object
-            
-        Returns:
-            int: Unix timestamp in seconds
+        Format value for serialization.
+        None -> empty string, bool -> 1/0, else -> str(value)
         """
-        # Convert to seconds and then to int
-        return int(dt64.astype('datetime64[s]').astype(int))
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        return str(value)
     
     def _datetime64_to_iso(self, dt64: np.datetime64) -> str:
         """
@@ -68,117 +71,117 @@ class BackTestingResults:
         from datetime import datetime, timezone
         return datetime.fromtimestamp(dt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
     
-    def reset(self) -> None:
+    def reset(self, broker: Broker) -> None:
         """
-        Remove all results for the task.
-        Deletes all keys matching pattern {task.get_result_key()}:*
+        Reset and initialize results storage.
+        Stores weak reference to broker and remembers initial trades list size.
         
+        Args:
+            broker: Broker instance to track
+            
         Raises:
             RuntimeError: If reset operation fails
         """
         try:
+            # Store weak reference to broker
+            self._broker_ref = weakref.ref(broker)
+            
+            # Remember initial trades list size (should be 0)
+            self._trades_start_index = len(broker.trades)
+            
+            # Clear existing results
             client = self._get_redis_client()
             result_key_prefix = self.task.get_result_key()
             pattern = f"{result_key_prefix}:*"
             
-            # Find all keys matching pattern
             keys = client.keys(pattern)
-            
             if keys:
-                # Delete all found keys
                 deleted = client.delete(*keys)
                 logger.debug(f"Reset backtesting results: deleted {deleted} keys matching pattern {pattern}")
-            else:
-                logger.debug(f"Reset backtesting results: no keys found matching pattern {pattern}")
         except Exception as e:
             logger.error(f"Failed to reset backtesting results: {str(e)}")
             raise RuntimeError(f"Failed to reset backtesting results: {str(e)}") from e
     
-    def append_buy(
-        self, 
-        result_id: str,
-        time: np.datetime64, 
-        price: float, 
-        volume: float, 
-        fee: float, 
-        deal_id: str
-    ) -> None:
+    def put_result(self) -> None:
         """
-        Append buy operation to Redis Sorted Set.
+        Save new trades and deals to Redis.
+        Checks trades list size, saves new trades, collects deal_id, saves deals.
         
-        Args:
-            result_id: Result ID (usually task.result_id)
-            time: Operation time (np.datetime64)
-            price: Buy price
-            volume: Buy volume
-            fee: Fee
-            deal_id: Deal ID (for linking operations)
-            
         Raises:
-            RuntimeError: If append operation fails
+            RuntimeError: If save operation fails
         """
         try:
+            # Get broker from weak reference
+            broker = self._broker_ref() if self._broker_ref else None
+            if broker is None:
+                raise RuntimeError("Broker reference is no longer valid")
+            
             client = self._get_redis_client()
             result_key_prefix = self.task.get_result_key()
-            key = f"{result_key_prefix}:{result_id}:buy"
+            result_id = broker.result_id
             
-            # Convert time to timestamp for score
-            score = self._datetime64_to_timestamp(time)
+            # Get new trades (from remembered index to current size)
+            current_trades_size = len(broker.trades)
+            new_trades = broker.trades[self._trades_start_index:current_trades_size]
             
-            # Format member: time_iso:price:volume:fee:deal_id
-            time_iso = self._datetime64_to_iso(time)
-            member = f"{time_iso}:{price}:{volume}:{fee}:{deal_id}"
+            if not new_trades:
+                return
             
-            # Add to Sorted Set
-            client.zadd(key, {member: score})
+            # Collect unique deal_id from new trades
+            deal_ids = set(trade.deal_id for trade in new_trades)
             
-            logger.debug(f"Appended buy operation to {key}: time={time_iso}, price={price}, volume={volume}, fee={fee}, deal_id={deal_id}")
+            # Save new trades to Redis (all trades in one key)
+            trades_key = f"{result_key_prefix}:{result_id}:trades"
+            
+            trades_to_save = {}
+            for trade in new_trades:
+                time_iso = datetime64_to_iso(trade.time)
+                side_str = trade.side.value  # "buy" or "sell"
+                
+                # Format member: trade_id:deal_id:order_id:time_iso:side:price:quantity:fee:sum
+                member = f"{trade.trade_id}:{trade.deal_id}:{trade.order_id}:{time_iso}:{side_str}:{trade.price}:{trade.quantity}:{trade.fee}:{trade.sum}"
+                
+                # Use trade_id as score
+                score = trade.trade_id
+                trades_to_save[member] = score
+            
+            # Save all trades to single key
+            if trades_to_save:
+                client.zadd(trades_key, trades_to_save)
+            
+            # Update trades start index
+            self._trades_start_index = current_trades_size
+            
+            # Save deals for collected deal_id
+            if deal_ids:
+                deals_key = f"{result_key_prefix}:{result_id}:deals"
+                deals_to_save = {}
+                
+                for deal in broker.deals:
+                    if deal.deal_id in deal_ids:
+                        # Format member: deal_id:avg_buy_price:avg_sell_price:quantity:fee:profit:is_closed
+                        member = (
+                            f"{deal.deal_id}:"
+                            f"{self._format_value(deal.avg_buy_price)}:"
+                            f"{self._format_value(deal.avg_sell_price)}:"
+                            f"{deal.quantity}:"
+                            f"{deal.fee}:"
+                            f"{self._format_value(deal.profit)}:"
+                            f"{self._format_value(deal.is_closed)}"
+                        )
+                        
+                        # Use deal_id as score
+                        score = deal.deal_id
+                        deals_to_save[member] = score
+                
+                if deals_to_save:
+                    client.zadd(deals_key, deals_to_save)
+                    logger.debug(f"Saved {len(deals_to_save)} deals to {deals_key}")
+            
+            logger.debug(f"Saved {len(new_trades)} new trades")
         except Exception as e:
-            logger.error(f"Failed to append buy operation: {str(e)}")
-            raise RuntimeError(f"Failed to append buy operation: {str(e)}") from e
-    
-    def append_sell(
-        self, 
-        result_id: str,
-        time: np.datetime64, 
-        price: float, 
-        volume: float, 
-        fee: float, 
-        deal_id: str
-    ) -> None:
-        """
-        Append sell operation to Redis Sorted Set.
-        
-        Args:
-            result_id: Result ID (usually task.result_id)
-            time: Operation time (np.datetime64)
-            price: Sell price
-            volume: Sell volume
-            fee: Fee
-            deal_id: Deal ID (for linking operations)
-            
-        Raises:
-            RuntimeError: If append operation fails
-        """
-        try:
-            client = self._get_redis_client()
-            result_key_prefix = self.task.get_result_key()
-            key = f"{result_key_prefix}:{result_id}:sell"
-            
-            # Convert time to timestamp for score
-            score = self._datetime64_to_timestamp(time)
-            
-            # Format member: time_iso:price:volume:fee:deal_id
-            time_iso = self._datetime64_to_iso(time)
-            member = f"{time_iso}:{price}:{volume}:{fee}:{deal_id}"
-            
-            # Add to Sorted Set
-            client.zadd(key, {member: score})
-            
-            logger.debug(f"Appended sell operation to {key}: time={time_iso}, price={price}, volume={volume}, fee={fee}, deal_id={deal_id}")
-        except Exception as e:
-            logger.error(f"Failed to append sell operation: {str(e)}")
-            raise RuntimeError(f"Failed to append sell operation: {str(e)}") from e
+            logger.error(f"Failed to save results: {str(e)}")
+            raise RuntimeError(f"Failed to save results: {str(e)}") from e
     
     def get_results(
         self, 
