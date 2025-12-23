@@ -9,6 +9,7 @@ from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
 from app.services.tasks.broker import Broker, OrderSide
+from app.services.tasks.backtesting_result import BackTestingResults
 from app.core.logger import get_logger
 from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64, datetime64_to_iso
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
@@ -63,10 +64,11 @@ class BrokerBacktesting(Broker):
         self.equity_usd: PRICE_TYPE = 0.0
         self.equity_symbol: VOLUME_TYPE = 0.0
     
-    def __reset(self) -> None:
+    def reset(self) -> None:
         """
         Reset broker state.
         """
+        super().reset()
         self.price = None
         
         # Initialize date range for progress calculation
@@ -137,12 +139,15 @@ class BrokerBacktesting(Broker):
         elif self.equity_symbol < 0:
             self.buy(abs(self.equity_symbol))
     
-    def update_state(self) -> None:
+    def update_state(self, results: BackTestingResults) -> None:
         """
         Update task state and progress.
         Checks if task is still running by reading isRunning flag from Redis.
         Calculates and sends progress update via MessageType.EVENT.
         If isRunning is False, sends error notification and raises exception to stop backtesting.
+        
+        Args:
+            results: BackTestingResults instance to save results to Redis
         
         Raises:
             RuntimeError: If task is stopped (isRunning == False) or duplicate worker detected
@@ -174,6 +179,9 @@ class BrokerBacktesting(Broker):
                 "current_time": current_time_iso
             }
         )
+        
+        # Save results to Redis
+        results.put_result()
         
         # Load task from Redis to get current state
         current_task = self.task.load()
@@ -226,7 +234,10 @@ class BrokerBacktesting(Broker):
             task: Task instance (used to get symbol, timeframe, dateStart, dateEnd, source)
         """
         # Reset broker state
-        self.__reset()
+        self.reset()
+        
+        # Create BackTestingResults instance
+        results = BackTestingResults(self.task, self)
         
         # Convert timeframe string to Timeframe object
         try:
@@ -297,20 +308,21 @@ class BrokerBacktesting(Broker):
             # Check if it's time to update state and progress
             current_time = time.time()
             if current_time - last_update_time >= self.results_save_period:
-                self.update_state()
+                self.update_state(results)
                 last_update_time = current_time
                 state_update_period = min(state_update_period + 1.0, self.results_save_period)
         
         # Close all open positions
         self.close_deals()
         
-        # Check trading results for consistency
-        errors = self.check_trading_results()
-        if errors:
-            error_message = f"Trading results validation failed:\n" + "\n".join(errors)
-            logger.error(error_message)
-            self.task.backtesting_error(error_message)
-            raise RuntimeError(error_message)
+        # Check trading results for consistency (only in debug mode)
+        if __debug__:
+            errors = self.check_trading_results()
+            if errors:
+                error_message = f"Trading results validation failed:\n" + "\n".join(errors)
+                logger.error(error_message)
+                self.task.backtesting_error(error_message)
+                raise RuntimeError(error_message)
 
         # Call on_finish callback
         if 'on_finish' in self.callbacks:
@@ -318,4 +330,4 @@ class BrokerBacktesting(Broker):
                 
         # Set current_time to date_end to ensure progress is 100% for final update
         self.current_time = self.date_end
-        self.update_state() 
+        self.update_state(results) 

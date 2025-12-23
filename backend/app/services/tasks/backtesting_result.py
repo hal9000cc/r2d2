@@ -19,17 +19,39 @@ class BackTestingResults:
     Uses Sorted Set (ZADD) to store trades and deals.
     """
     
-    def __init__(self, task: Task):
+    def __init__(self, task: Task, broker: Broker):
         """
         Constructor.
         
         Args:
             task: Task instance (must have get_result_key() and get_redis_client() methods)
+            broker: Broker instance to track
+            
+        Raises:
+            RuntimeError: If initialization fails
         """
         self.task = task
         self._redis_client = None
-        self._broker_ref: Optional[weakref.ref] = None
-        self._trades_start_index: int = 0
+        
+        try:
+            # Store weak reference to broker
+            self._broker_ref = weakref.ref(broker)
+            
+            # Remember initial trades list size (should be 0)
+            self._trades_start_index = len(broker.trades)
+            
+            # Clear existing results
+            client = self._get_redis_client()
+            result_key_prefix = self.task.get_result_key()
+            pattern = f"{result_key_prefix}:*"
+            
+            keys = client.keys(pattern)
+            if keys:
+                deleted = client.delete(*keys)
+                logger.debug(f"Reset backtesting results: deleted {deleted} keys matching pattern {pattern}")
+        except Exception as e:
+            logger.error(f"Failed to initialize backtesting results: {str(e)}")
+            raise RuntimeError(f"Failed to initialize backtesting results: {str(e)}") from e
     
     def _get_redis_client(self):
         """
@@ -71,36 +93,6 @@ class BackTestingResults:
         from datetime import datetime, timezone
         return datetime.fromtimestamp(dt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
     
-    def reset(self, broker: Broker) -> None:
-        """
-        Reset and initialize results storage.
-        Stores weak reference to broker and remembers initial trades list size.
-        
-        Args:
-            broker: Broker instance to track
-            
-        Raises:
-            RuntimeError: If reset operation fails
-        """
-        try:
-            # Store weak reference to broker
-            self._broker_ref = weakref.ref(broker)
-            
-            # Remember initial trades list size (should be 0)
-            self._trades_start_index = len(broker.trades)
-            
-            # Clear existing results
-            client = self._get_redis_client()
-            result_key_prefix = self.task.get_result_key()
-            pattern = f"{result_key_prefix}:*"
-            
-            keys = client.keys(pattern)
-            if keys:
-                deleted = client.delete(*keys)
-                logger.debug(f"Reset backtesting results: deleted {deleted} keys matching pattern {pattern}")
-        except Exception as e:
-            logger.error(f"Failed to reset backtesting results: {str(e)}")
-            raise RuntimeError(f"Failed to reset backtesting results: {str(e)}") from e
     
     def put_result(self) -> None:
         """
@@ -138,8 +130,8 @@ class BackTestingResults:
                 time_iso = datetime64_to_iso(trade.time)
                 side_str = trade.side.value  # "buy" or "sell"
                 
-                # Format member: trade_id:deal_id:order_id:time_iso:side:price:quantity:fee:sum
-                member = f"{trade.trade_id}:{trade.deal_id}:{trade.order_id}:{time_iso}:{side_str}:{trade.price}:{trade.quantity}:{trade.fee}:{trade.sum}"
+                # Format member: trade_id|deal_id|order_id|time_iso|side|price|quantity|fee|sum
+                member = f"{trade.trade_id}|{trade.deal_id}|{trade.order_id}|{time_iso}|{side_str}|{trade.price}|{trade.quantity}|{trade.fee}|{trade.sum}"
                 
                 # Use trade_id as score
                 score = trade.trade_id
@@ -159,14 +151,14 @@ class BackTestingResults:
                 
                 for deal in broker.deals:
                     if deal.deal_id in deal_ids:
-                        # Format member: deal_id:avg_buy_price:avg_sell_price:quantity:fee:profit:is_closed
+                        # Format member: deal_id|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed
                         member = (
-                            f"{deal.deal_id}:"
-                            f"{self._format_value(deal.avg_buy_price)}:"
-                            f"{self._format_value(deal.avg_sell_price)}:"
-                            f"{deal.quantity}:"
-                            f"{deal.fee}:"
-                            f"{self._format_value(deal.profit)}:"
+                            f"{deal.deal_id}|"
+                            f"{self._format_value(deal.avg_buy_price)}|"
+                            f"{self._format_value(deal.avg_sell_price)}|"
+                            f"{deal.quantity}|"
+                            f"{deal.fee}|"
+                            f"{self._format_value(deal.profit)}|"
                             f"{self._format_value(deal.is_closed)}"
                         )
                         

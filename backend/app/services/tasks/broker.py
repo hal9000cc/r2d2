@@ -6,7 +6,7 @@ from enum import Enum
 from typing import List, Optional
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.core.logger import get_logger
@@ -28,9 +28,11 @@ class Broker(ABC):
         """
         Represents a single trade (buy or sell operation).
         """
+        
+        model_config = ConfigDict(arbitrary_types_allowed=True)
 
         trade_id: int = Field(gt=0)
-        deal_id: int = Field(gt=0)
+        deal_id: int = 0  # Will be set when trade is added to deal
         order_id: int
         time: np.datetime64
         side: OrderSide
@@ -268,13 +270,11 @@ class Broker(ABC):
         return errors
 
 
-    def _get_or_create_deal_by_id(self, deal_id: int) -> 'Broker.Deal':
+    def get_or_create_deal_by_id(self, deal_id: int) -> 'Broker.Deal':
         """
         Get deal by deal_id (deal_id = index + 1).
         Raises IndexError if deal with such deal_id does not exist.
         """
-        if self.deals is None:
-            self.deals = []
 
         # Convert deal_id to index (deal_id = index + 1, so index = deal_id - 1)
         index = deal_id - 1
@@ -283,7 +283,7 @@ class Broker(ABC):
 
         return self.deals[index]
 
-    def _get_last_open_deal(self) -> Optional['Broker.Deal']:
+    def get_last_open_deal(self) -> Optional['Broker.Deal']:
         """
         Return last not-closed deal or None.
         """
@@ -317,8 +317,8 @@ class Broker(ABC):
             price: Price for this trade
             deal_id: Optional deal index to register trade in
         """
-        trade = self._create_trade(OrderSide.BUY, quantity, price=price, fee=fee, time=time)
-        self._register_trade(trade, deal_id)
+        trade = self.create_trade(OrderSide.BUY, quantity, price=price, fee=fee, time=time)
+        self.register_trade(trade, deal_id)
 
     def reg_sell(
         self,
@@ -339,10 +339,10 @@ class Broker(ABC):
             price: Price for this trade
             deal_id: Optional deal index to register trade in
         """
-        trade = self._create_trade(OrderSide.SELL, quantity, price=price, fee=fee, time=time)
-        self._register_trade(trade, deal_id)
+        trade = self.create_trade(OrderSide.SELL, quantity, price=price, fee=fee, time=time)
+        self.register_trade(trade, deal_id)
 
-    def _create_trade(
+    def create_trade(
         self,
         side: OrderSide,
         quantity: VOLUME_TYPE,
@@ -372,13 +372,13 @@ class Broker(ABC):
         self.trades.append(trade)
         return trade
 
-    def _register_trade(self, trade: 'Broker.Trade', deal_id: Optional[int]) -> None:
+    def register_trade(self, trade: 'Broker.Trade', deal_id: Optional[int]) -> None:
         """
         Core logic for registering trade in deals with flip handling.
         """
         # Explicit deal_id: just add to that deal, no flip-logic
         if deal_id is not None:
-            deal = self._get_or_create_deal_by_id(deal_id)
+            deal = self.get_or_create_deal_by_id(deal_id)
             deal.add_trade(trade)
             return
 
@@ -390,7 +390,7 @@ class Broker(ABC):
             new_deal.add_trade(trade)
             return
 
-        last_deal = self._get_last_open_deal()
+        last_deal = self.get_last_open_deal()
 
         # If last deal is closed – create a new one and put whole trade there
         if last_deal is None:
