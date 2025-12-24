@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import importlib.util
 import sys
 import uuid
@@ -11,6 +11,8 @@ import redis.asyncio as redis_async
 from app.services.tasks.tasks import BacktestingTaskList, Task
 from app.services.tasks.strategy import Strategy
 from app.services.tasks.broker_backtesting import BrokerBacktesting
+from app.services.tasks.backtesting_result import BackTestingResults
+from app.core.datetime_utils import parse_utc_datetime64
 from app.services.strategies import validate_relative_path, load_strategy
 from app.services.strategies.exceptions import StrategyFileError, StrategyNotFoundError
 from app.services.quotes.client import QuotesClient
@@ -340,6 +342,62 @@ async def stop_backtesting(task_id: int):
         "task_id": task_id,
         "message": "Stop request received"
     }
+
+
+@router.get("/tasks/{task_id}/results", response_model=Dict[str, Any])
+async def get_backtesting_results(
+    task_id: int,
+    result_id: str,
+    time_begin: Optional[str] = None
+):
+    """
+    Get backtesting results for a task.
+    
+    Args:
+        task_id: Task ID
+        result_id: Result ID (GUID) for the backtesting run
+        time_begin: Optional ISO format datetime string (e.g., "2024-01-01T00:00:00Z")
+                   Start time for filtering trades. Default: 1900-01-01 (all trades)
+    
+    Returns:
+        Dictionary with success flag, data (trades and deals), or error_message
+        
+    Raises:
+        HTTPException: If task not found or invalid time_begin format
+    """
+    # Load task
+    task = task_list.load(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Parse time_begin if provided
+    time_begin_dt64 = None
+    if time_begin is not None:
+        try:
+            time_begin_dt64 = parse_utc_datetime64(time_begin)
+        except Exception as e:
+            return {
+                "success": False,
+                "error_message": f"Invalid time_begin format: {str(e)}"
+            }
+    
+    try:
+        # Create BackTestingResults instance without broker (read-only mode)
+        results = BackTestingResults(task, broker=None)
+        
+        # Get results
+        data = results.get_results(result_id, time_begin_dt64)
+        
+        return {
+            "success": True,
+            "data": data
+        }
+    except Exception as e:
+        logger.error(f"Error getting backtesting results for task {task_id}, result_id {result_id}: {str(e)}", exc_info=True)
+        return {
+            "success": False,
+            "error_message": f"Failed to get results: {str(e)}"
+        }
 
 
 def start_backtesting_worker(task_id: int) -> None:

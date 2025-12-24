@@ -160,16 +160,13 @@ class BrokerBacktesting(Broker):
         # Calculate and update progress based on current_time and date range
         total_delta = self.date_end - self.date_start
         current_delta = self.current_time - self.date_start
-        # Progress from 0 to 100 as we move from date_start to date_end
         progress = float(current_delta / total_delta * 100.0)
-        # Clamp to [0, 100] and round to 1 decimal place
         self.progress = round(max(0.0, min(100.0, progress)), 1)
         
         # Convert datetime64 to ISO strings for frontend
         date_start_iso = datetime64_to_iso(self.date_start) if self.date_start is not None else None
         current_time_iso = datetime64_to_iso(self.current_time) if self.current_time is not None else None
         
-        # Send progress update via event
         self.task.send_message(
             MessageType.EVENT, 
             {
