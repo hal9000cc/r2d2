@@ -225,6 +225,22 @@
           <template #messages>
             <MessagesPanel :messages="allMessages" />
           </template>
+          <template #trades>
+            <DataTable 
+              :columns="tradesColumns"
+              :data="trades"
+              row-key="trade_id"
+              empty-message="No trades yet"
+            />
+          </template>
+          <template #deals>
+            <DataTable 
+              :columns="dealsColumns"
+              :data="dealsArray"
+              row-key="deal_id"
+              empty-message="No deals yet"
+            />
+          </template>
         </Tabs>
       </div>
       
@@ -268,6 +284,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import ResizablePanel from '../components/ResizablePanel.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import MessagesPanel from '../components/MessagesPanel.vue'
+import DataTable from '../components/DataTable.vue'
 import BacktestingNavForm from '../components/BacktestingNavForm.vue'
 import StrategyParameters from '../components/StrategyParameters.vue'
 import Tabs from '../components/Tabs.vue'
@@ -276,6 +293,7 @@ import BacktestingTaskList from '../components/BacktestingTaskList.vue'
 import { strategiesApi } from '../services/strategiesApi'
 import { backtestingApi } from '../services/backtestingApi'
 import { useBacktesting } from '../composables/useBacktesting'
+import { useBacktestingResults } from '../composables/useBacktestingResults'
 // Layout state
 const chartHeight = ref(null)
 const chartMaxHeight = ref(null)
@@ -290,7 +308,9 @@ const chartTabs = [
   { id: 'chart', label: 'Chart' }
 ]
 const tabs = [
-  { id: 'messages', label: 'Messages' }
+  { id: 'messages', label: 'Messages' },
+  { id: 'trades', label: 'Trades' },
+  { id: 'deals', label: 'Deals' }
 ]
 const activeTab = ref('messages')
 const activeChartTab = ref('strategy')
@@ -352,12 +372,121 @@ const {
   backtestProgressErrorType,
   backtestProgressDateStart,
   backtestProgressCurrentTime,
+  backtestProgressResultId,
   clearMessages,
   clearAllMessages,
   addLocalMessage,
   setBacktestingStarted,
   resetBacktestingState
 } = useBacktesting(currentTaskId)
+
+// Use backtesting results composable
+const {
+  resultId,
+  resultsRelevanceTime,
+  trades,
+  deals,
+  tradesCount,
+  dealsCount,
+  clearResults,
+  setResultId,
+  setRelevanceTime,
+  addTrades,
+  updateDeals,
+  getAllDeals
+} = useBacktestingResults()
+
+// Table columns definitions
+const tradesColumns = [
+  { key: 'trade_id', label: 'Trade ID', width: '80px' },
+  { key: 'deal_id', label: 'Deal ID', width: '80px' },
+  { key: 'order_id', label: 'Order ID', width: '80px' },
+  { 
+    key: 'time', 
+    label: 'Time',
+    format: (value) => {
+      if (!value) return '—'
+      const date = new Date(value)
+      return date.toISOString().replace('T', ' ').substring(0, 19)
+    }
+  },
+  { 
+    key: 'side', 
+    label: 'Side',
+    width: '60px',
+    class: (row) => row.side === 'buy' ? 'side-buy' : 'side-sell',
+    format: (value) => value ? value.toUpperCase() : '—'
+  },
+  { 
+    key: 'price', 
+    label: 'Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'quantity', 
+    label: 'Quantity',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'fee', 
+    label: 'Fee',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'sum', 
+    label: 'Sum',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  }
+]
+
+const dealsColumns = [
+  { key: 'deal_id', label: 'Deal ID', width: '80px' },
+  { 
+    key: 'avg_buy_price', 
+    label: 'Avg Buy Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'avg_sell_price', 
+    label: 'Avg Sell Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'quantity', 
+    label: 'Quantity',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'fee', 
+    label: 'Fee',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'profit', 
+    label: 'Profit',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'is_closed', 
+    label: 'Status',
+    width: '80px',
+    class: (row) => row.is_closed ? 'status-closed' : 'status-open',
+    format: (value) => value ? 'Closed' : 'Open'
+  }
+]
+
+// Computed: deals as array for table
+const dealsArray = computed(() => getAllDeals())
+
 // Computed properties
 const isMac = computed(() => {
   // Use modern userAgentData API if available, otherwise fall back to userAgent parsing
@@ -398,6 +527,57 @@ watch(strategyCode, (newValue, oldValue) => {
     saveTimeout.value = setTimeout(() => {
       saveCurrentStrategy()
     }, 5000)
+  }
+})
+
+// Watch for backtesting progress to load results
+watch([backtestProgressCurrentTime, backtestProgressResultId], async ([newCurrentTime, newResultId], [oldCurrentTime, oldResultId]) => {
+  // Only load results if:
+  // 1. We have a current time (progress event received)
+  // 2. We have a result_id
+  // 3. Current time changed (new progress event)
+  // 4. result_id matches our local result_id (not from another backtesting run)
+  if (!newCurrentTime || !newResultId || !resultId.value) {
+    return
+  }
+  
+  // Check if result_id from event matches our local result_id
+  if (newResultId !== resultId.value) {
+    // Ignore events from other backtesting runs
+    return
+  }
+  
+  // Check if current time changed
+  if (newCurrentTime === oldCurrentTime) {
+    return
+  }
+  
+  // Load results from last relevance time to current time
+  try {
+    const response = await backtestingApi.getBacktestingResults(
+      currentTaskId.value,
+      resultId.value,
+      resultsRelevanceTime.value
+    )
+    
+    if (response.success && response.data) {
+      // Add trades (avoid duplicates)
+      if (response.data.trades && response.data.trades.length > 0) {
+        addTrades(response.data.trades)
+      }
+      
+      // Update deals (add or update)
+      if (response.data.deals && response.data.deals.length > 0) {
+        updateDeals(response.data.deals)
+      }
+      
+      // Update relevance time to current time
+      setRelevanceTime(newCurrentTime)
+    } else if (!response.success) {
+      console.error('Failed to load backtesting results:', response.error_message)
+    }
+  } catch (error) {
+    console.error('Error loading backtesting results:', error)
   }
 })
 
@@ -1050,18 +1230,34 @@ async function handleStart(formData) {
   // Clear chart before starting new backtest
   clearChartFlag.value = true
   
+  // Clear results before starting new backtest
+  clearResults()
+  
   // Set backtesting state immediately for instant UI feedback
   setBacktestingStarted()
   
   try {
     // Call API to start backtesting
-    await backtestingApi.startBacktest(currentTaskId.value)
+    const response = await backtestingApi.startBacktest(currentTaskId.value)
+    
+    // Save result_id from response
+    if (response.result_id) {
+      setResultId(response.result_id)
+      
+      // Set initial relevance time to date_start from form
+      if (formData.dateFrom) {
+        const dateStart = new Date(formData.dateFrom).toISOString()
+        setRelevanceTime(dateStart)
+      }
+    }
+    
     // State will also be updated by composable when backtesting_started event is received via WebSocket
     // But we set it immediately above for instant UI feedback
   } catch (error) {
     console.error('Failed to start backtesting:', error)
     // Reset state on error
     resetBacktestingState()
+    clearResults()
     const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
     addLocalMessage({
       level: 'error',

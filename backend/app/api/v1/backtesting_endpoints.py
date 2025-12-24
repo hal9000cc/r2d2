@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
 from typing import List, Dict, Any, Optional
 import importlib.util
 import sys
@@ -292,10 +292,11 @@ async def start_backtesting(task_id: int):
         HTTPException: If task validation fails or worker cannot be started
     """
     try:
-        start_backtesting_worker(task_id)
+        result_id = start_backtesting_worker(task_id)
         return {
             "success": True,
             "task_id": task_id,
+            "result_id": result_id
         }
     except HTTPException:
         # Re-raise HTTP exceptions from worker validation
@@ -344,11 +345,11 @@ async def stop_backtesting(task_id: int):
     }
 
 
-@router.get("/tasks/{task_id}/results", response_model=Dict[str, Any])
+@router.get("/tasks/{task_id}/results/{result_id}", response_model=Dict[str, Any])
 async def get_backtesting_results(
     task_id: int,
     result_id: str,
-    time_begin: Optional[str] = None
+    time_begin: Optional[str] = Query(None, description="Start time for filtering trades (ISO format)")
 ):
     """
     Get backtesting results for a task.
@@ -400,7 +401,7 @@ async def get_backtesting_results(
         }
 
 
-def start_backtesting_worker(task_id: int) -> None:
+def start_backtesting_worker(task_id: int) -> str:
     """
     Start backtesting worker in a separate process.
     
@@ -459,6 +460,8 @@ def start_backtesting_worker(task_id: int) -> None:
     process = Process(target=worker_backtesting_task, args=(task_id, result_id))
     process.start()
     logger.info(f"Started backtesting worker process for task {task_id} (PID: {process.pid}) with result_id {result_id}")
+
+    return result_id
 
 
 def worker_backtesting_task(task_id: int, result_id: str) -> None:
@@ -537,7 +540,7 @@ def process_backtesting_task(task: Task, result_id: str) -> None:
     task.message(message)
     logger.info(message)
 
-    task.send_message(MessageType.EVENT, {"event": "backtesting_started"})
+    task.send_message(MessageType.EVENT, {"event": "backtesting_started", "result_id": result_id})
     
     # Create broker with strategy callbacks
     callbacks = Strategy.create_strategy_callbacks(strategy)

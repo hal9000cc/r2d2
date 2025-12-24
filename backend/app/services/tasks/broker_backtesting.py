@@ -170,7 +170,8 @@ class BrokerBacktesting(Broker):
         self.task.send_message(
             MessageType.EVENT, 
             {
-                "event": "backtesting_progress", 
+                "event": "backtesting_progress",
+                "result_id": self.result_id,
                 "progress": self.progress,
                 "date_start": date_start_iso,
                 "current_time": current_time_iso

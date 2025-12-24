@@ -141,7 +141,8 @@ class BackTestingResults:
                 member = f"{trade.trade_id}|{trade.deal_id}|{trade.order_id}|{time_iso}|{side_str}|{trade.price}|{trade.quantity}|{trade.fee}|{trade.sum}"
                 
                 # Use time as score (numeric representation in milliseconds)
-                score = trade.time.astype('datetime64[ms]').astype(int)
+                # Convert numpy int64 to Python int for Redis compatibility
+                score = int(trade.time.astype('datetime64[ms]').astype(int))
                 trades_to_save[member] = score
             
             # Save all trades to single key
@@ -169,8 +170,8 @@ class BackTestingResults:
                             f"{self._format_value(deal.is_closed)}"
                         )
                         
-                        # Use deal_id as score
-                        score = deal.deal_id
+                        # Use deal_id as score (convert to int if needed)
+                        score = int(deal.deal_id)
                         deals_to_save[member] = score
                 
                 if deals_to_save:
@@ -206,7 +207,8 @@ class BackTestingResults:
             result_key_prefix = self.task.get_result_key()
             
             # Convert time_begin to numeric score (milliseconds)
-            time_begin_score = time_begin.astype('datetime64[ms]').astype(int)
+            # Convert numpy int64 to Python int for Redis compatibility
+            time_begin_score = int(time_begin.astype('datetime64[ms]').astype(int))
             
             # Get trades with time >= time_begin
             trades_key = f"{result_key_prefix}:{result_id}:trades"
@@ -241,8 +243,10 @@ class BackTestingResults:
                 pipeline = client.pipeline()
                 
                 # Add ZRANGEBYSCORE commands for each deal_id
+                # Convert deal_id to int if needed (deal_ids come from parsed strings)
                 for deal_id in deal_ids:
-                    pipeline.zrangebyscore(deals_key, deal_id, deal_id, withscores=False)
+                    deal_id_int = int(deal_id)
+                    pipeline.zrangebyscore(deals_key, deal_id_int, deal_id_int, withscores=False)
                 
                 # Execute pipeline
                 deals_data_list = pipeline.execute()
