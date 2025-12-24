@@ -53,6 +53,10 @@ export default {
       // Logical range subscription
       logicalRangeSubscription: null,
       
+      // ResizeObserver for automatic chart resizing
+      resizeObserver: null,
+      handleResizeBound: null, // Bound resize handler for cleanup
+      
       // Backtesting bounds
       backtestingDateStart: null, // Unix timestamp in seconds
       backtestingDateEnd: null, // Unix timestamp in seconds (current_time from progress)
@@ -99,6 +103,7 @@ export default {
   mounted() {
     this.initChart()
     this.setupLogicalRangeTracking()
+    this.setupResizeObserver()
   },
   beforeUnmount() {
     this.cleanup()
@@ -194,6 +199,58 @@ export default {
       this.logicalRangeSubscription = this.chart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange) => {
         this.checkAndLoadData(logicalRange, false)
       })
+    },
+    
+    /**
+     * Setup ResizeObserver to automatically resize chart when container size changes
+     */
+    setupResizeObserver() {
+      if (!this.$refs.chartContainer) {
+        return
+      }
+      
+      if (typeof ResizeObserver !== 'undefined') {
+        this.resizeObserver = new ResizeObserver((entries) => {
+          for (const entry of entries) {
+            if (this.chart && entry.target === this.$refs.chartContainer) {
+              // Use requestAnimationFrame to debounce resize calls
+              requestAnimationFrame(() => {
+                this.resizeChart()
+              })
+            }
+          }
+        })
+        
+        this.resizeObserver.observe(this.$refs.chartContainer)
+      } else {
+        // Fallback: use window resize if ResizeObserver is not available
+        // Bind to component instance
+        this.handleResizeBound = this.handleResize.bind(this)
+        window.addEventListener('resize', this.handleResizeBound)
+      }
+    },
+    
+    /**
+     * Resize chart to match container dimensions
+     */
+    resizeChart() {
+      if (!this.chart || !this.$refs.chartContainer) {
+        return
+      }
+      
+      const width = this.$refs.chartContainer.clientWidth
+      const height = this.$refs.chartContainer.clientHeight
+      
+      if (width > 0 && height > 0) {
+        this.chart.resize(width, height)
+      }
+    },
+    
+    /**
+     * Handle window resize (fallback for browsers without ResizeObserver)
+     */
+    handleResize() {
+      this.resizeChart()
     },
     
     /**
@@ -813,11 +870,25 @@ export default {
     },
     
     cleanup() {
-      if (this.logicalRangeSubscription) {
+      // Disconnect ResizeObserver
+      if (this.resizeObserver) {
+        this.resizeObserver.disconnect()
+        this.resizeObserver = null
+      }
+      
+      // Remove window resize listener (fallback)
+      if (this.handleResizeBound) {
+        window.removeEventListener('resize', this.handleResizeBound)
+        this.handleResizeBound = null
+      }
+      
+      // Unsubscribe from logical range changes
+      if (this.logicalRangeSubscription && this.chart) {
         this.chart.timeScale().unsubscribeVisibleLogicalRangeChange(this.logicalRangeSubscription)
         this.logicalRangeSubscription = null
       }
       
+      // Remove chart
       if (this.chart) {
         this.chart.remove()
         this.chart = null
