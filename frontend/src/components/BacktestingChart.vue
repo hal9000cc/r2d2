@@ -223,6 +223,10 @@ export default {
       // Subscribe to logical range changes (like in the example)
       this.logicalRangeSubscription = this.chart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange) => {
         this.checkAndLoadData(logicalRange, false)
+        // Update trade markers when visible range changes
+        this.updateTradeMarkers()
+        // Update deal lines when visible range changes
+        this.updateDealLines()
       })
     },
     
@@ -818,15 +822,26 @@ export default {
         return
       }
       
-      // Get time range from current data
-      const firstTime = this.currentData[0].time
-      const lastTime = this.currentData[this.currentData.length - 1].time
+      // Get visible time range from chart
+      const visibleRange = this.chart.timeScale().getVisibleRange()
+      if (!visibleRange) {
+        // If visible range is not available, clear markers
+        try {
+          this.seriesMarkers.setMarkers([])
+        } catch (error) {
+          this.$emit('chart-message', {
+            level: 'debug',
+            message: `Failed to clear trade markers: ${error.message}`
+          })
+        }
+        return
+      }
       
       // Convert Unix timestamps (seconds) to ISO strings for getTradesByDateRange
-      const fromISO = new Date(firstTime * 1000).toISOString()
-      const toISO = new Date(lastTime * 1000).toISOString()
+      const fromISO = new Date(visibleRange.from * 1000).toISOString()
+      const toISO = new Date(visibleRange.to * 1000).toISOString()
       
-      // Get trades for this time range
+      // Get trades for visible time range
       const tradesInRange = this.backtestingResults.getTradesByDateRange(fromISO, toISO)
       
       // If no trades, clear markers
@@ -914,11 +929,18 @@ export default {
         return
       }
       
+      // Get visible time range from chart
+      const visibleRange = this.chart.timeScale().getVisibleRange()
+      if (!visibleRange) {
+        // If visible range is not available, don't show any deals
+        return
+      }
+      
       // Get all closed deals
       const allDeals = this.backtestingResults.getAllDeals()
       const closedDeals = allDeals.filter(deal => deal.is_closed)
       
-      // For each closed deal, create a line
+      // For each closed deal, create a line if it's visible
       closedDeals.forEach(deal => {
         // Get trades for this deal
         const dealTrades = this.backtestingResults.getTradesForDeal(deal.deal_id)
@@ -934,6 +956,17 @@ export default {
         // Convert times to Unix timestamps (seconds)
         const startTime = Math.floor(new Date(firstTrade.time).getTime() / 1000)
         const endTime = Math.floor(new Date(lastTrade.time).getTime() / 1000)
+        
+        // Check if deal is visible:
+        // 1. At least one end (start or end) must be in visible range, OR
+        // 2. Deal crosses the visible range (one end is before, other is after)
+        const isStartVisible = startTime >= visibleRange.from && startTime <= visibleRange.to
+        const isEndVisible = endTime >= visibleRange.from && endTime <= visibleRange.to
+        const crossesRange = startTime < visibleRange.from && endTime > visibleRange.to
+        if (!isStartVisible && !isEndVisible && !crossesRange) {
+          // Deal is not visible, skip it
+          return
+        }
         
         // Determine start and end prices based on deal type
         let startPrice, endPrice
