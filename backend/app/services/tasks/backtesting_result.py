@@ -3,10 +3,11 @@ Class for writing and reading backtesting results to/from Redis.
 Uses Sorted Set to store trades and deals.
 """
 from typing import Optional, Dict
+import json
 import weakref
 import numpy as np
 from app.services.tasks.tasks import Task
-from app.services.tasks.broker import Broker, OrderSide
+from app.services.tasks.broker import Broker, OrderSide, DealType
 from app.core.logger import get_logger
 from app.core.datetime_utils import datetime64_to_iso
 
@@ -159,9 +160,10 @@ class BackTestingResults:
                 
                 for deal in broker.deals:
                     if deal.deal_id in deal_ids:
-                        # Format member: deal_id|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed
+                        # Format member: deal_id|type|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed
                         member = (
                             f"{deal.deal_id}|"
+                            f"{deal.type.value if deal.type else ''}|"
                             f"{self._format_value(deal.avg_buy_price)}|"
                             f"{self._format_value(deal.avg_sell_price)}|"
                             f"{deal.quantity}|"
@@ -177,6 +179,36 @@ class BackTestingResults:
                 if deals_to_save:
                     client.zadd(deals_key, deals_to_save)
                     logger.debug(f"Saved {len(deals_to_save)} deals to {deals_key}")
+            
+            # Save statistics (update each time)
+            if broker.stats:
+                # Calculate additional statistics before saving
+                broker.stats.calc_stat()
+                
+                stats_key = f"{result_key_prefix}:{result_id}:stats"
+                # Create stats dict excluding internal fields
+                stats_dict = {
+                    'initial_equity_usd': broker.stats.initial_equity_usd,
+                    'total_trades': broker.stats.total_trades,
+                    'buy_trades': broker.stats.buy_trades,
+                    'sell_trades': broker.stats.sell_trades,
+                    'max_market_volume': broker.stats.max_market_volume,
+                    'total_fees': broker.stats.total_fees,
+                    'profit': broker.stats.profit,
+                    'drawdown_max': broker.stats.drawdown_max,
+                    'total_deals': broker.stats.total_deals,
+                    'long_deals': broker.stats.long_deals,
+                    'short_deals': broker.stats.short_deals,
+                    'profit_deals': broker.stats.profit_deals,
+                    'loss_deals': broker.stats.loss_deals,
+                    'profit_per_deal': broker.stats.profit_per_deal,
+                    'profit_gross': broker.stats.profit_gross,
+                    'profit_long': broker.stats.profit_long,
+                    'profit_short': broker.stats.profit_short,
+                }
+                stats_json = json.dumps(stats_dict)
+                client.set(stats_key, stats_json)
+                logger.debug(f"Saved statistics to {stats_key}")
             
             logger.debug(f"Saved {len(new_trades)} new trades")
         except Exception as e:
@@ -257,22 +289,38 @@ class BackTestingResults:
                         member = deals_data[0]
                         parts = member.split('|')
                         
-                        if len(parts) >= 7:
+                        if len(parts) >= 8:
                             deal_dict = {
                                 'deal_id': parts[0],
-                                'avg_buy_price': parts[1] if parts[1] else None,
-                                'avg_sell_price': parts[2] if parts[2] else None,
-                                'quantity': parts[3],
-                                'fee': parts[4],
-                                'profit': parts[5] if parts[5] else None,
-                                'is_closed': parts[6] == '1' if parts[6] else False
+                                'type': parts[1] if parts[1] else None,
+                                'avg_buy_price': parts[2] if parts[2] else None,
+                                'avg_sell_price': parts[3] if parts[3] else None,
+                                'quantity': parts[4],
+                                'fee': parts[5],
+                                'profit': parts[6] if parts[6] else None,
+                                'is_closed': parts[7] == '1' if parts[7] else False
                             }
                             deals.append(deal_dict)
             
-            return {
+            # Get statistics
+            stats_key = f"{result_key_prefix}:{result_id}:stats"
+            stats = None
+            try:
+                stats_data = client.get(stats_key)
+                if stats_data:
+                    stats = json.loads(stats_data)
+            except Exception as e:
+                logger.warning(f"Failed to load statistics from {stats_key}: {e}")
+            
+            result = {
                 'trades': trades,
                 'deals': deals
             }
+            
+            if stats is not None:
+                result['stats'] = stats
+            
+            return result
             
         except Exception as e:
             logger.error(f"Failed to get results: {str(e)}")

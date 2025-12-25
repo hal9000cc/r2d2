@@ -18,6 +18,12 @@ export function useBacktestingResults() {
   // Deals Map (deals can be updated)
   const deals = ref(new Map())
   
+  // Index: trades by deal_id for fast lookup
+  const tradesByDealId = ref(new Map())
+  
+  // Statistics (updated on each progress event)
+  const stats = ref(null)
+  
   /**
    * Clear all results data
    */
@@ -26,6 +32,8 @@ export function useBacktestingResults() {
     resultsRelevanceTime.value = null
     trades.value = []
     deals.value = new Map()
+    tradesByDealId.value = new Map()
+    stats.value = null
   }
   
   /**
@@ -62,6 +70,18 @@ export function useBacktestingResults() {
     // Add unique trades
     if (uniqueTrades.length > 0) {
       trades.value = [...trades.value, ...uniqueTrades]
+      
+      // Update tradesByDealId index
+      uniqueTrades.forEach(trade => {
+        const dealId = trade.deal_id
+        if (!tradesByDealId.value.has(dealId)) {
+          tradesByDealId.value.set(dealId, [])
+        }
+        tradesByDealId.value.get(dealId).push(trade)
+      })
+      
+      // Trigger reactivity by creating a new Map
+      tradesByDealId.value = new Map(tradesByDealId.value)
     }
   }
   
@@ -81,6 +101,18 @@ export function useBacktestingResults() {
     
     // Trigger reactivity by creating a new Map
     deals.value = new Map(deals.value)
+  }
+  
+  /**
+   * Update statistics
+   * @param {Object} newStats - Statistics object
+   */
+  function updateStats(newStats) {
+    if (!newStats) {
+      return
+    }
+    
+    stats.value = { ...newStats }
   }
   
   /**
@@ -126,6 +158,21 @@ export function useBacktestingResults() {
     return Array.from(deals.value.values())
   }
   
+  /**
+   * Get trades for a specific deal
+   * @param {string} dealId - Deal ID
+   * @returns {Array} Trades for this deal, sorted by time
+   */
+  function getTradesForDeal(dealId) {
+    const dealTrades = tradesByDealId.value.get(dealId) || []
+    // Sort by time (ascending)
+    return dealTrades.sort((a, b) => {
+      const timeA = new Date(a.time).getTime()
+      const timeB = new Date(b.time).getTime()
+      return timeA - timeB
+    })
+  }
+  
   // Computed properties
   const tradesCount = computed(() => trades.value.length)
   const dealsCount = computed(() => deals.value.size)
@@ -136,6 +183,8 @@ export function useBacktestingResults() {
     resultsRelevanceTime,
     trades,
     deals,
+    tradesByDealId,
+    stats,
     
     // Computed
     tradesCount,
@@ -147,9 +196,11 @@ export function useBacktestingResults() {
     setRelevanceTime,
     addTrades,
     updateDeals,
+    updateStats,
     getTradesByDateRange,
     getDealsByIds,
-    getAllDeals
+    getAllDeals,
+    getTradesForDeal
   }
 }
 

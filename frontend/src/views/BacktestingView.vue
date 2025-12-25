@@ -160,6 +160,38 @@
                 >
                   <span class="chart-control-letter">A</span>
                 </button>
+                <!-- Settings button with dropdown -->
+                <div class="chart-settings-wrapper" ref="chartSettingsRef">
+                  <button
+                    class="chart-control-btn"
+                    @click="toggleChartSettings"
+                    title="Chart settings"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-small">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </button>
+                  <!-- Dropdown menu -->
+                  <div v-if="isChartSettingsOpen" class="chart-settings-dropdown">
+                    <label class="settings-option">
+                      <input 
+                        type="checkbox" 
+                        v-model="showTradeMarkers"
+                        @change="saveChartSettings"
+                      />
+                      <span>Show trades</span>
+                    </label>
+                    <label class="settings-option">
+                      <input 
+                        type="checkbox" 
+                        v-model="showDealLines"
+                        @change="saveChartSettings"
+                      />
+                      <span>Show deals</span>
+                    </label>
+                  </div>
+                </div>
               </div>
             </template>
             
@@ -193,7 +225,9 @@
                 :symbol="currentTask?.symbol || null"
                 :timeframe="currentTask?.timeframe || null"
                 :backtesting-progress="backtestingProgressData"
-                :clear-chart="clearChartFlag" 
+                :clear-chart="clearChartFlag"
+                :show-trade-markers="showTradeMarkers"
+                :show-deal-lines="showDealLines"
                 @chart-cleared="clearChartFlag = false"
                 @quotes-load-error="handleQuotesLoadError"
                 @chart-message="handleChartMessage"
@@ -230,6 +264,7 @@
               :columns="tradesColumns"
               :data="trades"
               row-key="trade_id"
+              :row-class="getTradesRowClass"
               empty-message="No trades yet"
             />
           </template>
@@ -238,6 +273,7 @@
               :columns="dealsColumns"
               :data="dealsArray"
               row-key="deal_id"
+              :row-class="getDealsRowClass"
               empty-message="No deals yet"
             />
           </template>
@@ -273,6 +309,9 @@
               @parameters-changed="handleParametersChanged"
             />
           </ResizablePanel>
+          <div class="stats-panel">
+            <BacktestingStats :stats="stats" />
+          </div>
         </div>
       </ResizablePanel>
     </div>
@@ -280,13 +319,14 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, provide } from 'vue'
 import ResizablePanel from '../components/ResizablePanel.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import MessagesPanel from '../components/MessagesPanel.vue'
 import DataTable from '../components/DataTable.vue'
 import BacktestingNavForm from '../components/BacktestingNavForm.vue'
 import StrategyParameters from '../components/StrategyParameters.vue'
+import BacktestingStats from '../components/BacktestingStats.vue'
 import Tabs from '../components/Tabs.vue'
 import CodeMirrorEditor from '../components/CodeMirrorEditor.vue'
 import BacktestingTaskList from '../components/BacktestingTaskList.vue'
@@ -301,6 +341,8 @@ const rightPanelWidth = ref(250)
 const rightPanelMaxWidth = ref(null)
 const parametersHeight = ref(null)
 const parametersMaxHeight = ref(null)
+const resultsHeight = ref(null)
+const resultsMaxHeight = ref(null)
 
 // Tabs
 const chartTabs = [
@@ -381,6 +423,7 @@ const {
 } = useBacktesting(currentTaskId)
 
 // Use backtesting results composable
+const backtestingResults = useBacktestingResults()
 const {
   resultId,
   resultsRelevanceTime,
@@ -388,13 +431,18 @@ const {
   deals,
   tradesCount,
   dealsCount,
+  stats,
   clearResults,
   setResultId,
   setRelevanceTime,
   addTrades,
   updateDeals,
+  updateStats,
   getAllDeals
-} = useBacktestingResults()
+} = backtestingResults
+
+// Provide backtesting results to child components
+provide('backtestingResults', backtestingResults)
 
 // Table columns definitions
 const tradesColumns = [
@@ -414,7 +462,6 @@ const tradesColumns = [
     key: 'side', 
     label: 'Side',
     width: '60px',
-    class: (row) => row.side === 'buy' ? 'side-buy' : 'side-sell',
     format: (value) => value ? value.toUpperCase() : '—'
   },
   { 
@@ -445,6 +492,12 @@ const tradesColumns = [
 
 const dealsColumns = [
   { key: 'deal_id', label: 'Deal ID', width: '80px' },
+  { 
+    key: 'type', 
+    label: 'Type', 
+    width: '100px',
+    format: (value) => value ? value.toUpperCase() : '—'
+  },
   { 
     key: 'avg_buy_price', 
     label: 'Avg Buy Price',
@@ -486,6 +539,24 @@ const dealsColumns = [
 
 // Computed: deals as array for table
 const dealsArray = computed(() => getAllDeals())
+
+// Row class functions for table row coloring
+function getTradesRowClass(row) {
+  if (row.side === 'buy') {
+    return 'row-buy'
+  } else if (row.side === 'sell') {
+    return 'row-sell'
+  }
+  return ''
+}
+
+function getDealsRowClass(row) {
+  if (row.type) {
+    // Convert type to lowercase and use as class (e.g., 'long' -> 'row-type-long')
+    return `row-type-${row.type.toLowerCase()}`
+  }
+  return ''
+}
 
 // Computed properties
 const isMac = computed(() => {
@@ -571,6 +642,11 @@ watch([backtestProgressCurrentTime, backtestProgressResultId], async ([newCurren
         updateDeals(response.data.deals)
       }
       
+      // Update statistics
+      if (response.data.stats) {
+        updateStats(response.data.stats)
+      }
+      
       // Update relevance time to current time
       setRelevanceTime(newCurrentTime)
     } else if (!response.success) {
@@ -591,6 +667,10 @@ onMounted(() => {
   document.addEventListener('keydown', handleKeyDown)
   // Add keyboard shortcuts for chart navigation
   window.addEventListener('keydown', handleChartKeyboardShortcuts)
+  // Load chart settings from localStorage
+  loadChartSettings()
+  // Add click outside listener for settings dropdown
+  document.addEventListener('click', handleClickOutsideSettings)
 })
 
 onBeforeUnmount(() => {
@@ -598,6 +678,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
   document.removeEventListener('keydown', handleKeyDown)
   window.removeEventListener('keydown', handleChartKeyboardShortcuts)
+  document.removeEventListener('click', handleClickOutsideSettings)
   // Clear auto-save timers
   if (saveTimeout.value) {
     clearTimeout(saveTimeout.value)
@@ -654,10 +735,17 @@ function calculateSizes() {
     }
   }
   
-  // Calculate parameters panel height
+  // Calculate parameters and results panel heights
   const resultsMinHeight = 150
+  const parametersMinHeight = 150
+  
+  // Maximum height for parameters is available height minus minimum results height
   parametersMaxHeight.value = availableHeight - resultsMinHeight
   
+  // Maximum height for results is available height minus minimum parameters height
+  resultsMaxHeight.value = availableHeight - parametersMinHeight
+  
+  // Initialize parameters height
   if (parametersHeight.value === null) {
     const savedParametersHeight = localStorage.getItem('backtesting-parameters-height')
     if (savedParametersHeight) {
@@ -672,6 +760,22 @@ function calculateSizes() {
       parametersHeight.value = parametersMaxHeight.value
     }
   }
+  
+  // Initialize results height
+  if (resultsHeight.value === null) {
+    const savedResultsHeight = localStorage.getItem('backtesting-results-height')
+    if (savedResultsHeight) {
+      const savedHeight = parseInt(savedResultsHeight, 10)
+      resultsHeight.value = Math.min(savedHeight, resultsMaxHeight.value)
+    } else {
+      // Default: remaining height for results
+      resultsHeight.value = availableHeight - parametersHeight.value
+    }
+  } else {
+    if (resultsHeight.value > resultsMaxHeight.value) {
+      resultsHeight.value = resultsMaxHeight.value
+    }
+  }
 }
 
 function handleChartResize(size) {
@@ -684,6 +788,20 @@ function handleRightPanelResize(size) {
 
 function handleParametersResize(size) {
   parametersHeight.value = size
+  localStorage.setItem('backtesting-parameters-height', size.toString())
+  // Update results height to fill remaining space
+  const availableHeight = rightPanelMaxWidth.value ? 
+    Math.floor((window.innerHeight - 60) * 0.95) : 
+    Math.floor((window.innerHeight - 60) * 0.95)
+  const newResultsHeight = availableHeight - size
+  if (newResultsHeight >= 150) { // min size for results
+    resultsHeight.value = newResultsHeight
+  }
+}
+
+function handleResultsResize(size) {
+  resultsHeight.value = size
+  localStorage.setItem('backtesting-results-height', size.toString())
 }
 
 function handleChartTabChange(tabId) {
@@ -693,6 +811,10 @@ function handleChartTabChange(tabId) {
 // Chart controls state
 const chartDateInput = ref('')
 const isLogScale = ref(false)
+const isChartSettingsOpen = ref(false)
+const chartSettingsRef = ref(null)
+const showTradeMarkers = ref(true)
+const showDealLines = ref(true)
 
 // Chart control handlers
 function handleGoToDate() {
@@ -737,6 +859,33 @@ function handleToggleLogScale() {
 function handleAutoScale() {
   if (chartPanelRef.value) {
     chartPanelRef.value.autoScale()
+  }
+}
+
+function toggleChartSettings() {
+  isChartSettingsOpen.value = !isChartSettingsOpen.value
+}
+
+function saveChartSettings() {
+  localStorage.setItem('chart-show-trade-markers', showTradeMarkers.value.toString())
+  localStorage.setItem('chart-show-deal-lines', showDealLines.value.toString())
+}
+
+function loadChartSettings() {
+  const savedShowTrades = localStorage.getItem('chart-show-trade-markers')
+  const savedShowDeals = localStorage.getItem('chart-show-deal-lines')
+  
+  if (savedShowTrades !== null) {
+    showTradeMarkers.value = savedShowTrades === 'true'
+  }
+  if (savedShowDeals !== null) {
+    showDealLines.value = savedShowDeals === 'true'
+  }
+}
+
+function handleClickOutsideSettings(event) {
+  if (chartSettingsRef.value && !chartSettingsRef.value.contains(event.target)) {
+    isChartSettingsOpen.value = false
   }
 }
 
@@ -1040,6 +1189,11 @@ async function saveCurrentTask() {
     return
   }
 
+  // Don't save during backtesting
+  if (isBacktestingRunning.value) {
+    return
+  }
+
   try {
     // Get general parameters from form
     const formData = navFormRef.value.formData
@@ -1112,6 +1266,11 @@ async function saveCurrentTask() {
 }
 
 async function saveAll() {
+  // Don't save during backtesting
+  if (isBacktestingRunning.value) {
+    return
+  }
+  
   // Save both strategy and task
   await Promise.all([
     saveCurrentStrategy(),
@@ -1213,6 +1372,16 @@ async function handleStart(formData) {
       message: 'Please fill in all required fields: Source, Symbol, Timeframe, Date From, Date To'
     })
     return
+  }
+
+  // Clear any pending auto-save timers BEFORE saving
+  if (taskSaveTimeout.value) {
+    clearTimeout(taskSaveTimeout.value)
+    taskSaveTimeout.value = null
+  }
+  if (saveTimeout.value) {
+    clearTimeout(saveTimeout.value)
+    saveTimeout.value = null
   }
 
   // Save current task before starting backtest
@@ -1352,8 +1521,8 @@ async function refreshParametersDescription() {
 function handleFormDataChanged() {
   // Triggered when general parameters change in BacktestingNavForm
   // Auto-save task with debounce (5 seconds)
-  // Only if task is fully loaded (not during loading)
-  if (currentTaskId.value && !isTaskLoading.value) {
+  // Only if task is fully loaded (not during loading) and backtesting is not running
+  if (currentTaskId.value && !isTaskLoading.value && !isBacktestingRunning.value) {
     if (taskSaveTimeout.value) {
       clearTimeout(taskSaveTimeout.value)
     }
@@ -1366,8 +1535,8 @@ function handleFormDataChanged() {
 function handleParametersChanged() {
   // Triggered when custom parameters change in StrategyParameters component
   // Auto-save task with debounce (5 seconds)
-  // Only if task is fully loaded (not during loading)
-  if (currentTaskId.value && !isTaskLoading.value) {
+  // Only if task is fully loaded (not during loading) and backtesting is not running
+  if (currentTaskId.value && !isTaskLoading.value && !isBacktestingRunning.value) {
     if (taskSaveTimeout.value) {
       clearTimeout(taskSaveTimeout.value)
     }
@@ -1421,6 +1590,11 @@ function handleKeyDown(event) {
 
 async function handleSaveStrategy() {
   if (!currentStrategyFilePath.value || !isStrategyLoaded.value || isSavingStrategy.value || !hasUnsavedChanges.value) {
+    return
+  }
+  
+  // Don't save during backtesting
+  if (isBacktestingRunning.value) {
     return
   }
   
@@ -1536,6 +1710,12 @@ async function handleSaveStrategy() {
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+.stats-panel {
+  flex: 1;
+  overflow: hidden;
+  min-height: 150px;
 }
 
 .header-actions {
@@ -1701,6 +1881,51 @@ async function handleSaveStrategy() {
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-semibold);
   line-height: 1;
+}
+
+/* Chart settings dropdown */
+.chart-settings-wrapper {
+  position: relative;
+}
+
+.chart-settings-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: var(--spacing-xs);
+  min-width: 150px;
+  z-index: 1000;
+}
+
+.settings-option {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition-base);
+  font-size: var(--font-size-xs);
+  color: var(--text-primary);
+  user-select: none;
+}
+
+.settings-option:hover {
+  background-color: var(--bg-hover);
+}
+
+.settings-option input[type="checkbox"] {
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+}
+
+.settings-option span {
+  flex: 1;
 }
 
 </style>

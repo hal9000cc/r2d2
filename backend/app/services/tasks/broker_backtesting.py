@@ -60,7 +60,7 @@ class BrokerBacktesting(Broker):
         self.date_start: Optional[np.datetime64] = None
         self.date_end: Optional[np.datetime64] = None
         
-        # Equity tracking
+        # Equity tracking for backtesting
         self.equity_usd: PRICE_TYPE = 0.0
         self.equity_symbol: VOLUME_TYPE = 0.0
     
@@ -312,6 +312,7 @@ class BrokerBacktesting(Broker):
         
         # Close all open positions
         self.close_deals()
+        assert self.equity_symbol == 0.0, "Equity symbol is not 0 after closing deals"
         
         # Check trading results for consistency (only in debug mode)
         if __debug__:

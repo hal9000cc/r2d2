@@ -17,7 +17,11 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="(row, index) in data" :key="getRowKey(row, index)">
+        <tr 
+          v-for="(row, index) in data" 
+          :key="getRowKey(row, index)"
+          :class="getRowClass(row)"
+        >
           <td v-for="column in columns" :key="column.key" :class="getCellClass(column, row)">
             {{ formatCell(row[column.key], column) }}
           </td>
@@ -47,6 +51,11 @@ export default {
     emptyMessage: {
       type: String,
       default: 'No data available'
+    },
+    rowClass: {
+      type: [String, Function],
+      default: null
+      // Function that receives (row) and returns class string, or static class string
     }
   },
   methods: {
@@ -90,6 +99,15 @@ export default {
       // Check if column has explicit headerClass
       if (column.headerClass) {
         return column.headerClass
+      }
+      return ''
+    },
+    getRowClass(row) {
+      if (this.rowClass) {
+        if (typeof this.rowClass === 'function') {
+          return this.rowClass(row)
+        }
+        return this.rowClass
       }
       return ''
     }
@@ -174,6 +192,32 @@ export default {
 
 .data-table td.status-open {
   color: var(--color-info);
+}
+
+/* Row background coloring */
+.data-table tbody tr.row-buy {
+  background-color: var(--color-success-lighter);
+}
+
+.data-table tbody tr.row-sell {
+  background-color: var(--color-danger-lighter);
+}
+
+.data-table tbody tr.row-type-long {
+  background-color: var(--color-success-lighter);
+}
+
+.data-table tbody tr.row-type-short {
+  background-color: var(--color-danger-lighter);
+}
+
+/* Override hover for colored rows to maintain visibility */
+.data-table tbody tr.row-buy:hover,
+.data-table tbody tr.row-sell:hover,
+.data-table tbody tr.row-type-long:hover,
+.data-table tbody tr.row-type-short:hover {
+  background-color: var(--bg-hover);
+  opacity: 0.8;
 }
 </style>
 

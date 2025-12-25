@@ -18,6 +18,10 @@
   --color-success-hover: #45a049;
   --color-success-light: #e8f5e9;
   --color-success-lighter: #d4edda;
+  
+  /* Colors - Trade markers */
+  --color-trade-buy: #1e7e66;
+  --color-trade-sell: #c13832;
 
   /* Colors - Warning */
   --color-warning: #ff9800;

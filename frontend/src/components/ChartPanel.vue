@@ -7,6 +7,8 @@
       :timeframe="timeframe"
       :backtesting-progress="backtestingProgress"
       :clear-chart="clearChart"
+      :show-trade-markers="showTradeMarkers"
+      :show-deal-lines="showDealLines"
       @chart-cleared="handleChartCleared"
       @quotes-load-error="handleQuotesLoadError"
       @chart-message="handleChartMessage"
@@ -43,6 +45,14 @@ export default {
     clearChart: {
       type: Boolean,
       default: false
+    },
+    showTradeMarkers: {
+      type: Boolean,
+      default: true
+    },
+    showDealLines: {
+      type: Boolean,
+      default: true
     }
   },
   emits: ['chart-cleared', 'quotes-load-error', 'chart-message', 'log-scale-changed'],

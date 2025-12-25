@@ -19,6 +19,156 @@ class OrderSide(Enum):
     SELL = "sell"
 
 
+class DealType(Enum):
+    LONG = "long"
+    SHORT = "short"
+
+
+class TradingStats(BaseModel):
+    """
+    Trading statistics.
+    
+    Tracks:
+    - Equity in symbol and USD (similar to broker mechanism)
+    - Trade counts (total, buys, sells)
+    - Maximum market volume (max absolute equity_symbol)
+    - Total fees
+    - Deal counts (total, long, short)
+    """
+    
+    # Initial equity in USD
+    initial_equity_usd: PRICE_TYPE = 0.0
+    
+    # Equity tracking (same mechanism as broker) - internal fields
+    _equity_symbol: VOLUME_TYPE = 0.0
+    _equity_usd: PRICE_TYPE = 0.0
+    
+    # Trade statistics
+    total_trades: int = 0
+    buy_trades: int = 0
+    sell_trades: int = 0
+    
+    # Maximum market volume (max absolute value of equity_symbol)
+    max_market_volume: VOLUME_TYPE = 0.0
+    
+    # Total fees
+    total_fees: PRICE_TYPE = 0.0
+    
+    # Profit tracking
+    profit: PRICE_TYPE = 0.0  # Current profit: _equity_symbol * price + _equity_usd - initial_equity_usd
+    _profit_max: PRICE_TYPE = 0.0  # Maximum profit value (internal)
+    drawdown_max: PRICE_TYPE = 0.0  # Maximum drawdown (_profit_max - profit)
+    
+    # Deal statistics
+    total_deals: int = 0
+    long_deals: int = 0
+    short_deals: int = 0
+    profit_deals: int = 0  # Number of profitable deals
+    loss_deals: int = 0  # Number of losing deals
+    
+    # Calculated statistics (set by calc_stat method)
+    profit_per_deal: Optional[PRICE_TYPE] = None  # Profit per deal (profit / total_deals)
+    profit_gross: Optional[PRICE_TYPE] = None  # Gross profit (profit + total_fees)
+    
+    # Profit by deal type (calculated in add_deal)
+    profit_long: PRICE_TYPE = 0.0  # Profit from long deals
+    profit_short: PRICE_TYPE = 0.0  # Profit from short deals
+    
+    def add_trade(self, trade: 'Broker.Trade') -> None:
+        """
+        Add trade to statistics.
+        
+        Updates equity, trade counts, max market volume, and fees.
+        
+        Args:
+            trade: Trade to add
+        """
+        self.total_trades += 1
+        
+        # Update trade counts by side
+        if trade.side == OrderSide.BUY:
+            self.buy_trades += 1
+            # Buy: increase equity_symbol, decrease equity_usd
+            self._equity_symbol += trade.quantity
+            self._equity_usd -= trade.sum + trade.fee
+        else:
+            self.sell_trades += 1
+            # Sell: decrease equity_symbol, increase equity_usd
+            self._equity_symbol -= trade.quantity
+            self._equity_usd += trade.sum - trade.fee
+        
+        # Update max market volume (absolute value)
+        abs_equity_symbol = abs(self._equity_symbol)
+        if abs_equity_symbol > self.max_market_volume:
+            self.max_market_volume = abs_equity_symbol
+        
+        # Accumulate fees
+        self.total_fees += trade.fee
+        
+        # Calculate current profit: _equity_symbol * price + _equity_usd - initial_equity_usd
+        # Use trade price as current market price
+        current_profit = self._equity_symbol * trade.price + self._equity_usd - self.initial_equity_usd
+        self.profit = current_profit
+        
+        # Update maximum profit
+        if current_profit > self._profit_max:
+            self._profit_max = current_profit
+        
+        # Calculate drawdown: _profit_max - profit
+        current_drawdown = self._profit_max - current_profit
+        if current_drawdown > self.drawdown_max:
+            self.drawdown_max = current_drawdown
+    
+    def add_deal(self, deal: 'Broker.Deal') -> None:
+        """
+        Add deal to statistics.
+        
+        Counts deals (total, long, short) and calculates profit by deal type.
+        
+        Args:
+            deal: Deal to add
+        """
+        self.total_deals += 1
+        
+        if deal.type == DealType.LONG:
+            self.long_deals += 1
+            # Add profit from closed long deal
+            if deal.is_closed and deal.profit is not None:
+                self.profit_long += deal.profit
+                # Count profitable/losing deals
+                if deal.profit > 0:
+                    self.profit_deals += 1
+                elif deal.profit < 0:
+                    self.loss_deals += 1
+        elif deal.type == DealType.SHORT:
+            self.short_deals += 1
+            # Add profit from closed short deal
+            if deal.is_closed and deal.profit is not None:
+                self.profit_short += deal.profit
+                # Count profitable/losing deals
+                if deal.profit > 0:
+                    self.profit_deals += 1
+                elif deal.profit < 0:
+                    self.loss_deals += 1
+    
+    def calc_stat(self) -> None:
+        """
+        Calculate additional statistics.
+        
+        Calculates:
+        - profit_per_deal: profit / total_deals
+        - profit_gross: profit + total_fees
+        """
+        # Profit per deal
+        if self.total_deals > 0:
+            self.profit_per_deal = self.profit / self.total_deals
+        else:
+            self.profit_per_deal = None
+        
+        # Gross profit (profit + fees)
+        self.profit_gross = self.profit + self.total_fees
+
+
 class Broker(ABC):
     """
     Generic broker base class.
@@ -53,6 +203,9 @@ class Broker(ABC):
         deal_id: int = Field(gt=0)
         trades: List['Broker.Trade'] = Field(default_factory=list)
 
+        # Deal type (long/short) - determined by first trade
+        type: Optional['DealType'] = None
+
         # Average prices across all buy / sell trades in the deal
         avg_buy_price: Optional[PRICE_TYPE] = None
         avg_sell_price: Optional[PRICE_TYPE] = None
@@ -75,11 +228,19 @@ class Broker(ABC):
             Add trade to the deal and update aggregates incrementally.
 
             - Sets trade.deal_id to this deal_id.
+            - Sets deal type (long/short) based on first trade if not set.
             - Updates quantity, avg_buy_price, avg_sell_price, fee and profit.
             """
 
             trade.deal_id = self.deal_id
             self.trades.append(trade)
+
+            # Set deal type based on first trade
+            if self.type is None:
+                if trade.side == OrderSide.BUY:
+                    self.type = DealType.LONG
+                else:
+                    self.type = DealType.SHORT
 
             self.fee += trade.fee
 
@@ -159,12 +320,16 @@ class Broker(ABC):
 
         raise NotImplementedError
 
-    def reset(self) -> None:
+    def reset(self, initial_equity_usd: PRICE_TYPE = 0.0) -> None:
         """
         Reset broker state. Initialize deals list and trades list.
+        
+        Args:
+            initial_equity_usd: Initial capital in USD for statistics
         """
         self.deals = []
         self.trades = []
+        self.stats = TradingStats(initial_equity_usd=initial_equity_usd)
 
     def check_trading_results(self) -> List[str]:
         """
@@ -291,6 +456,30 @@ class Broker(ABC):
             return None
         last = self.deals[-1]
         return None if last.is_closed else last
+    
+    def _add_trade_to_deal(self, deal: 'Broker.Deal', trade: 'Broker.Trade') -> None:
+        """
+        Add trade to deal and update statistics.
+        
+        This is the only method that should be used to add trades to deals.
+        It handles:
+        - Adding trade to deal
+        - Updating trade statistics
+        - Registering deal in statistics if it becomes closed
+        
+        Args:
+            deal: Deal to add trade to
+            trade: Trade to add
+        """
+        # Add trade to deal
+        deal.add_trade(trade)
+        
+        # Update trade statistics
+        self.stats.add_trade(trade)
+        
+        # If deal is now closed, register it in statistics
+        if deal.is_closed:
+            self.stats.add_deal(deal)
 
     def reg_buy(
         self,
@@ -379,7 +568,7 @@ class Broker(ABC):
         # Explicit deal_id: just add to that deal, no flip-logic
         if deal_id is not None:
             deal = self.get_or_create_deal_by_id(deal_id)
-            deal.add_trade(trade)
+            self._add_trade_to_deal(deal, trade)
             return
 
         # If there are no deals at all – create first one and put whole trade there
@@ -387,7 +576,7 @@ class Broker(ABC):
             new_deal_id = len(self.deals) + 1
             new_deal = Broker.Deal(deal_id=new_deal_id)
             self.deals.append(new_deal)
-            new_deal.add_trade(trade)
+            self._add_trade_to_deal(new_deal, trade)
             return
 
         last_deal = self.get_last_open_deal()
@@ -397,7 +586,7 @@ class Broker(ABC):
             new_deal_id = len(self.deals) + 1
             new_deal = Broker.Deal(deal_id=new_deal_id)
             self.deals.append(new_deal)
-            new_deal.add_trade(trade)
+            self._add_trade_to_deal(new_deal, trade)
             return
 
         # There is an open deal; check if trade will flip position or not
@@ -411,7 +600,7 @@ class Broker(ABC):
 
         # If no flip (including full close to 0) – just add trade
         if current_qty == 0 or new_qty == 0 or (current_qty > 0 and new_qty > 0) or (current_qty < 0 and new_qty < 0):
-            last_deal.add_trade(trade)
+            self._add_trade_to_deal(last_deal, trade)
             return
 
         # Flip: split trade into closing part and opening part of new deal
@@ -431,7 +620,7 @@ class Broker(ABC):
                 "sum": trade.price * close_volume,
             }
         )
-        last_deal.add_trade(closing_trade)
+        self._add_trade_to_deal(last_deal, closing_trade)
 
         # Remaining volume opens new deal with same side
         new_deal_id = len(self.deals) + 1
@@ -446,4 +635,4 @@ class Broker(ABC):
                 "sum": trade.price * remainder_quantity,
             }
         )
-        new_deal.add_trade(opening_trade)
+        self._add_trade_to_deal(new_deal, opening_trade)

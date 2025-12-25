@@ -3,7 +3,8 @@
 </template>
 
 <script>
-import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts'
+import { createChart, ColorType, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts'
+import { inject } from 'vue'
 import axios from 'axios'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'
@@ -41,13 +42,28 @@ export default {
     clearChart: {
       type: Boolean,
       default: false
+    },
+    showTradeMarkers: {
+      type: Boolean,
+      default: true
+    },
+    showDealLines: {
+      type: Boolean,
+      default: true
     }
   },
   emits: ['chart-cleared', 'quotes-load-error', 'chart-message', 'log-scale-changed'],
+  setup() {
+    // Inject backtesting results from parent
+    const backtestingResults = inject('backtestingResults', null)
+    return { backtestingResults }
+  },
   data() {
     return {
       chart: null,
       candlestickSeries: null,
+      seriesMarkers: null, // Markers API for the series (lightweight-charts 5.x)
+      dealLines: [], // Array of line series for deals
       currentData: [], // Array of {time, open, high, low, close}
       
       // Logical range subscription
@@ -98,6 +114,12 @@ export default {
     },
     timeframe() {
       this.resetChart()
+    },
+    showTradeMarkers() {
+      this.updateTradeMarkers()
+    },
+    showDealLines() {
+      this.updateDealLines()
     }
   },
   mounted() {
@@ -144,6 +166,9 @@ export default {
         wickUpColor: '#26a69a',
         wickDownColor: '#ef5350'
       })
+      
+      // Create markers API for the series (lightweight-charts 5.x)
+      this.seriesMarkers = createSeriesMarkers(this.candlestickSeries, [])
     },
     
     /**
@@ -680,6 +705,12 @@ export default {
         // Set data on chart
         this.candlestickSeries.setData(finalData)
         
+        // Update trade markers after setting data
+        this.updateTradeMarkers()
+        
+        // Update deal lines after setting data
+        this.updateDealLines()
+        
         // Set visible logical range if provided
         if (finalLogicalRange) {
           this.chart.timeScale().setVisibleLogicalRange(finalLogicalRange)
@@ -740,6 +771,215 @@ export default {
       this.$emit('chart-message', {
         level: 'info',
         message
+      })
+    },
+    
+    /**
+     * Update trade markers on chart based on current data range
+     * Always brings state in line with showTradeMarkers flag
+     */
+    updateTradeMarkers() {
+      // Check initialization first
+      if (!this.chart) {
+        return
+      }
+      
+      if (!this.seriesMarkers) {
+        this.$emit('chart-message', {
+          level: 'debug',
+          message: 'seriesMarkers not initialized, skipping trade markers update'
+        })
+        return
+      }
+      
+      if (!this.currentData || this.currentData.length === 0) {
+        return
+      }
+      
+      // If flag is false, clear markers
+      if (!this.showTradeMarkers) {
+        try {
+          this.seriesMarkers.setMarkers([])
+        } catch (error) {
+          this.$emit('chart-message', {
+            level: 'debug',
+            message: `Failed to clear trade markers: ${error.message}`
+          })
+        }
+        return
+      }
+      
+      // Flag is true, show markers
+      if (!this.backtestingResults) {
+        return
+      }
+      
+      if (!this.candlestickSeries) {
+        return
+      }
+      
+      // Get time range from current data
+      const firstTime = this.currentData[0].time
+      const lastTime = this.currentData[this.currentData.length - 1].time
+      
+      // Convert Unix timestamps (seconds) to ISO strings for getTradesByDateRange
+      const fromISO = new Date(firstTime * 1000).toISOString()
+      const toISO = new Date(lastTime * 1000).toISOString()
+      
+      // Get trades for this time range
+      const tradesInRange = this.backtestingResults.getTradesByDateRange(fromISO, toISO)
+      
+      // If no trades, clear markers
+      if (!tradesInRange || tradesInRange.length === 0) {
+        try {
+          this.seriesMarkers.setMarkers([])
+        } catch (error) {
+          this.$emit('chart-message', {
+            level: 'debug',
+            message: `Failed to clear trade markers: ${error.message}`
+          })
+        }
+        return
+      }
+      
+      // Use direct color values (lightweight-charts doesn't support CSS variables)
+      // Note: In lightweight-charts, text color is automatically determined by background brightness
+      // Dark colors = white text, light colors = black text
+      // We use darker colors for better visibility, but text will be white (library limitation)
+      const tradeBuyColor = '#0d5d4a' // Darker green for buy markers
+      const tradeSellColor = '#8b1f1a' // Darker red for sell markers
+      
+      // Convert trades to markers
+      const markers = tradesInRange.map(trade => {
+        // Parse time from ISO string to Unix timestamp (seconds)
+        const tradeTime = Math.floor(new Date(trade.time).getTime() / 1000)
+        
+        // Determine marker shape and position based on side
+        const isBuy = trade.side === 'buy'
+        
+        return {
+          time: tradeTime,
+          position: isBuy ? 'belowBar' : 'aboveBar',
+          color: isBuy ? tradeBuyColor : tradeSellColor,
+          shape: isBuy ? 'arrowUp' : 'arrowDown',
+          text: `${isBuy ? 'Buy' : 'Sell'}: ${parseFloat(trade.price).toFixed(2)}`
+        }
+      })
+      
+      // Set markers using seriesMarkers API (lightweight-charts 5.x)
+      try {
+        this.seriesMarkers.setMarkers(markers)
+      } catch (error) {
+        this.$emit('chart-message', {
+          level: 'debug',
+          message: `Failed to set trade markers: ${error.message}`
+        })
+      }
+    },
+    
+    /**
+     * Update deal lines on chart
+     * Always brings state in line with showDealLines flag
+     */
+    updateDealLines() {
+      // Check initialization first
+      if (!this.chart) {
+        return
+      }
+      
+      if (!this.currentData || this.currentData.length === 0) {
+        return
+      }
+      
+      // Remove existing deal lines first (always, regardless of flag)
+      try {
+        this.dealLines.forEach(lineSeries => {
+          this.chart.removeSeries(lineSeries)
+        })
+        this.dealLines = []
+      } catch (error) {
+        this.$emit('chart-message', {
+          level: 'debug',
+          message: `Failed to remove deal lines: ${error.message}`
+        })
+      }
+      
+      // If flag is false, we're done (lines already removed)
+      if (!this.showDealLines) {
+        return
+      }
+      
+      // Flag is true, show lines
+      if (!this.backtestingResults) {
+        return
+      }
+      
+      // Get all closed deals
+      const allDeals = this.backtestingResults.getAllDeals()
+      const closedDeals = allDeals.filter(deal => deal.is_closed)
+      
+      // For each closed deal, create a line
+      closedDeals.forEach(deal => {
+        // Get trades for this deal
+        const dealTrades = this.backtestingResults.getTradesForDeal(deal.deal_id)
+        
+        if (dealTrades.length === 0) {
+          return
+        }
+        
+        // Get first and last trade times
+        const firstTrade = dealTrades[0]
+        const lastTrade = dealTrades[dealTrades.length - 1]
+        
+        // Convert times to Unix timestamps (seconds)
+        const startTime = Math.floor(new Date(firstTrade.time).getTime() / 1000)
+        const endTime = Math.floor(new Date(lastTrade.time).getTime() / 1000)
+        
+        // Determine start and end prices based on deal type
+        let startPrice, endPrice
+        if (deal.type && deal.type.toLowerCase() === 'long') {
+          // LONG: from avg_buy_price to avg_sell_price
+          startPrice = parseFloat(deal.avg_buy_price)
+          endPrice = parseFloat(deal.avg_sell_price)
+        } else if (deal.type && deal.type.toLowerCase() === 'short') {
+          // SHORT: from avg_sell_price to avg_buy_price
+          startPrice = parseFloat(deal.avg_sell_price)
+          endPrice = parseFloat(deal.avg_buy_price)
+        } else {
+          // Unknown type, skip
+          return
+        }
+        
+        // Determine color based on profit
+        const profit = parseFloat(deal.profit || 0)
+        const lineColor = profit >= 0 ? '#4caf50' : '#f44336' // Green for profit, red for loss
+        
+        // Create line series for this deal
+        // In lightweight-charts 5.x, use addSeries() with LineSeries type
+        try {
+          const lineSeries = this.chart.addSeries(LineSeries, {
+            color: lineColor,
+            lineWidth: 1,
+            lineStyle: 2, // Dashed line (0 = solid, 1 = dotted, 2 = dashed, 3 = large dashed, 4 = sparse dotted)
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false
+          })
+          
+          // Set data: two points (start and end)
+          lineSeries.setData([
+            { time: startTime, value: startPrice },
+            { time: endTime, value: endPrice }
+          ])
+          
+          // Store line series reference
+          this.dealLines.push(lineSeries)
+        } catch (error) {
+          this.$emit('chart-message', {
+            level: 'debug',
+            message: `Failed to add deal line for deal ${deal.deal_id}: ${error.message}`
+          })
+        }
       })
     },
     
