@@ -261,20 +261,26 @@
           </template>
           <template #trades>
             <DataTable 
+              ref="tradesTableRef"
               :columns="tradesColumns"
               :data="trades"
               row-key="trade_id"
               :row-class="getTradesRowClass"
               empty-message="No trades yet"
+              :enabled="activeTab === 'trades'"
+              :on-row-selected="handleTradeSelected"
             />
           </template>
           <template #deals>
             <DataTable 
+              ref="dealsTableRef"
               :columns="dealsColumns"
               :data="dealsArray"
               row-key="deal_id"
               :row-class="getDealsRowClass"
               empty-message="No deals yet"
+              :enabled="activeTab === 'deals'"
+              :on-row-selected="handleDealSelected"
             />
           </template>
         </Tabs>
@@ -402,6 +408,8 @@ const navFormRef = ref(null)
 const taskListRef = ref(null)
 const strategyParametersRef = ref(null)
 const chartPanelRef = ref(null)
+const tradesTableRef = ref(null)
+const dealsTableRef = ref(null)
 
 // Use backtesting composable
 const {
@@ -665,8 +673,8 @@ onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   // Add keyboard shortcut for saving
   document.addEventListener('keydown', handleKeyDown)
-  // Add keyboard shortcuts for chart navigation
-  window.addEventListener('keydown', handleChartKeyboardShortcuts)
+  // Add centralized keyboard navigation handler
+  window.addEventListener('keydown', handleGlobalKeyboard)
   // Load chart settings from localStorage
   loadChartSettings()
   // Add click outside listener for settings dropdown
@@ -677,7 +685,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', calculateSizes)
   window.removeEventListener('beforeunload', handleBeforeUnload)
   document.removeEventListener('keydown', handleKeyDown)
-  window.removeEventListener('keydown', handleChartKeyboardShortcuts)
+  window.removeEventListener('keydown', handleGlobalKeyboard)
   document.removeEventListener('click', handleClickOutsideSettings)
   // Clear auto-save timers
   if (saveTimeout.value) {
@@ -889,51 +897,179 @@ function handleClickOutsideSettings(event) {
   }
 }
 
-// Keyboard shortcuts handler for chart navigation
-function handleChartKeyboardShortcuts(event) {
-  // Only handle if chart tab is active
-  if (activeChartTab.value !== 'chart') {
+// ============================================================================
+// KEYBOARD NAVIGATION HANDLER
+// ============================================================================
+/**
+ * Global keyboard navigation handler - single point of control for all shortcuts
+ * 
+ * Keyboard layout:
+ * 
+ * CHART NAVIGATION (Shift + keys, active when activeChartTab === 'chart'):
+ *   Shift+Home     - Go to chart start
+ *   Shift+End      - Go to chart end  
+ *   Shift+PageUp   - Scroll chart forward (to newer data)
+ *   Shift+PageDown - Scroll chart backward (to older data)
+ * 
+ * TABLE NAVIGATION (no modifiers, active when activeTab === 'trades' or 'deals'):
+ *   ArrowUp        - Select previous row
+ *   ArrowDown      - Select next row
+ *   PageUp         - Scroll table up one page
+ *   PageDown       - Scroll table down one page
+ *   Home           - Go to first row
+ *   End            - Go to last row
+ *   Escape         - Deselect current row
+ */
+function handleGlobalKeyboard(event) {
+  // Filter: Ignore if typing in input fields
+  if (event.target.tagName === 'INPUT' || 
+      event.target.tagName === 'TEXTAREA' || 
+      event.target.isContentEditable) {
     return
   }
   
-  // Don't handle if user is typing in an input field
-  const target = event.target
-  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-    return
-  }
+  // Determine active context with priorities
+  const context = determineActiveContext()
   
-  // Handle Home key - go to start
-  if (event.key === 'Home' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
-    event.preventDefault()
-    handleGoToStart()
-    return
-  }
-  
-  // Handle End key - go to end
-  if (event.key === 'End' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
-    event.preventDefault()
-    handleGoToEnd()
-    return
-  }
-  
-  // Handle PageDown key - scroll backward one page (to older data)
-  if (event.key === 'PageDown' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
-    event.preventDefault()
-    if (chartPanelRef.value) {
-      chartPanelRef.value.pageUp()
+  // Route commands based on context and modifiers
+  if (event.shiftKey) {
+    // Shift + keys -> Chart navigation
+    if (context.chart) {
+      routeChartCommand(event)
     }
-    return
-  }
-  
-  // Handle PageUp key - scroll forward one page (to newer data)
-  if (event.key === 'PageUp' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
-    event.preventDefault()
-    if (chartPanelRef.value) {
-      chartPanelRef.value.pageDown()
+  } else {
+    // No modifiers -> Table navigation has priority
+    if (context.table) {
+      routeTableCommand(event)
     }
-    return
   }
 }
+
+/**
+ * Determine which context is currently active
+ * @returns {Object} { chart: boolean, table: boolean, tableRef: ref }
+ */
+function determineActiveContext() {
+  const context = {
+    chart: false,
+    table: false,
+    tableRef: null
+  }
+  
+  // Check if table is active (priority)
+  if (activeTab.value === 'trades' && tradesTableRef.value) {
+    context.table = true
+    context.tableRef = tradesTableRef.value
+  } else if (activeTab.value === 'deals' && dealsTableRef.value) {
+    context.table = true
+    context.tableRef = dealsTableRef.value
+  }
+  
+  // Check if chart is active
+  if (activeChartTab.value === 'chart') {
+    context.chart = true
+  }
+  
+  return context
+}
+
+/**
+ * Route chart navigation commands
+ * @param {KeyboardEvent} event 
+ */
+function routeChartCommand(event) {
+  // Only handle Shift+key combinations
+  if (!event.shiftKey) return
+  
+  // Ignore other modifiers
+  if (event.ctrlKey || event.metaKey || event.altKey) return
+  
+  let handled = false
+  
+  switch (event.key) {
+    case 'Home':
+      handleGoToStart()
+      handled = true
+      break
+    case 'End':
+      handleGoToEnd()
+      handled = true
+      break
+    case 'PageUp':
+      // Scroll forward (to newer data)
+      if (chartPanelRef.value) {
+        chartPanelRef.value.pageDown()
+      }
+      handled = true
+      break
+    case 'PageDown':
+      // Scroll backward (to older data)
+      if (chartPanelRef.value) {
+        chartPanelRef.value.pageUp()
+      }
+      handled = true
+      break
+  }
+  
+  if (handled) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  }
+}
+
+/**
+ * Route table navigation commands
+ * @param {KeyboardEvent} event
+ */
+function routeTableCommand(event) {
+  const context = determineActiveContext()
+  
+  if (!context.table || !context.tableRef) return
+  
+  // Ignore modifiers for table navigation
+  if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return
+  
+  let handled = false
+  
+  switch (event.key) {
+    case 'ArrowUp':
+      context.tableRef.navigateUp()
+      handled = true
+      break
+    case 'ArrowDown':
+      context.tableRef.navigateDown()
+      handled = true
+      break
+    case 'PageUp':
+      context.tableRef.navigatePageUp()
+      handled = true
+      break
+    case 'PageDown':
+      context.tableRef.navigatePageDown()
+      handled = true
+      break
+    case 'Home':
+      context.tableRef.navigateHome()
+      handled = true
+      break
+    case 'End':
+      context.tableRef.navigateEnd()
+      handled = true
+      break
+    case 'Escape':
+      context.tableRef.deselect()
+      handled = true
+      break
+  }
+  
+  if (handled) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  }
+}
+
+// ============================================================================
+
 async function handleCloseStrategy() {
   // 1. Disable auto-save timers at the beginning
   if (saveTimeout.value) {
@@ -991,6 +1127,16 @@ function deleteSelectedTasks() {
 function handleTabChange(tabId) {
   // Handle tab change
   activeTab.value = tabId
+}
+
+function handleTradeSelected(tradeId) {
+  // Callback when a trade row is selected
+  console.log('Trade selected:', tradeId)
+}
+
+function handleDealSelected(dealId) {
+  // Callback when a deal row is selected
+  console.log('Deal selected:', dealId)
 }
 
 // clearMessages is imported from composable

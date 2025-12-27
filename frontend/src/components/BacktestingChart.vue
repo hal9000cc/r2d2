@@ -2,8 +2,6 @@
   <div 
     ref="chartContainer" 
     class="backtesting-chart"
-    tabindex="0"
-    @keydown="handleKeyDown"
   ></div>
 </template>
 
@@ -1301,21 +1299,21 @@ export default {
     },
     
     /**
-     * Move chart to the beginning
+     * Move chart to the beginning (public method for external control)
      */
     async moveChartToStart() {
       await this.moveToBegin()
     },
     
     /**
-     * Move chart to the end
+     * Move chart to the end (public method for external control)
      */
     async moveChartToEnd() {
       await this.moveToEnd()
     },
     
     /**
-     * Scroll chart one page backward
+     * Scroll chart one page backward (public method for external control)
      */
     scrollChartBackward() {
       if (!this.chart || !this.currentData || this.currentData.length === 0) {
@@ -1360,7 +1358,7 @@ export default {
     },
     
     /**
-     * Scroll chart one page forward
+     * Scroll chart one page forward (public method for external control)
      */
     scrollChartForward() {
       if (!this.chart || !this.currentData || this.currentData.length === 0) {
@@ -1401,41 +1399,6 @@ export default {
         })
       } finally {
         this.isUpdatingChart = false
-      }
-    },
-    
-    /**
-     * Handle keyboard events for chart navigation
-     * @param {KeyboardEvent} event - Keyboard event
-     */
-    handleKeyDown(event) {
-      // Ignore if focus is in input or textarea
-      if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
-        return
-      }
-      
-      // Only handle Shift+key combinations
-      if (!event.shiftKey) {
-        return
-      }
-      
-      // Prevent default behavior
-      event.preventDefault()
-      
-      // Handle Shift+key combinations
-      switch (event.key) {
-        case 'Home':
-          this.moveChartToStart()
-          break
-        case 'End':
-          this.moveChartToEnd()
-          break
-        case 'PageDown':
-          this.scrollChartBackward()
-          break
-        case 'PageUp':
-          this.scrollChartForward()
-          break
       }
     }
   }
