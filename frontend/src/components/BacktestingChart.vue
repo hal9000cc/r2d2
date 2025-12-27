@@ -20,6 +20,9 @@ const CLEANUP_THRESHOLD_MULTIPLIER = 3.0  // Multiplier for cleanup threshold (w
 const TRADE_BUY_COLOR = '#0d5d4a'  // Darker green for buy markers
 const TRADE_SELL_COLOR = '#8b1f1a' // Darker red for sell markers
 
+// Date marker color
+const DATE_MARKER_COLOR = '#1976D2' // Blue color for date marker
+
 export default {
   name: 'BacktestingChart',
   props: {
@@ -58,7 +61,7 @@ export default {
       default: true
     }
   },
-  emits: ['chart-cleared', 'log-scale-changed', 'quotes-load-error'],
+  emits: ['chart-cleared', 'log-scale-changed', 'quotes-load-error', 'chart-error'],
   setup() {
     // Inject backtesting results from parent
     const backtestingResults = inject('backtestingResults', null)
@@ -70,6 +73,7 @@ export default {
       candlestickSeries: null,
       seriesMarkers: null, // Markers API for the series (lightweight-charts 5.x)
       dealLines: [], // Array of line series for deals
+      dateMarkerTimestamp: null, // Timestamp of the current date marker (for removal)
       
       // ResizeObserver for automatic chart resizing
       resizeObserver: null,
@@ -846,35 +850,35 @@ export default {
         return
       }
       
-      // Set busy flag
+      if (!this.backtestingResults) {
+        return
+      }
+      
+      if (!this.candlestickSeries) {
+        return
+      }
+
       this.isUpdatingTradeMarkers = true
       
       try {
-        // If flag is false, clear markers
+        // If flag is false, clear markers (but preserve date marker)
         if (!this.showTradeMarkers) {
           try {
-            this.seriesMarkers.setMarkers([])
+            const dateMarker = this.getDateMarker()
+            this.seriesMarkers.setMarkers(dateMarker ? [dateMarker] : [])
           } catch (error) {
             // Silently ignore errors when clearing
           }
           return
         }
-        
-        // Flag is true, show markers
-        if (!this.backtestingResults) {
-          return
-        }
-        
-        if (!this.candlestickSeries) {
-          return
-        }
-        
+                
         // Get visible time range from chart
         const visibleRange = this.chart.timeScale().getVisibleRange()
         if (!visibleRange) {
-          // If visible range is not available, clear markers
+          // If visible range is not available, clear markers (but preserve date marker)
           try {
-            this.seriesMarkers.setMarkers([])
+            const dateMarker = this.getDateMarker()
+            this.seriesMarkers.setMarkers(dateMarker ? [dateMarker] : [])
           } catch (error) {
             // Silently ignore errors when clearing
           }
@@ -888,10 +892,11 @@ export default {
         // Get trades for visible time range
         const tradesInRange = this.backtestingResults.getTradesByDateRange(fromISO, toISO)
         
-        // If no trades, clear markers
+        // If no trades, clear markers (but preserve date marker)
         if (!tradesInRange || tradesInRange.length === 0) {
           try {
-            this.seriesMarkers.setMarkers([])
+            const dateMarker = this.getDateMarker()
+            this.seriesMarkers.setMarkers(dateMarker ? [dateMarker] : [])
           } catch (error) {
             // Silently ignore errors when clearing
           }
@@ -899,7 +904,7 @@ export default {
         }
         
         // Convert trades to markers
-        const markers = tradesInRange.map(trade => {
+        const tradeMarkers = tradesInRange.map(trade => {
           // Parse time from ISO string to Unix timestamp (seconds)
           const tradeTime = Math.floor(new Date(trade.time).getTime() / 1000)
           
@@ -911,13 +916,19 @@ export default {
             position: isBuy ? 'belowBar' : 'aboveBar',
             color: isBuy ? TRADE_BUY_COLOR : TRADE_SELL_COLOR,
             shape: isBuy ? 'arrowUp' : 'arrowDown',
-            text: `${isBuy ? 'Buy' : 'Sell'}: ${parseFloat(trade.price).toFixed(2)}`
+            text: `${trade.trade_id ? trade.trade_id + ' ' : ''}${isBuy ? 'Buy' : 'Sell'}: ${parseFloat(trade.price).toFixed(2)}`
           }
         })
         
+        // Preserve date marker if exists
+        const dateMarker = this.getDateMarker()
+        
+        // Combine trade markers with date marker
+        const allMarkers = dateMarker ? [...tradeMarkers, dateMarker] : tradeMarkers
+        
         // Set markers using seriesMarkers API (lightweight-charts 5.x)
         try {
-          this.seriesMarkers.setMarkers(markers)
+          this.seriesMarkers.setMarkers(allMarkers)
         } catch (error) {
           // Silently ignore errors
         }
@@ -1195,6 +1206,7 @@ export default {
       this.currentData = []
       this.backtestingDateStart = null
       this.backtestingDateEnd = null
+      this.dateMarkerTimestamp = null
     },
     
     resetChart() {
@@ -1293,9 +1305,299 @@ export default {
       this.chart.timeScale().fitContent()
     },
     
-    // Navigation method stubs (to be implemented later)
+    /**
+     * Navigate to specific date (public method for external control)
+     * @param {number} timestamp - Unix timestamp in seconds
+     * @param {boolean} showDateMarker - Whether to show a marker at the selected date
+     */
     async goToDate(timestamp) {
-      // TODO: implement navigation to specific date
+      await this.moveChartToTime(timestamp, true)
+    },
+    
+    /**
+     * Get current time at the center of visible range
+     * @returns {number|null} Unix timestamp in seconds, or null if chart/data not available
+     */
+    getChartCurrentTime() {
+      if (!this.chart || !this.currentData || this.currentData.length === 0) {
+        return null
+      }
+      
+      // Get visible logical range
+      const logicalRange = this.chart.timeScale().getVisibleLogicalRange()
+      if (!logicalRange) {
+        return null
+      }
+      
+      const from = logicalRange.from
+      const to = logicalRange.to
+      
+      // Calculate center index
+      let centerIndex = Math.round((from + to) / 2)
+      
+      // Clamp to data bounds
+      if (centerIndex < 0) {
+        centerIndex = 0
+      } else if (centerIndex >= this.currentData.length) {
+        centerIndex = this.currentData.length - 1
+      }
+      
+      // Return timestamp of the bar at center
+      return this.currentData[centerIndex].time
+    },
+    
+    /**
+     * Navigate chart to a specific trade
+     * @param {string|number} tradeId - Trade ID
+     * @param {boolean} showMarker - Whether to show a marker at the trade time (default: true)
+     */
+    async goToTrade(tradeId, showMarker = true) {
+      if (!this.backtestingResults) {
+        this.$emit('chart-error', 'Backtesting results are not available')
+        return
+      }
+      
+      // Get trade by ID
+      const trade = this.backtestingResults.getTradeById(tradeId)
+      if (!trade) {
+        this.$emit('chart-error', `Trade with ID ${tradeId} not found`)
+        return
+      }
+      
+      // Convert trade time (ISO string) to Unix timestamp (seconds)
+      const timestamp = this.isoToUnix(trade.time)
+      
+      // Navigate to trade time
+      await this.moveChartToTime(timestamp, showMarker)
+    },
+    
+    /**
+     * Navigate chart to the start of a specific deal (first trade of the deal)
+     * @param {string|number} dealId - Deal ID
+     * @param {boolean} showMarker - Whether to show a marker at the deal start time (default: true)
+     */
+    async goToDeal(dealId, showMarker = true) {
+      if (!this.backtestingResults) {
+        this.$emit('chart-error', 'Backtesting results are not available')
+        return
+      }
+      
+      // Get trades for this deal
+      const dealTrades = this.backtestingResults.getTradesForDeal(dealId)
+      if (!dealTrades || dealTrades.length === 0) {
+        this.$emit('chart-error', `No trades found for deal with ID ${dealId}`)
+        return
+      }
+      
+      // Get first trade (trades are already sorted by time)
+      const firstTrade = dealTrades[0]
+      
+      // Navigate to first trade using goToTrade
+      await this.goToTrade(firstTrade.trade_id, showMarker)
+    },
+    
+    /**
+     * Move chart to specific time
+     * Loads data around the selected time and centers it in the visible range
+     * @param {number} timestamp - Unix timestamp in seconds
+     * @param {boolean} showDateMarker - Whether to show a marker at the selected date
+     */
+    async moveChartToTime(timestamp, showDateMarker = false) {
+      if (!this.chart || !this.candlestickSeries) {
+        return
+      }
+      
+      // Don't run if chart is busy with any operation
+      if (this.chartIsBusy()) {
+        return
+      }
+      
+      // Check if backtesting dates are set
+      if (!this.backtestingDateStart || !this.backtestingDateEnd) {
+        return
+      }
+      
+      // Check if timestamp is within backtesting bounds
+      if (timestamp < this.backtestingDateStart || timestamp > this.backtestingDateEnd) {
+        return
+      }
+      
+      // Get current visible range length
+      const logicalRange = this.chart.timeScale().getVisibleLogicalRange()
+      if (!logicalRange) {
+        return
+      }
+      
+      const visibleLength = logicalRange.to - logicalRange.from
+      
+      // Calculate timeframe in seconds
+      const timeframeSeconds = this.getTimeframeSeconds()
+      if (timeframeSeconds === 0) {
+        return
+      }
+      
+      // Calculate number of bars to load: visibleLength * (1 + LOAD_BARS_MULTIPLIER * 2)
+      const countLoadingBars = visibleLength * (1 + LOAD_BARS_MULTIPLIER * 2)
+      const timeRangeToLoad = countLoadingBars * timeframeSeconds
+      
+      // Calculate load range: selected time should be in center
+      let loadFrom = timestamp - (timeRangeToLoad / 2)
+      let loadTo = timestamp + (timeRangeToLoad / 2)
+      
+      // Adjust if we're close to boundaries
+      if (loadFrom < this.backtestingDateStart) {
+        // Load from start
+        loadFrom = this.backtestingDateStart
+        loadTo = Math.min(this.backtestingDateEnd, loadFrom + timeRangeToLoad)
+      } else if (loadTo > this.backtestingDateEnd) {
+        // Load to end
+        loadTo = this.backtestingDateEnd
+        loadFrom = Math.max(this.backtestingDateStart, loadTo - timeRangeToLoad)
+      }
+      
+      // Block visible range updates during chart update
+      this.isUpdatingChart = true
+      try {
+        // Load quotes for the calculated range
+        const loadedQuotes = await this.loadQuotes(loadFrom, loadTo)
+        
+        if (loadedQuotes.length === 0) {
+          return
+        }
+        
+        // Update current data
+        this.currentData = loadedQuotes
+        
+        // Find the index of the selected timestamp (or closest bar)
+        let selectedIndex = 0
+        for (let i = 0; i < loadedQuotes.length; i++) {
+          if (loadedQuotes[i].time >= timestamp) {
+            selectedIndex = i
+            break
+          }
+        }
+        // If timestamp is after all bars, use last bar
+        if (selectedIndex === 0 && loadedQuotes[loadedQuotes.length - 1].time < timestamp) {
+          selectedIndex = loadedQuotes.length - 1
+        }
+        
+        // Set data on chart
+        this.candlestickSeries.setData(loadedQuotes)
+        
+        // Calculate visible range as specified:
+        // from = visibleLength * LOAD_BARS_MULTIPLIER
+        // to = from + visibleLength
+        const rangeFrom = Math.max(0, Math.floor(selectedIndex - visibleLength / 2))
+        const rangeTo = Math.min(loadedQuotes.length, rangeFrom + visibleLength)
+        // Set visible logical range
+        this.chart.timeScale().setVisibleLogicalRange({
+          from: rangeFrom,
+          to: rangeTo
+        })
+        
+        // Handle date marker if requested
+        if (showDateMarker) {
+          // Remove previous date marker if exists
+          this.removeDateMarker()
+          // Draw new date marker
+          this.drawDateMarker(timestamp)
+        }
+      } finally {
+        this.isUpdatingChart = false
+      }
+    },
+    
+    /**
+     * Draw date marker at specified timestamp
+     * @param {number} timestamp - Unix timestamp in seconds
+     */
+    drawDateMarker(timestamp) {
+      if (!this.seriesMarkers || !this.currentData || this.currentData.length === 0) {
+        return
+      }
+      
+      // Find the bar for the timestamp (or closest bar)
+      let markerTime = timestamp
+      let found = false
+      
+      for (let i = 0; i < this.currentData.length; i++) {
+        if (this.currentData[i].time >= timestamp) {
+          markerTime = this.currentData[i].time
+          found = true
+          break
+        }
+      }
+      
+      // If timestamp is after all bars, use last bar
+      if (!found && this.currentData.length > 0) {
+        markerTime = this.currentData[this.currentData.length - 1].time
+      }
+      
+      // Get current markers (to preserve trade markers)
+      const currentMarkers = this.seriesMarkers.markers() || []
+      
+      // Create date marker
+      const dateMarker = {
+        time: markerTime,
+        position: 'aboveBar',
+        color: DATE_MARKER_COLOR,
+        shape: 'arrowDown',
+        size: 3,
+        text: ''
+      }
+      
+      // Add date marker to existing markers
+      const allMarkers = [...currentMarkers, dateMarker]
+      
+      // Set all markers
+      try {
+        this.seriesMarkers.setMarkers(allMarkers)
+        // Store timestamp for future removal
+        this.dateMarkerTimestamp = markerTime
+      } catch (error) {
+        // Silently ignore errors
+      }
+    },
+    
+    /**
+     * Remove date marker if exists
+     */
+    removeDateMarker() {
+      if (!this.seriesMarkers || !this.dateMarkerTimestamp) {
+        return
+      }
+      
+      // Get current markers
+      const currentMarkers = this.seriesMarkers.markers() || []
+      
+      // Filter out date marker by timestamp and color
+      const filteredMarkers = currentMarkers.filter(marker => {
+        return !(marker.time === this.dateMarkerTimestamp && marker.color === DATE_MARKER_COLOR)
+      })
+      
+      // Set filtered markers
+      try {
+        this.seriesMarkers.setMarkers(filteredMarkers)
+        // Clear stored timestamp
+        this.dateMarkerTimestamp = null
+      } catch (error) {
+        // Silently ignore errors
+      }
+    },
+    
+    /**
+     * Get current date marker if exists
+     * @returns {Object|null} Date marker object or null
+     */
+    getDateMarker() {
+      if (!this.seriesMarkers || !this.dateMarkerTimestamp) {
+        return null
+      }
+      
+      const currentMarkers = this.seriesMarkers.markers() || []
+      return currentMarkers.find(marker => 
+        marker.color === DATE_MARKER_COLOR && marker.time === this.dateMarkerTimestamp
+      ) || null
     },
     
     /**

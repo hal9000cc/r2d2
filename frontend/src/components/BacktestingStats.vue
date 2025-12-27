@@ -194,6 +194,7 @@ export default {
   flex: 1;
   color: var(--text-primary);
   font-weight: var(--font-weight-bold);
+  font-size: var(--font-size-sm);
 }
 
 .stats-sub {

@@ -173,6 +173,20 @@ export function useBacktestingResults() {
     })
   }
   
+  /**
+   * Get trade by ID
+   * @param {string|number} tradeId - Trade ID
+   * @returns {Object|null} Trade object or null if not found
+   */
+  function getTradeById(tradeId) {
+    if (!tradeId) {
+      return null
+    }
+    // Convert tradeId to string for comparison (trade_id might be string or number)
+    const tradeIdStr = String(tradeId)
+    return trades.value.find(trade => String(trade.trade_id) === tradeIdStr) || null
+  }
+  
   // Computed properties
   const tradesCount = computed(() => trades.value.length)
   const dealsCount = computed(() => deals.value.size)
@@ -200,7 +214,8 @@ export function useBacktestingResults() {
     getTradesByDateRange,
     getDealsByIds,
     getAllDeals,
-    getTradesForDeal
+    getTradesForDeal,
+    getTradeById
   }
 }
 

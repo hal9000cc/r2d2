@@ -13,6 +13,7 @@
       @quotes-load-error="handleQuotesLoadError"
       @chart-message="handleChartMessage"
       @log-scale-changed="handleLogScaleChanged"
+      @chart-error="handleChartError"
     />
   </div>
 </template>
@@ -55,7 +56,7 @@ export default {
       default: true
     }
   },
-  emits: ['chart-cleared', 'quotes-load-error', 'chart-message', 'log-scale-changed'],
+  emits: ['chart-cleared', 'quotes-load-error', 'chart-message', 'log-scale-changed', 'chart-error'],
   methods: {
     handleChartCleared() {
       this.$emit('chart-cleared')
@@ -68,6 +69,9 @@ export default {
     },
     handleLogScaleChanged(isLogScale) {
       this.$emit('log-scale-changed', isLogScale)
+    },
+    handleChartError(errorMessage) {
+      this.$emit('chart-error', errorMessage)
     },
     // Proxy methods for chart control
     goToDate(timestamp) {
@@ -103,6 +107,22 @@ export default {
     pageUp() {
       if (this.$refs.chartRef) {
         this.$refs.chartRef.scrollChartForward()
+      }
+    },
+    getChartCurrentTime() {
+      if (this.$refs.chartRef) {
+        return this.$refs.chartRef.getChartCurrentTime()
+      }
+      return null
+    },
+    goToTrade(tradeId, showMarker = true) {
+      if (this.$refs.chartRef) {
+        return this.$refs.chartRef.goToTrade(tradeId, showMarker)
+      }
+    },
+    goToDeal(dealId, showMarker = true) {
+      if (this.$refs.chartRef) {
+        return this.$refs.chartRef.goToDeal(dealId, showMarker)
       }
     }
   }

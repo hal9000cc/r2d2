@@ -100,25 +100,6 @@
               </div>
               <!-- Chart controls -->
               <div v-if="activeChartTab === 'chart'" class="header-actions chart-controls">
-                <!-- Date/time input and Go button -->
-                <div class="chart-date-input-wrapper">
-                  <input
-                    type="datetime-local"
-                    v-model="chartDateInput"
-                    class="chart-date-input"
-                    @keyup.enter="handleGoToDate"
-                    title="Enter date and time to navigate"
-                  />
-                  <button
-                    class="chart-control-btn"
-                    @click="handleGoToDate"
-                    title="Go to date"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-small">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
-                    </svg>
-                  </button>
-                </div>
                 <!-- Go to start button -->
                 <button
                   class="chart-control-btn"
@@ -130,6 +111,74 @@
                     <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 19.5L.75 12l7.5-7.5" />
                   </svg>
                 </button>
+                <!-- Date/time input and Go button -->
+                <div class="chart-date-input-wrapper">
+                  <div class="chart-date-fields">
+                    <input
+                      type="number"
+                      v-model.number="chartDateFields.year"
+                      class="chart-date-field chart-date-field-year"
+                      placeholder="YYYY"
+                      min="1000"
+                      max="9999"
+                      @keyup.enter="handleGoToDate"
+                      title="Year (optional)"
+                    />
+                    <span class="chart-date-separator">-</span>
+                    <input
+                      type="number"
+                      v-model.number="chartDateFields.month"
+                      class="chart-date-field"
+                      placeholder="MM"
+                      min="1"
+                      max="12"
+                      @keyup.enter="handleGoToDate"
+                      title="Month (optional)"
+                    />
+                    <span class="chart-date-separator">-</span>
+                    <input
+                      type="number"
+                      v-model.number="chartDateFields.day"
+                      class="chart-date-field"
+                      placeholder="DD"
+                      min="1"
+                      max="31"
+                      @keyup.enter="handleGoToDate"
+                      title="Day (optional)"
+                    />
+                    <span class="chart-date-separator"> </span>
+                    <input
+                      type="number"
+                      v-model.number="chartDateFields.hours"
+                      class="chart-date-field"
+                      placeholder="HH"
+                      min="0"
+                      max="23"
+                      @keyup.enter="handleGoToDate"
+                      title="Hours (optional)"
+                    />
+                    <span class="chart-date-separator">:</span>
+                    <input
+                      type="number"
+                      v-model.number="chartDateFields.minutes"
+                      class="chart-date-field"
+                      placeholder="mm"
+                      min="0"
+                      max="59"
+                      @keyup.enter="handleGoToDate"
+                      title="Minutes (optional)"
+                    />
+                  </div>
+                  <button
+                    class="chart-control-btn"
+                    @click="handleGoToDate"
+                    title="Go to date"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon-small">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                    </svg>
+                  </button>
+                </div>
                 <!-- Go to end button -->
                 <button
                   class="chart-control-btn"
@@ -232,13 +281,14 @@
                 @quotes-load-error="handleQuotesLoadError"
                 @chart-message="handleChartMessage"
                 @log-scale-changed="isLogScale = $event"
+                @chart-error="handleChartError"
               />
             </template>
           </Tabs>
         </ResizablePanel>
         <Tabs
           :tabs="tabs"
-          default-tab="messages"
+          default-tab="deals"
           @tab-change="handleTabChange"
         >
           <template #header-actions>
@@ -340,6 +390,7 @@ import { strategiesApi } from '../services/strategiesApi'
 import { backtestingApi } from '../services/backtestingApi'
 import { useBacktesting } from '../composables/useBacktesting'
 import { useBacktestingResults } from '../composables/useBacktestingResults'
+import { useAlert } from '../composables/useAlert'
 // Layout state
 const chartHeight = ref(null)
 const chartMaxHeight = ref(null)
@@ -356,11 +407,11 @@ const chartTabs = [
   { id: 'chart', label: 'Chart' }
 ]
 const tabs = [
-  { id: 'messages', label: 'Messages' },
+  { id: 'deals', label: 'Deals' },
   { id: 'trades', label: 'Trades' },
-  { id: 'deals', label: 'Deals' }
+  { id: 'messages', label: 'Messages' }
 ]
-const activeTab = ref('messages')
+const activeTab = ref('deals')
 const activeChartTab = ref('strategy')
 
 // Strategy state
@@ -451,6 +502,9 @@ const {
 
 // Provide backtesting results to child components
 provide('backtestingResults', backtestingResults)
+
+// Use alert system
+const { showAlert } = useAlert()
 
 // Table columns definitions
 const tradesColumns = [
@@ -817,32 +871,275 @@ function handleChartTabChange(tabId) {
 }
 
 // Chart controls state
-const chartDateInput = ref('')
+const chartDateInput = ref('') // Keep for backward compatibility, but use chartDateFields instead
+const chartDateFields = ref({
+  year: null,
+  month: null,
+  day: null,
+  hours: null,
+  minutes: null
+})
 const isLogScale = ref(false)
 const isChartSettingsOpen = ref(false)
 const chartSettingsRef = ref(null)
 const showTradeMarkers = ref(true)
 const showDealLines = ref(true)
 
+/**
+ * Parse partial datetime input into object with optional fields
+ * Supports formats: "YYYY-MM-DD HH:mm", "YYYY-MM-DDTHH:mm", "2024-01-15", "14:30", "15", etc.
+ * @param {string} input - datetime input string
+ * @returns {Object|null} Object with optional fields: { year?, month?, day?, hours?, minutes? } or null if invalid
+ */
+function parsePartialDateTime(input) {
+  if (!input || typeof input !== 'string') {
+    return null
+  }
+  
+  const trimmed = input.trim()
+  if (!trimmed) {
+    return null
+  }
+  
+  const result = {}
+  // Split by 'T' or space (support both "2024-01-15T14:30" and "2024-01-15 14:30")
+  const parts = trimmed.split(/[T\s]/)
+  const hasDatePart = parts[0] && parts[0].trim() !== ''
+  const hasTimePart = parts.length > 1 && parts[1] && parts[1].trim() !== ''
+  
+  // Parse date part (YYYY-MM-DD or YYYY-MM or YYYY or single number)
+  if (hasDatePart) {
+    const datePart = parts[0].trim()
+    const dateParts = datePart.split('-').filter(p => p !== '')
+    
+    if (dateParts.length === 1) {
+      // Single number: interpret as day (1-31), month (1-12), or year (1000-9999)
+      const num = parseInt(dateParts[0], 10)
+      if (!isNaN(num) && num > 0 && num <= 9999) {
+        if (num >= 1000 && num <= 9999) {
+          // Valid year range
+          result.year = num
+        } else if (num >= 1 && num <= 31) {
+          // Interpret as day (most common case for partial date input)
+          result.day = num
+        } else if (num >= 1 && num <= 12) {
+          // Could be month
+          result.month = num
+        }
+      }
+    } else if (dateParts.length > 1) {
+      // Multiple parts with separators (YYYY-MM-DD or YYYY-MM or MM-DD)
+      const first = parseInt(dateParts[0], 10)
+      if (!isNaN(first) && first > 0 && first <= 9999) {
+        if (first >= 1000 && first <= 9999) {
+          // Valid year range
+          result.year = first
+        } else if (first >= 1 && first <= 12) {
+          result.month = first
+        }
+      }
+      
+      if (dateParts.length > 1) {
+        const second = parseInt(dateParts[1], 10)
+        if (!isNaN(second)) {
+          if (result.year !== undefined) {
+            // YYYY-MM format
+            if (second >= 1 && second <= 12) {
+              result.month = second
+            }
+          } else if (result.month !== undefined) {
+            // MM-DD format
+            if (second >= 1 && second <= 31) {
+              result.day = second
+            }
+          }
+        }
+      }
+      
+      if (dateParts.length > 2) {
+        const third = parseInt(dateParts[2], 10)
+        if (!isNaN(third) && third >= 1 && third <= 31) {
+          result.day = third
+        }
+      }
+    }
+  }
+  
+  // Parse time part (HH:mm or HH or single number)
+  if (hasTimePart) {
+    const timePart = parts[1].trim()
+    const timeParts = timePart.split(':').filter(p => p !== '')
+    
+    if (timeParts.length === 1) {
+      // Single number: interpret as hours
+      const num = parseInt(timeParts[0], 10)
+      if (!isNaN(num) && num >= 0 && num <= 23) {
+        result.hours = num
+      }
+    } else if (timeParts.length > 0) {
+      // Multiple parts with colon (HH:mm)
+      const hours = parseInt(timeParts[0], 10)
+      if (!isNaN(hours) && hours >= 0 && hours <= 23) {
+        result.hours = hours
+      }
+      if (timeParts.length > 1) {
+        const minutes = parseInt(timeParts[1], 10)
+        if (!isNaN(minutes) && minutes >= 0 && minutes <= 59) {
+          result.minutes = minutes
+        }
+      }
+    }
+  }
+  
+  // Check if at least one field is present before special case
+  let hasAnyField = 'year' in result || 'month' in result || 'day' in result || 'hours' in result || 'minutes' in result
+  
+  // Special case: if input is just a number without separators and no date/time parts were parsed
+  // This handles cases where user types just "15" or similar
+  if (!hasAnyField && !trimmed.includes('-') && !trimmed.includes(':') && !trimmed.includes('T') && !trimmed.includes(' ')) {
+    const num = parseInt(trimmed, 10)
+    if (!isNaN(num) && num > 0 && num <= 9999) {
+      // Try to interpret as day (most common case for date input)
+      if (num >= 1 && num <= 31) {
+        result.day = num
+      } else if (num >= 0 && num <= 23) {
+        // Could be hour
+        result.hours = num
+      } else if (num >= 1000 && num <= 9999) {
+        // Valid year range
+        result.year = num
+      }
+    }
+  }
+  
+  // Final check if at least one field is present
+  const hasAnyFieldFinal = 'year' in result || 'month' in result || 'day' in result || 'hours' in result || 'minutes' in result
+  return hasAnyFieldFinal ? result : null
+}
+
+/**
+ * Merge partial datetime object with current time from chart
+ * @param {Object} partial - Partial datetime object with optional fields
+ * @param {number} currentTimestamp - Unix timestamp in seconds
+ * @returns {Object} Complete datetime object with all fields
+ */
+function mergeWithCurrentTime(partial, currentTimestamp) {
+  // Convert timestamp to Date object in UTC
+  const currentDate = new Date(currentTimestamp * 1000)
+  const currentUTC = {
+    year: currentDate.getUTCFullYear(),
+    month: currentDate.getUTCMonth() + 1, // getUTCMonth returns 0-11
+    day: currentDate.getUTCDate(),
+    hours: currentDate.getUTCHours(),
+    minutes: currentDate.getUTCMinutes()
+  }
+  
+  // Merge: use partial values if present, otherwise use current values
+  return {
+    year: partial.year !== undefined ? partial.year : currentUTC.year,
+    month: partial.month !== undefined ? partial.month : currentUTC.month,
+    day: partial.day !== undefined ? partial.day : currentUTC.day,
+    hours: partial.hours !== undefined ? partial.hours : currentUTC.hours,
+    minutes: partial.minutes !== undefined ? partial.minutes : currentUTC.minutes
+  }
+}
+
+/**
+ * Convert datetime object to Unix timestamp (seconds) in UTC
+ * @param {Object} dateTime - Object with { year, month, day, hours, minutes }
+ * @returns {number} Unix timestamp in seconds
+ */
+function dateTimeToTimestamp(dateTime) {
+  // Use Date.UTC to create timestamp in UTC
+  return Math.floor(Date.UTC(
+    dateTime.year,
+    dateTime.month - 1, // Date.UTC expects month 0-11
+    dateTime.day,
+    dateTime.hours,
+    dateTime.minutes
+  ) / 1000)
+}
+
 // Chart control handlers
 function handleGoToDate() {
-  if (!chartPanelRef.value || !chartDateInput.value) {
+  if (!chartPanelRef.value) {
+    showAlert('error', 'Chart is not available')
     return
   }
   
-  // Convert datetime-local input (YYYY-MM-DDTHH:mm) to Unix timestamp (seconds) in UTC
-  // datetime-local returns local time, but we need to interpret it as UTC
-  const [datePart, timePart] = chartDateInput.value.split('T')
-  if (!datePart || !timePart) {
+  // Build parsed object from individual fields
+  const parsed = {}
+  if (chartDateFields.value.year !== null && chartDateFields.value.year !== undefined && chartDateFields.value.year !== '') {
+    parsed.year = Number(chartDateFields.value.year)
+  }
+  if (chartDateFields.value.month !== null && chartDateFields.value.month !== undefined && chartDateFields.value.month !== '') {
+    parsed.month = Number(chartDateFields.value.month)
+  }
+  if (chartDateFields.value.day !== null && chartDateFields.value.day !== undefined && chartDateFields.value.day !== '') {
+    parsed.day = Number(chartDateFields.value.day)
+  }
+  if (chartDateFields.value.hours !== null && chartDateFields.value.hours !== undefined && chartDateFields.value.hours !== '') {
+    parsed.hours = Number(chartDateFields.value.hours)
+  }
+  if (chartDateFields.value.minutes !== null && chartDateFields.value.minutes !== undefined && chartDateFields.value.minutes !== '') {
+    parsed.minutes = Number(chartDateFields.value.minutes)
+  }
+  
+  // Check if at least one field is filled
+  const hasAnyField = 'year' in parsed || 'month' in parsed || 'day' in parsed || 'hours' in parsed || 'minutes' in parsed
+  if (!hasAnyField) {
+    showAlert('error', 'Please enter at least one value (year, month, day, hour, or minute)')
     return
   }
   
-  const [year, month, day] = datePart.split('-').map(Number)
-  const [hours, minutes] = timePart.split(':').map(Number)
+  // Validate values are within reasonable ranges
+  if (parsed.year !== undefined && (parsed.year < 1000 || parsed.year > 9999)) {
+    showAlert('error', 'Year must be between 1000 and 9999')
+    return
+  }
   
-  // Use Date.UTC to create timestamp in UTC (not local time)
-  const timestamp = Math.floor(Date.UTC(year, month - 1, day, hours, minutes) / 1000)
+  if (parsed.month !== undefined && (parsed.month < 1 || parsed.month > 12)) {
+    showAlert('error', 'Month must be between 1 and 12')
+    return
+  }
+  
+  if (parsed.day !== undefined && (parsed.day < 1 || parsed.day > 31)) {
+    showAlert('error', 'Day must be between 1 and 31')
+    return
+  }
+  
+  if (parsed.hours !== undefined && (parsed.hours < 0 || parsed.hours > 23)) {
+    showAlert('error', 'Hours must be between 0 and 23')
+    return
+  }
+  
+  if (parsed.minutes !== undefined && (parsed.minutes < 0 || parsed.minutes > 59)) {
+    showAlert('error', 'Minutes must be between 0 and 59')
+    return
+  }
+  
+  // Get current time from chart
+  const currentTime = chartPanelRef.value.getChartCurrentTime()
+  if (!currentTime) {
+    showAlert('error', 'Chart is not loaded. Please wait for the chart to load or start backtesting first.')
+    return
+  }
+  
+  // Merge partial input with current time
+  const finalDateTime = mergeWithCurrentTime(parsed, currentTime)
+  
+  // Convert to timestamp and navigate
+  const timestamp = dateTimeToTimestamp(finalDateTime)
   chartPanelRef.value.goToDate(timestamp)
+  
+  // Write back the used values to fields for feedback
+  chartDateFields.value = {
+    year: finalDateTime.year,
+    month: finalDateTime.month,
+    day: finalDateTime.day,
+    hours: finalDateTime.hours,
+    minutes: finalDateTime.minutes
+  }
 }
 
 function handleGoToStart() {
@@ -1131,12 +1428,23 @@ function handleTabChange(tabId) {
 
 function handleTradeSelected(tradeId) {
   // Callback when a trade row is selected
-  console.log('Trade selected:', tradeId)
+  if (chartPanelRef.value) {
+    chartPanelRef.value.goToTrade(tradeId, true)
+  }
 }
 
 function handleDealSelected(dealId) {
   // Callback when a deal row is selected
-  console.log('Deal selected:', dealId)
+  if (chartPanelRef.value) {
+    chartPanelRef.value.goToDeal(dealId, true)
+  }
+}
+
+function handleChartError(errorMessage) {
+  // Handle chart errors (e.g., trade/deal not found)
+  if (errorMessage) {
+    showAlert('error', errorMessage)
+  }
 }
 
 // clearMessages is imported from composable
@@ -1495,28 +1803,19 @@ function handleBeforeUnload(event) {
 async function handleStart(formData) {
   // Validate that we have a current task
   if (!currentTaskId.value) {
-    addLocalMessage({
-      level: 'error',
-      message: 'No task selected. Please select or create a task first.'
-    })
+    showAlert('error', 'No task selected. Please select or create a task first.')
     return
   }
 
   // Validate that we have a strategy file
   if (!currentStrategyFilePath.value) {
-    addLocalMessage({
-      level: 'error',
-      message: 'No strategy file selected. Please select a strategy first.'
-    })
+    showAlert('error', 'No strategy file selected. Please select a strategy first.')
     return
   }
 
   // Validate form data
   if (!formData.source || !formData.symbol || !formData.timeframe || !formData.dateFrom || !formData.dateTo) {
-    addLocalMessage({
-      level: 'error',
-      message: 'Please fill in all required fields: Source, Symbol, Timeframe, Date From, Date To'
-    })
+    showAlert('error', 'Please fill in all required fields: Source, Symbol, Timeframe, Date From, Date To')
     return
   }
 
@@ -1584,10 +1883,7 @@ async function handleStart(formData) {
 async function handleStop() {
   // Validate that we have a current task
   if (!currentTaskId.value) {
-    addLocalMessage({
-      level: 'error',
-      message: 'No task selected. Cannot stop backtesting.'
-    })
+    showAlert('error', 'No task selected. Cannot stop backtesting.')
     return
   }
 
@@ -1971,6 +2267,47 @@ async function handleSaveStrategy() {
   display: flex;
   align-items: center;
   gap: var(--spacing-xs);
+}
+
+.chart-date-fields {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.chart-date-field {
+  padding: var(--spacing-xs) 4px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  width: 45px;
+  text-align: center;
+  transition: all var(--transition-base);
+}
+
+.chart-date-field-year {
+  width: 60px; /* Wider for 4-digit year */
+}
+
+.chart-date-field:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  background: var(--bg-hover);
+}
+
+.chart-date-field::placeholder {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  opacity: 0.6;
+}
+
+.chart-date-separator {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  padding: 0 2px;
+  user-select: none;
 }
 
 .chart-date-input {

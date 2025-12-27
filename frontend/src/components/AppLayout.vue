@@ -8,16 +8,20 @@
     <div class="app-content">
       <router-view />
     </div>
+    <!-- Global alert container -->
+    <AlertContainer />
   </div>
 </template>
 
 <script>
 import NavBar from './NavBar.vue'
+import AlertContainer from './AlertContainer.vue'
 
 export default {
   name: 'AppLayout',
   components: {
-    NavBar
+    NavBar,
+    AlertContainer
   }
 }
 </script>
