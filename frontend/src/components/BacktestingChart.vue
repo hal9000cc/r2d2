@@ -9,10 +9,13 @@ import axios from 'axios'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'
 
-// Constants for dynamic data loading thresholds
-const LOAD_THRESHOLD_MULTIPLIER = 1.0  // Multiplier for load threshold (minimum distance from edge to trigger load)
-const LOAD_BARS_MULTIPLIER = 5.0       // Multiplier for number of bars to load
-const CLEANUP_THRESHOLD_MULTIPLIER = 5.0  // Multiplier for cleanup threshold (when to remove old data)
+const LOAD_THRESHOLD_MULTIPLIER = 1.2  // Multiplier for load threshold (minimum distance from edge to trigger load)
+const LOAD_BARS_MULTIPLIER = 1.8       // Multiplier for number of bars to load
+const CLEANUP_THRESHOLD_MULTIPLIER = 3.0  // Multiplier for cleanup threshold (when to remove old data)
+
+// Trade marker colors
+const TRADE_BUY_COLOR = '#0d5d4a'  // Darker green for buy markers
+const TRADE_SELL_COLOR = '#8b1f1a' // Darker red for sell markers
 
 export default {
   name: 'BacktestingChart',
@@ -52,7 +55,7 @@ export default {
       default: true
     }
   },
-  emits: ['chart-cleared', 'quotes-load-error', 'chart-message', 'log-scale-changed'],
+  emits: ['chart-cleared', 'log-scale-changed', 'quotes-load-error'],
   setup() {
     // Inject backtesting results from parent
     const backtestingResults = inject('backtestingResults', null)
@@ -64,10 +67,6 @@ export default {
       candlestickSeries: null,
       seriesMarkers: null, // Markers API for the series (lightweight-charts 5.x)
       dealLines: [], // Array of line series for deals
-      currentData: [], // Array of {time, open, high, low, close}
-      
-      // Logical range subscription
-      logicalRangeSubscription: null,
       
       // ResizeObserver for automatic chart resizing
       resizeObserver: null,
@@ -77,12 +76,21 @@ export default {
       backtestingDateStart: null, // Unix timestamp in seconds
       backtestingDateEnd: null, // Unix timestamp in seconds (current_time from progress)
       
-      // Loading state
-      isLoading: false,
-      loadRequestId: 0, // For canceling outdated requests
+      currentData: [], // Array of {time, open, high, low, close}
       
-      // Flag to prevent event handling during data updates
-      isUpdatingData: false,
+      // Flags to block concurrent updates
+      isUpdatingChart: false,      // Flag for chart bars update
+      isUpdatingTradeMarkers: false, // Flag for trade markers update
+      isUpdatingDealLines: false,   // Flag for deal lines update
+      
+      // Debounce mechanism for visible range changes
+      debounceTimer: null,
+      
+      // Debounce timer for chart other elements (trades, markers, etc.)
+      othersDebounceTimer: null,
+      
+      // Logical range subscription
+      logicalRangeSubscription: null,
       
       // Price scale mode
       isLogScale: false
@@ -131,6 +139,14 @@ export default {
     this.cleanup()
   },
   methods: {
+    /**
+     * Check if chart is busy with any update operation
+     * @returns {boolean} True if any update is in progress
+     */
+    chartIsBusy() {
+      return this.isUpdatingChart || this.isUpdatingTradeMarkers || this.isUpdatingDealLines
+    },
+    
     initChart() {
       if (!this.$refs.chartContainer) {
         return
@@ -154,7 +170,8 @@ export default {
         height: this.$refs.chartContainer.clientHeight,
         timeScale: {
           timeVisible: true,
-          secondsVisible: false
+          secondsVisible: false,
+          shiftVisibleRangeOnNewBar: false  // Disable automatic range shift when new data is added
         }
       })
 
@@ -169,65 +186,6 @@ export default {
       
       // Create markers API for the series (lightweight-charts 5.x)
       this.seriesMarkers = createSeriesMarkers(this.candlestickSeries, [])
-    },
-    
-    /**
-     * Check boundaries and load data if needed
-     * @param {Object} logicalRange - Current logical range
-     * @param {boolean} skipUpdateCheck - Skip isUpdatingData check (for programmatic calls)
-     */
-    checkAndLoadData(logicalRange, skipUpdateCheck = false) {
-      if (!logicalRange) return
-      
-      // Ignore events during data updates to prevent loops (unless explicitly skipped)
-      if (!skipUpdateCheck && this.isUpdatingData) {
-        return
-      }
-      
-      const dataLength = this.currentData.length
-      
-      // Calculate visible length and dynamic thresholds
-      const visibleLength = logicalRange.to - logicalRange.from
-      const loadThreshold = Math.max(visibleLength * LOAD_THRESHOLD_MULTIPLIER, 300)
-      
-      // Load more data when approaching the start (scrolling left)
-      // Calculate left boundary condition: logicalRange.from - visibleLength * LOAD_THRESHOLD_MULTIPLIER
-      const leftBoundaryIndex = logicalRange.from - visibleLength * LOAD_THRESHOLD_MULTIPLIER
-      
-      if (leftBoundaryIndex < 0) {
-        // Need to load more history
-        // Calculate index of bar to load: logicalRange.from - visibleLength * LOAD_BARS_MULTIPLIER
-        const loadBarIndex = logicalRange.from - visibleLength * LOAD_BARS_MULTIPLIER
-        const barsToLoad = Math.abs(loadBarIndex) // This is negative, so we need absolute value
-        
-        this.loadMoreHistory(barsToLoad)
-      }
-      
-      // Load more data when approaching the end (scrolling right)
-      // Check if bars after right boundary are less than threshold
-      if (logicalRange.to !== null && logicalRange.to > 0) {
-        const barsAfterRightBoundary = dataLength - logicalRange.to
-        
-        // If we're within threshold of end (or already beyond it)
-        if (barsAfterRightBoundary < loadThreshold) {
-          // Calculate right boundary for loading: logicalRange.to + visibleLength * LOAD_BARS_MULTIPLIER
-          const rightBoundaryIndex = logicalRange.to + visibleLength * LOAD_BARS_MULTIPLIER
-          this.loadMoreFuture(rightBoundaryIndex)
-        }
-      }
-    },
-    
-    setupLogicalRangeTracking() {
-      if (!this.chart) return
-      
-      // Subscribe to logical range changes (like in the example)
-      this.logicalRangeSubscription = this.chart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange) => {
-        this.checkAndLoadData(logicalRange, false)
-        // Update trade markers when visible range changes
-        this.updateTradeMarkers()
-        // Update deal lines when visible range changes
-        this.updateDealLines()
-      })
     },
     
     /**
@@ -283,9 +241,75 @@ export default {
     },
     
     /**
+     * Setup subscription to visible logical range changes
+     */
+    setupLogicalRangeTracking() {
+      if (!this.chart) {
+        return
+      }
+      
+      // Subscribe to logical range changes with debounce mechanism
+      this.logicalRangeSubscription = this.chart.timeScale().subscribeVisibleLogicalRangeChange((logicalRange) => {
+        this.handleVisibleRangeChange(logicalRange)
+      })
+    },
+    
+    /**
+     * Handle visible range change with debounce
+     * @param {Object} logicalRange - Current logical range
+     */
+    handleVisibleRangeChange(logicalRange) {
+      // If chart is being updated, ignore the event
+      if (this.chartIsBusy()) {
+        return
+      }
+      
+      // Update chart other elements (trades, markers, etc.) with separate debounce
+      // Reset others debounce timer
+      if (this.othersDebounceTimer) {
+        clearTimeout(this.othersDebounceTimer)
+      }
+      
+      // Start new debounce timer for other elements (longer delay)
+      this.othersDebounceTimer = setTimeout(() => {
+        this.othersDebounceTimer = null
+        this.updateChartOthers(logicalRange)
+      }, 250)
+      
+      // Reset current debounce timer for data loading
+      if (this.debounceTimer) {
+        clearTimeout(this.debounceTimer)
+      }
+      
+      // Start new debounce timer for data loading
+      this.debounceTimer = setTimeout(() => {
+        this.debounceTimer = null
+        this.processRangeChange()
+      }, 100)
+    },
+    
+    /**
+     * Process visible range change (called after debounce)
+     */
+    processRangeChange() {
+      // If chart is being updated, skip
+      if (this.chartIsBusy()) {
+        return
+      }
+      
+      // Update chart bars
+      this.updateChartBars()
+    },
+    
+    /**
      * Handle backtesting progress update
      */
     handleBacktestingProgress(progress) {
+      // If chart is already initialized, ignore all subsequent progress messages
+      if (this.backtestingDateStart !== null) {
+        return
+      }
+      
       // Convert ISO strings to Unix timestamps
       const dateStart = progress.date_start ? this.isoToUnix(progress.date_start) : null
       const dateCurrent = progress.current_time ? this.isoToUnix(progress.current_time) : null
@@ -294,17 +318,12 @@ export default {
         return
       }
       
-      // Update backtesting bounds
-      const wasFirstProgress = this.backtestingDateStart === null
+      // Update backtesting bounds (only on first progress)
       this.backtestingDateStart = dateStart
       this.backtestingDateEnd = dateCurrent
       
-      // On first progress, load initial data
-      if (wasFirstProgress) {
-        this.$nextTick(() => {
-          this.loadInitialData()
-        })
-      }
+      // Load initial data on first progress
+      this.loadInitialData()
     },
     
     /**
@@ -321,7 +340,7 @@ export default {
       
       // Limit initial load to maximum 5000 bars
       const timeframeSeconds = this.getTimeframeSeconds()
-      const maxBars = 5000
+      const maxBars = 1
       const maxTimeRange = maxBars * timeframeSeconds
       const maxDateEnd = this.backtestingDateStart + maxTimeRange
       const limitedDateEnd = Math.min(this.backtestingDateEnd, maxDateEnd)
@@ -330,469 +349,493 @@ export default {
       const quotes = await this.loadQuotes(this.backtestingDateStart, limitedDateEnd)
       
       if (quotes.length > 0) {
-        this.currentData = quotes
-        
         // Set initial single bar to determine visible range
         this.candlestickSeries.setData([quotes[0]])
         
-        // Get visible logical range with single bar
-        this.$nextTick(() => {
-          if (this.chart) {
-            const logicalRange = this.chart.timeScale().getVisibleLogicalRange()
-            if (logicalRange) {
-              // Calculate visible range (number of bars)
-              const visibleRange = logicalRange.to - logicalRange.from
-              
-              // Set all data with visible range from 0 to visibleRange
-              const finalLogicalRange = {
-                from: 0,
-                to: visibleRange
-              }
-              this.updateChartData(quotes, finalLogicalRange)
-            } else {
-              // Fallback: if logical range is not available, use fitContent
-              this.updateChartData(quotes, null, { skipEmitState: true })
-              this.chart.timeScale().fitContent()
-              
-              // Emit data state with current logical range
-              this.$nextTick(() => {
-                const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-                this.emitDataState(quotes, currentLogicalRange)
-              })
-            }
-          }
+        // Move to begin
+        this.$nextTick(async () => {
+          await this.moveToBegin()
         })
       }
     },
     
     /**
-     * Load more future data (when scrolling right)
-     * @param {number} rightBoundaryIndex - Target bar index (logicalRange.to + visibleLength * LOAD_BARS_MULTIPLIER)
+     * Move chart view to the beginning (start of backtesting period)
+     * Loads initial data and sets visible range
      */
-    async loadMoreFuture(rightBoundaryIndex) {
-      if (!this.source || !this.symbol || !this.timeframe) {
-        return
-      }
-      
-      if (this.isLoading) {
-        return
-      }
-      
-      if (this.currentData.length === 0) {
-        return
-      }
-      
-      // Calculate timeframe in seconds
-      const timeframeSeconds = this.getTimeframeSeconds()
-      if (timeframeSeconds === 0) {
-        return
-      }
-      
-      const dataLength = this.currentData.length
-      const latestTime = this.currentData[dataLength - 1].time
-      
-      // Start loading from the next period after the latest known time
-      const loadFrom = latestTime + timeframeSeconds
-      
-      // Calculate loadTo based on rightBoundaryIndex
-      let loadTo
-      if (rightBoundaryIndex >= dataLength) {
-        // Target index is at or beyond current data, calculate time
-        // We need to load at least 1 bar, so if rightBoundaryIndex === dataLength, load 1 bar
-        const barsToLoad = Math.max(1, rightBoundaryIndex - dataLength)
-        loadTo = latestTime + barsToLoad * timeframeSeconds
-      } else {
-        // Target index is within current data, use that bar's time
-        loadTo = this.currentData[rightBoundaryIndex].time
-      }
-      
-      // Clamp to maximum backtesting date if available
-      let finalTo = loadTo
-      if (this.backtestingDateEnd) {
-        finalTo = Math.min(loadTo, this.backtestingDateEnd)
-      }
-      
-      // If we've reached the limit - don't load
-      if (loadFrom >= finalTo) {
-        return
-      }
-      
-      this.isLoading = true
-      const requestId = ++this.loadRequestId
-      
-      try {
-        // Load quotes from API
-        const quotes = await this.loadQuotes(loadFrom, finalTo)
-        
-        // Check if this request is still relevant
-        if (requestId !== this.loadRequestId) {
-          return // Outdated request, ignore
-        }
-        
-        if (quotes.length === 0) {
-          return
-        }
-        
-        // Merge with existing data (new data goes to the end)
-        // Remove duplicates based on time
-        const existingTimes = new Set(this.currentData.map(d => d.time))
-        const uniqueNewQuotes = quotes.filter(q => !existingTimes.has(q.time))
-        
-        // Combine: existing data (older) + new data (newer)
-        const mergedData = [...this.currentData, ...uniqueNewQuotes]
-        
-        // Sort by time to ensure correct order
-        mergedData.sort((a, b) => a.time - b.time)
-        
-        // Update chart with all data
-        this.updateChartData(mergedData, null, {
-          cleanupDirection: 'future',
-          useUpdatingFlag: true,
-          delay: 250,
-          requestId: requestId
-        })
-        
-      } catch (error) {
-        console.error('Failed to load more future:', error)
-        this.$emit('quotes-load-error', error)
-      } finally {
-        if (requestId === this.loadRequestId) {
-          this.isLoading = false
-        }
-      }
-    },
-    
-    /**
-     * Load more history data (when scrolling left)
-     * @param {number} barsToLoad - Number of bars to load (absolute value of negative index)
-     */
-    async loadMoreHistory(barsToLoad) {
-      if (!this.source || !this.symbol || !this.timeframe) {
-        return
-      }
-      
-      if (this.isLoading) {
-        return
-      }
-      
-      if (this.currentData.length === 0) {
-        return
-      }
-      
-      // Calculate timeframe in seconds
-      const timeframeSeconds = this.getTimeframeSeconds()
-      if (timeframeSeconds === 0) {
-        return
-      }
-      
-      // Calculate time range to load (before current earliest data)
-      // loadTo = time of first bar - timeframe (last bar to load)
-      const earliestTime = this.currentData[0].time
-      const loadTo = earliestTime - timeframeSeconds
-      
-      // loadFrom = earliestTime - (barsToLoad * timeframeSeconds)
-      const timeRangeToLoad = barsToLoad * timeframeSeconds
-      let loadFrom = earliestTime - timeRangeToLoad
-      
-      // If we've reached the start of backtesting period, we cannot load more
-      if (this.backtestingDateStart && earliestTime <= this.backtestingDateStart) {
-        return
-      }
-      
-      // Clamp loadFrom to backtesting start date if needed
-      if (this.backtestingDateStart && loadFrom < this.backtestingDateStart) {
-        loadFrom = this.backtestingDateStart
-      }
-      
-      // Final check: if loadFrom >= loadTo, we can't load
-      if (loadFrom >= loadTo) {
-        return // Can't load more (reached start of backtesting)
-      }
-      
-      this.isLoading = true
-      const requestId = ++this.loadRequestId
-      
-      try {
-        // Load quotes from API
-        const quotes = await this.loadQuotes(loadFrom, loadTo)
-        
-        // Check if this request is still relevant
-        if (requestId !== this.loadRequestId) {
-          return // Outdated request, ignore
-        }
-        
-        if (quotes.length === 0) {
-          return
-        }
-        
-        // Merge with existing data (new data goes to the beginning)
-        // Remove duplicates based on time
-        const existingTimes = new Set(this.currentData.map(d => d.time))
-        const uniqueNewQuotes = quotes.filter(q => !existingTimes.has(q.time))
-        
-        // Combine: new data (older) + existing data (newer)
-        const mergedData = [...uniqueNewQuotes, ...this.currentData]
-        const barsAdded = mergedData.length - this.currentData.length
-        if (barsAdded === 0) {
-          return
-        }
-
-        // Sort by time to ensure correct order
-        mergedData.sort((a, b) => a.time - b.time)
-        
-        // Update chart with all data
-        // Note: barsAdded is used to adjust logicalRange after cleanup (new data added to start shifts indices)
-        this.updateChartData(mergedData, null, {
-          cleanupDirection: 'history',
-          useUpdatingFlag: true,
-          delay: 250,
-          requestId: requestId,
-          adjustLogicalRange: (afterCleanupRange) => ({
-            from: afterCleanupRange.from + barsAdded,
-            to: afterCleanupRange.to + barsAdded
-          })
-        })
-        
-      } catch (error) {
-        console.error('Failed to load more history:', error)
-        this.$emit('quotes-load-error', error)
-      } finally {
-        if (requestId === this.loadRequestId) {
-          this.isLoading = false
-        }
-      }
-    },
-    
-    /**
-     * Cleanup old data to free memory
-     * @param {string} direction - 'future' or 'history'
-     * @param {number} visibleLength - Number of visible bars
-     * @param {Array} dataToClean - Data array to clean (mergedData)
-     * @param {Object} savedLogicalRange - Saved logical range (for history cleanup)
-     * @returns {Object} { cleanedData, adjustedLogicalRange }
-     */
-    cleanupOldData(direction, visibleLength, dataToClean, savedLogicalRange = null) {
-      // Default return: no cleanup performed
-      const defaultResult = {
-        cleanedData: dataToClean,
-        adjustedLogicalRange: savedLogicalRange
-      }
-      
-      if (!dataToClean || dataToClean.length === 0 || visibleLength === 0) {
-        return defaultResult
-      }
-      
-      // Calculate cleanup threshold
-      const cleanupThreshold = visibleLength * CLEANUP_THRESHOLD_MULTIPLIER
-      
-      if (!savedLogicalRange) {
-        return defaultResult
-      }
-      
-      let cleanedData = []
-      let barsRemoved = 0
-      let adjustedLogicalRange = savedLogicalRange
-      
-      if (direction === 'future') {
-        // Remove old data from the beginning (keep visible area + buffer)
-        // Keep data from (logicalRange.from - visibleLength) to end
-        const keepFromIndex = Math.max(0, Math.floor(savedLogicalRange.from) - Math.floor(cleanupThreshold))
-        if (keepFromIndex === 0) {
-          return defaultResult
-        }
-        cleanedData = dataToClean.slice(keepFromIndex)
-        barsRemoved = keepFromIndex
-        // For future cleanup: we remove data from start, so indices shift left
-        // Adjust logical range: subtract removed bars from both boundaries
-        adjustedLogicalRange = {
-          from: savedLogicalRange.from - barsRemoved,
-          to: savedLogicalRange.to - barsRemoved
-        }
-        // Ensure adjusted range is valid
-        if (adjustedLogicalRange.from < 0 || adjustedLogicalRange.to <= adjustedLogicalRange.from) {
-          adjustedLogicalRange = savedLogicalRange
-        }
-      } else if (direction === 'history') {
-        // Remove new data from the end (keep visible area + buffer)
-        // Keep data from start to (logicalRange.to + visibleLength)
-        const keepToIndex = Math.min(
-          dataToClean.length,
-          Math.ceil(savedLogicalRange.to) + Math.ceil(cleanupThreshold)
-        )
-        cleanedData = dataToClean.slice(0, keepToIndex)
-        barsRemoved = dataToClean.length - keepToIndex
-        // For history cleanup: we remove data from end, indices at start don't change
-        // But savedLogicalRange was calculated before new data was added to start
-        // After adding data to start, indices shift right by number of new bars
-        // After removing data from end, indices at start remain the same
-        // So savedLogicalRange remains valid (no adjustment needed)
-        adjustedLogicalRange = savedLogicalRange
-      }
-      
-      // Only return cleaned data if we actually removed data
-      if (barsRemoved > 0 && cleanedData.length < dataToClean.length) {
-        return {
-          cleanedData,
-          adjustedLogicalRange
-        }
-      }
-      
-      return defaultResult
-    },
-    
-    /**
-     * Universal chart data update procedure
-     * @param {Array} data - Data array to set
-     * @param {Object} logicalRange - Visible logical range to set (optional)
-     * @param {Object} options - Options:
-     *   - cleanupDirection: 'future' | 'history' | null - Direction for cleanup (null = no cleanup)
-     *   - useUpdatingFlag: boolean - Use isUpdatingData flag (default: false)
-     *   - delay: number - Delay before update in ms (default: 0)
-     *   - skipEmitState: boolean - Skip emitDataState (default: false)
-     *   - adjustLogicalRange: function - Function to adjust logicalRange after cleanup (receives afterCleanupRange, returns adjustedRange)
-     *   - requestId: number - Request ID to check (for delayed updates, to skip if outdated)
-     */
-    updateChartData(data, logicalRange = null, options = {}) {
+    async moveToBegin() {
       if (!this.chart || !this.candlestickSeries) {
         return
       }
       
-      const {
-        cleanupDirection = null,
-        useUpdatingFlag = false,
-        delay = 0,
-        skipEmitState = false,
-        adjustLogicalRange = null,
-        requestId = null
-      } = options
-      
-      const updateProcedure = () => {
-        // Check if request is still relevant (for delayed updates)
-        if (requestId !== null && requestId !== this.loadRequestId) {
-          return
-        }
-        
-        // Set flag to prevent event handling during update if needed
-        if (useUpdatingFlag) {
-          this.isUpdatingData = true
-        }
-        
-        // Save logical range before cleanup if cleanup is needed
-        let savedLogicalRange = null
-        let visibleLength = 0
-        
-        if (cleanupDirection) {
-          savedLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-          visibleLength = savedLogicalRange ? (savedLogicalRange.to - savedLogicalRange.from) : 0
-        }
-        
-        // Cleanup old data if needed
-        let finalData = data
-        let finalLogicalRange = logicalRange || savedLogicalRange
-        
-        if (cleanupDirection && savedLogicalRange) {
-          const cleanupResult = this.cleanupOldData(cleanupDirection, visibleLength, data, savedLogicalRange)
-          finalData = cleanupResult.cleanedData
-          const afterCleanupLogicalRange = cleanupResult.adjustedLogicalRange || savedLogicalRange
-          
-          // Apply additional adjustment if provided
-          if (adjustLogicalRange && typeof adjustLogicalRange === 'function') {
-            finalLogicalRange = adjustLogicalRange(afterCleanupLogicalRange)
-          } else {
-            finalLogicalRange = afterCleanupLogicalRange
-          }
-        }
-        
-        // Update current data
-        this.currentData = finalData
-        
-        // Set data on chart
-        this.candlestickSeries.setData(finalData)
-        
-        // Update trade markers after setting data
-        this.updateTradeMarkers()
-        
-        // Update deal lines after setting data
-        this.updateDealLines()
-        
-        // Set visible logical range if provided
-        if (finalLogicalRange) {
-          this.chart.timeScale().setVisibleLogicalRange(finalLogicalRange)
-        }
-        
-        // Emit data state
-        if (!skipEmitState) {
-          this.emitDataState(finalData, finalLogicalRange)
-        }
-        
-        // Re-enable event handling after a delay if flag was used
-        if (useUpdatingFlag) {
-          setTimeout(() => {
-            this.isUpdatingData = false
-          }, 300)
-        }
-      }
-      
-      if (delay > 0) {
-        setTimeout(updateProcedure, delay)
-      } else {
-        updateProcedure()
-      }
-    },
-    
-    /**
-     * Emit data state message with comprehensive information
-     * @param {Array} data - Data array used in setData
-     * @param {Object} logicalRange - Visible logical range
-     */
-    emitDataState(data, logicalRange) {
-      if (!data || data.length === 0) {
+      // Don't run if chart is busy with any operation
+      if (this.chartIsBusy()) {
         return
       }
       
-      // Calculate data info
-      const barCount = data.length
-      const firstBarDate = new Date(data[0].time * 1000).toISOString()
-      const lastBarDate = new Date(data[data.length - 1].time * 1000).toISOString()
-      
-      // Calculate visible range info
-      let visibleRangeStart = 'N/A'
-      let visibleRangeEnd = 'N/A'
-      
-      if (logicalRange && logicalRange.from !== null && logicalRange.to !== null) {
-        const fromIndex = Math.max(0, Math.floor(logicalRange.from))
-        const toIndex = Math.min(data.length - 1, Math.ceil(logicalRange.to))
-        
-        if (fromIndex < data.length && toIndex < data.length && fromIndex <= toIndex) {
-          visibleRangeStart = new Date(data[fromIndex].time * 1000).toISOString()
-          visibleRangeEnd = new Date(data[toIndex].time * 1000).toISOString()
-        }
+      // Check if backtesting dates are set
+      if (!this.backtestingDateStart || !this.backtestingDateEnd) {
+        return
       }
       
-      // Format message: bars count, first bar date, last bar date, visible range start, visible range end
-      const message = `${barCount} bars | First: ${firstBarDate} | Last: ${lastBarDate} | Visible: ${visibleRangeStart} to ${visibleRangeEnd}`
+      const logicalRange = this.chart.timeScale().getVisibleLogicalRange()
+      if (!logicalRange) {
+        return
+      }
       
-      this.$emit('chart-message', {
-        level: 'info',
-        message
-      })
+      // Calculate visible range (number of bars)
+      const visibleRange = logicalRange.to - logicalRange.from
+      
+      // Calculate timeframe in seconds
+      const timeframeSeconds = this.getTimeframeSeconds()
+      if (timeframeSeconds === 0) {
+        return
+      }
+      
+      // Calculate time range to load: visibleRange bars
+      const timeRangeToLoad = visibleRange * (1 + LOAD_BARS_MULTIPLIER) * timeframeSeconds
+      const loadFrom = this.backtestingDateStart
+      const loadTo = Math.min(
+        this.backtestingDateEnd,
+        this.backtestingDateStart + timeRangeToLoad
+      )
+      
+      // Block visible range updates during chart update
+      this.isUpdatingChart = true
+      try {
+        // Load quotes for visible range
+        const loadedQuotes = await this.loadQuotes(loadFrom, loadTo)
+        
+        if (loadedQuotes.length > 0) {
+          // Update current data
+          this.currentData = loadedQuotes
+          
+          // Set data on chart
+          this.candlestickSeries.setData(loadedQuotes)
+          
+          // Set visible logical range from 0 to visibleRange
+          this.chart.timeScale().setVisibleLogicalRange({
+            from: 0,
+            to: visibleRange
+          })
+        }
+      } finally {
+        this.isUpdatingChart = false
+      }
     },
     
     /**
-     * Update trade markers on chart based on current data range
+     * Move chart view to the end (current time of backtesting)
+     * Loads data from end and sets visible range
+     */
+    async moveToEnd() {
+      if (!this.chart || !this.candlestickSeries) {
+        return
+      }
+      
+      // Don't run if chart is busy with any operation
+      if (this.chartIsBusy()) {
+        return
+      }
+      
+      // Check if backtesting dates are set
+      if (!this.backtestingDateStart || !this.backtestingDateEnd) {
+        return
+      }
+      
+      // Check if source, symbol, and timeframe are set
+      if (!this.source || !this.symbol || !this.timeframe) {
+        return
+      }
+      
+      // Get current visible length to maintain zoom level
+      const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
+      if (!currentLogicalRange) {
+        return
+      }
+      
+      const visibleLength = currentLogicalRange.to - currentLogicalRange.from
+      const timeframeSeconds = this.getTimeframeSeconds()
+      if (timeframeSeconds === 0) {
+        return
+      }
+      
+      // Calculate number of bars to load from end
+      // Load from: (visibleLength * LOAD_BARS_MULTIPLIER + visibleLength) bars before end
+      const barsToLoad = visibleLength * LOAD_BARS_MULTIPLIER + visibleLength
+      const timeRangeToLoad = barsToLoad * timeframeSeconds
+      
+      // Load to backtestingDateEnd
+      const loadTo = this.backtestingDateEnd
+      const loadFrom = Math.max(
+        this.backtestingDateStart,
+        this.backtestingDateEnd - timeRangeToLoad
+      )
+      
+      if (loadFrom >= loadTo) {
+        return
+      }
+      
+      // Block visible range updates during chart update
+      this.isUpdatingChart = true
+      try {
+        // Load quotes from calculated range
+        const loadedQuotes = await this.loadQuotes(loadFrom, loadTo)
+        
+        if (loadedQuotes.length === 0) {
+          return
+        }
+        
+        // Update current data
+        this.currentData = loadedQuotes
+        
+        // Set data on chart
+        this.candlestickSeries.setData(loadedQuotes)
+        
+        // Set visible logical range: from end - visibleLength to end
+        this.chart.timeScale().setVisibleLogicalRange({
+          from: Math.max(0, loadedQuotes.length - visibleLength),
+          to: loadedQuotes.length
+        })
+      } finally {
+        this.isUpdatingChart = false
+      }
+    },
+    
+    /**
+     * Calculate number of bars to load on the left side
+     * @param {number} from - Start index of visible range (logical range from)
+     * @param {number} to - End index of visible range (logical range to)
+     * @returns {number} Number of bars to load (0 if no load needed)
+     */
+    calculateBarsToLoadLeft(from, to) {
+      if (!this.currentData || this.currentData.length === 0) {
+        return 0
+      }
+      
+      const visibleLength = to - from
+      const barsOnLeft = from
+      const loadThreshold = visibleLength * LOAD_THRESHOLD_MULTIPLIER
+      
+      // If we have enough bars on the left, no need to load
+      if (barsOnLeft >= loadThreshold) {
+        return 0
+      }
+      
+      // Calculate how many bars we need to have on the left after loading
+      const targetBarsOnLeft = visibleLength * LOAD_BARS_MULTIPLIER
+      
+      // Calculate how many bars to load
+      const barsToLoad = Math.max(0, targetBarsOnLeft - barsOnLeft)
+      
+      return barsToLoad
+    },
+    
+    /**
+     * Calculate number of bars to load on the right side
+     * @param {number} from - Start index of visible range (logical range from)
+     * @param {number} to - End index of visible range (logical range to)
+     * @returns {number} Number of bars to load (0 if no load needed)
+     */
+    calculateBarsToLoadRight(from, to) {
+      if (!this.currentData || this.currentData.length === 0) {
+        return 0
+      }
+      
+      const visibleLength = to - from
+      const barsOnRight = this.currentData.length - to
+      const loadThreshold = visibleLength * LOAD_THRESHOLD_MULTIPLIER
+      
+      // If we have enough bars on the right, no need to load
+      if (barsOnRight >= loadThreshold) {
+        return 0
+      }
+      
+      // Calculate how many bars we need to have on the right after loading
+      const targetBarsOnRight = visibleLength * LOAD_BARS_MULTIPLIER
+      
+      // Calculate how many bars to load
+      const barsToLoad = Math.max(0, targetBarsOnRight - barsOnRight)
+      
+      return barsToLoad
+    },
+    
+    /**
+     * Load chart data on the left side
+     * @param {number} from - Start index of visible range (logical range from)
+     * @param {number} to - End index of visible range (logical range to)
+     * @returns {Promise<Array>} Loaded quotes array (empty if no load needed)
+     */
+    async loadChartDataLeft(from, to) {
+      // Calculate how many bars to load
+      const barsToLoad = this.calculateBarsToLoadLeft(from, to)
+      
+      if (barsToLoad === 0) {
+        return []
+      }
+      
+      if (!this.currentData || this.currentData.length === 0) {
+        return []
+      }
+      
+      // Calculate timeframe in seconds
+      const timeframeSeconds = this.getTimeframeSeconds()
+      if (timeframeSeconds === 0) {
+        return []
+      }
+      
+      // Calculate time range to load (before current earliest data)
+      const earliestTime = this.currentData[0].time
+      const timeRangeToLoad = barsToLoad * timeframeSeconds
+      const loadTo = earliestTime - timeframeSeconds // Last bar to load (one period before earliest)
+      const loadFrom = earliestTime - timeRangeToLoad // First bar to load
+      
+      // Clamp to backtesting start date if needed
+      let finalFrom = loadFrom
+      if (this.backtestingDateStart && loadFrom < this.backtestingDateStart) {
+        finalFrom = this.backtestingDateStart
+      }
+      
+      // Final check: if loadFrom >= loadTo, we can't load
+      if (finalFrom >= loadTo) {
+        return []
+      }
+      
+      // Load quotes from API
+      const quotes = await this.loadQuotes(finalFrom, loadTo)
+      
+      return quotes || []
+    },
+    
+    /**
+     * Load chart data on the right side
+     * @param {number} from - Start index of visible range (logical range from)
+     * @param {number} to - End index of visible range (logical range to)
+     * @returns {Promise<Array>} Loaded quotes array (empty if no load needed)
+     */
+    async loadChartDataRight(from, to) {
+      // Calculate how many bars to load
+      const barsToLoad = this.calculateBarsToLoadRight(from, to)
+      
+      if (barsToLoad === 0) {
+        return []
+      }
+      
+      if (!this.currentData || this.currentData.length === 0) {
+        return []
+      }
+      
+      // Calculate timeframe in seconds
+      const timeframeSeconds = this.getTimeframeSeconds()
+      if (timeframeSeconds === 0) {
+        return []
+      }
+      
+      // Calculate time range to load (after current latest data)
+      const latestTime = this.currentData[this.currentData.length - 1].time
+      const loadFrom = latestTime + timeframeSeconds // First bar to load (one period after latest)
+      const timeRangeToLoad = barsToLoad * timeframeSeconds
+      const loadTo = latestTime + timeRangeToLoad // Last bar to load
+      
+      // Clamp to backtesting end date if needed
+      let finalTo = loadTo
+      if (this.backtestingDateEnd && loadTo > this.backtestingDateEnd) {
+        finalTo = this.backtestingDateEnd
+      }
+      
+      // Final check: if loadFrom >= finalTo, we can't load
+      if (loadFrom >= finalTo) {
+        return []
+      }
+      
+      // Load quotes from API
+      const quotes = await this.loadQuotes(loadFrom, finalTo)
+      
+      return quotes || []
+    },
+    
+    /**
+     * Universal chart data update procedure
+     * Checks if data needs to be loaded on left or right and updates chart
+     */
+    async updateChartBars() {
+      if (!this.chart || !this.currentData || this.currentData.length === 0) {
+        return
+      }
+      
+      // Don't run if chart is busy with any operation
+      if (this.chartIsBusy()) {
+        return
+      }
+      
+      // Block visible range updates during chart update
+      this.isUpdatingChart = true
+      try {
+        const logicalRange = this.chart.timeScale().getVisibleLogicalRange()
+        if (!logicalRange) {
+          return
+        }
+        
+        // Create range object that will be adjusted by addChartBars
+        const range = {
+          from: logicalRange.from,
+          to: logicalRange.to
+        }
+
+        const wasDeleted = await this.deleteOldChartBars(range)
+        const wasAdded = await this.addChartBars(range)
+
+        // Update chart only if data was modified
+        if (wasDeleted || wasAdded) {
+          // Set data on chart
+          this.candlestickSeries.setData(this.currentData)
+          
+          // Set visible range using adjusted values
+          this.chart.timeScale().setVisibleLogicalRange({
+            from: range.from,
+            to: range.to
+          })
+        }
+
+      } finally {
+        this.isUpdatingChart = false
+      }
+    },
+    
+    /**
+     * Delete old chart bars from both ends
+     * Removes data that is too far from visible range to free memory
+     * @param {Object} range - Range object with from and to properties (will be modified if data removed from left)
+     * @returns {boolean} True if data was modified, false otherwise
+     */
+    async deleteOldChartBars(range) {
+      if (!this.currentData || this.currentData.length === 0) {
+        return false
+      }
+      
+      // Calculate visible range length
+      const visibleLength = range.to - range.from
+      
+      // Calculate thresholds:
+      // cleanupThreshold - when to trigger cleanup (check if we have too much data)
+      // loadBarsBuffer - how much buffer to keep (prevent immediate reload)
+      const cleanupThreshold = visibleLength * CLEANUP_THRESHOLD_MULTIPLIER
+      const loadBarsBuffer = visibleLength * LOAD_BARS_MULTIPLIER
+      
+      let barsRemovedLeft = 0
+      let barsRemovedRight = 0
+      let cleanedData = this.currentData
+      
+      // Check if we need to remove data from the left
+      if (range.from > cleanupThreshold) {
+        // Keep data starting from (range.from - loadBarsBuffer)
+        const keepFromIndex = Math.max(0, Math.floor(range.from - loadBarsBuffer))
+        
+        if (keepFromIndex > 0) {
+          barsRemovedLeft = keepFromIndex
+          cleanedData = cleanedData.slice(keepFromIndex)
+        }
+      }
+      
+      // Check if we need to remove data from the right
+      const barsOnRight = cleanedData.length - (range.to - barsRemovedLeft)
+      if (barsOnRight > cleanupThreshold) {
+        // Keep data up to (range.to + loadBarsBuffer)
+        const keepToIndex = Math.min(
+          cleanedData.length,
+          Math.ceil(range.to - barsRemovedLeft + loadBarsBuffer)
+        )
+        
+        if (keepToIndex < cleanedData.length) {
+          barsRemovedRight = cleanedData.length - keepToIndex
+          cleanedData = cleanedData.slice(0, keepToIndex)
+        }
+      }
+      
+      // Update current data if anything was removed
+      if (barsRemovedLeft > 0 || barsRemovedRight > 0) {
+        this.currentData = cleanedData
+        
+        // Adjust range for bars removed from the left
+        if (barsRemovedLeft > 0) {
+          range.from -= barsRemovedLeft
+          range.to -= barsRemovedLeft
+        }
+        
+        return true
+      }
+      
+      return false
+    },
+
+    /**
+     * Add chart bars based on visible range
+     * Adjusts the range object to account for bars added on the left
+     * @param {Object} range - Range object with from and to properties (will be modified)
+     * @returns {boolean} True if data was modified, false otherwise
+     */
+    async addChartBars(range) {
+      // Load data from left and right
+      const [leftData, rightData] = await Promise.all([
+        this.loadChartDataLeft(range.from, range.to),
+        this.loadChartDataRight(range.from, range.to)
+      ])
+      
+      // Determine exact number of bars added on left and right
+      const barsAddedLeft = leftData.length
+      const barsAddedRight = rightData.length
+      
+      // If no data was added, nothing to do
+      if (barsAddedLeft === 0 && barsAddedRight === 0) {
+        return false
+      }
+      
+      // Merge data: left (new) + current + right (new)
+      const mergedData = [...leftData, ...this.currentData, ...rightData]
+      
+      // Update current data
+      this.currentData = mergedData
+      
+      // Adjust range to account for bars added on the left
+      if (barsAddedLeft > 0) {
+        range.from += barsAddedLeft
+        range.to += barsAddedLeft
+      }
+      
+      return true
+    },
+    
+    /**
+     * Update chart other elements (trades, markers, deal lines, etc.)
+     * Called when visible range changes (with 500ms debounce)
+     * @param {Object} logicalRange - Current visible logical range
+     */
+    updateChartOthers(logicalRange) {
+      if (!this.chart || !logicalRange) {
+        return
+      }
+      
+      // Update trade markers and deal lines
+      this.updateTradeMarkers()
+      this.updateDealLines()
+    },
+    
+    /**
+     * Update trade markers on chart based on current visible range
      * Always brings state in line with showTradeMarkers flag
      */
     updateTradeMarkers() {
+      // Check if chart is busy
+      if (this.chartIsBusy()) {
+        return
+      }
+      
       // Check initialization first
       if (!this.chart) {
         return
       }
       
       if (!this.seriesMarkers) {
-        this.$emit('chart-message', {
-          level: 'debug',
-          message: 'seriesMarkers not initialized, skipping trade markers update'
-        })
         return
       }
       
@@ -800,95 +843,83 @@ export default {
         return
       }
       
-      // If flag is false, clear markers
-      if (!this.showTradeMarkers) {
-        try {
-          this.seriesMarkers.setMarkers([])
-        } catch (error) {
-          this.$emit('chart-message', {
-            level: 'debug',
-            message: `Failed to clear trade markers: ${error.message}`
-          })
-        }
-        return
-      }
+      // Set busy flag
+      this.isUpdatingTradeMarkers = true
       
-      // Flag is true, show markers
-      if (!this.backtestingResults) {
-        return
-      }
-      
-      if (!this.candlestickSeries) {
-        return
-      }
-      
-      // Get visible time range from chart
-      const visibleRange = this.chart.timeScale().getVisibleRange()
-      if (!visibleRange) {
-        // If visible range is not available, clear markers
-        try {
-          this.seriesMarkers.setMarkers([])
-        } catch (error) {
-          this.$emit('chart-message', {
-            level: 'debug',
-            message: `Failed to clear trade markers: ${error.message}`
-          })
-        }
-        return
-      }
-      
-      // Convert Unix timestamps (seconds) to ISO strings for getTradesByDateRange
-      const fromISO = new Date(visibleRange.from * 1000).toISOString()
-      const toISO = new Date(visibleRange.to * 1000).toISOString()
-      
-      // Get trades for visible time range
-      const tradesInRange = this.backtestingResults.getTradesByDateRange(fromISO, toISO)
-      
-      // If no trades, clear markers
-      if (!tradesInRange || tradesInRange.length === 0) {
-        try {
-          this.seriesMarkers.setMarkers([])
-        } catch (error) {
-          this.$emit('chart-message', {
-            level: 'debug',
-            message: `Failed to clear trade markers: ${error.message}`
-          })
-        }
-        return
-      }
-      
-      // Use direct color values (lightweight-charts doesn't support CSS variables)
-      // Note: In lightweight-charts, text color is automatically determined by background brightness
-      // Dark colors = white text, light colors = black text
-      // We use darker colors for better visibility, but text will be white (library limitation)
-      const tradeBuyColor = '#0d5d4a' // Darker green for buy markers
-      const tradeSellColor = '#8b1f1a' // Darker red for sell markers
-      
-      // Convert trades to markers
-      const markers = tradesInRange.map(trade => {
-        // Parse time from ISO string to Unix timestamp (seconds)
-        const tradeTime = Math.floor(new Date(trade.time).getTime() / 1000)
-        
-        // Determine marker shape and position based on side
-        const isBuy = trade.side === 'buy'
-        
-        return {
-          time: tradeTime,
-          position: isBuy ? 'belowBar' : 'aboveBar',
-          color: isBuy ? tradeBuyColor : tradeSellColor,
-          shape: isBuy ? 'arrowUp' : 'arrowDown',
-          text: `${isBuy ? 'Buy' : 'Sell'}: ${parseFloat(trade.price).toFixed(2)}`
-        }
-      })
-      
-      // Set markers using seriesMarkers API (lightweight-charts 5.x)
       try {
-        this.seriesMarkers.setMarkers(markers)
-      } catch (error) {
-        this.$emit('chart-message', {
-          level: 'debug',
-          message: `Failed to set trade markers: ${error.message}`
+        // If flag is false, clear markers
+        if (!this.showTradeMarkers) {
+          try {
+            this.seriesMarkers.setMarkers([])
+          } catch (error) {
+            // Silently ignore errors when clearing
+          }
+          return
+        }
+        
+        // Flag is true, show markers
+        if (!this.backtestingResults) {
+          return
+        }
+        
+        if (!this.candlestickSeries) {
+          return
+        }
+        
+        // Get visible time range from chart
+        const visibleRange = this.chart.timeScale().getVisibleRange()
+        if (!visibleRange) {
+          // If visible range is not available, clear markers
+          try {
+            this.seriesMarkers.setMarkers([])
+          } catch (error) {
+            // Silently ignore errors when clearing
+          }
+          return
+        }
+        
+        // Convert Unix timestamps (seconds) to ISO strings for getTradesByDateRange
+        const fromISO = new Date(visibleRange.from * 1000).toISOString()
+        const toISO = new Date(visibleRange.to * 1000).toISOString()
+        
+        // Get trades for visible time range
+        const tradesInRange = this.backtestingResults.getTradesByDateRange(fromISO, toISO)
+        
+        // If no trades, clear markers
+        if (!tradesInRange || tradesInRange.length === 0) {
+          try {
+            this.seriesMarkers.setMarkers([])
+          } catch (error) {
+            // Silently ignore errors when clearing
+          }
+          return
+        }
+        
+        // Convert trades to markers
+        const markers = tradesInRange.map(trade => {
+          // Parse time from ISO string to Unix timestamp (seconds)
+          const tradeTime = Math.floor(new Date(trade.time).getTime() / 1000)
+          
+          // Determine marker shape and position based on side
+          const isBuy = trade.side === 'buy'
+          
+          return {
+            time: tradeTime,
+            position: isBuy ? 'belowBar' : 'aboveBar',
+            color: isBuy ? TRADE_BUY_COLOR : TRADE_SELL_COLOR,
+            shape: isBuy ? 'arrowUp' : 'arrowDown',
+            text: `${isBuy ? 'Buy' : 'Sell'}: ${parseFloat(trade.price).toFixed(2)}`
+          }
         })
+        
+        // Set markers using seriesMarkers API (lightweight-charts 5.x)
+        try {
+          this.seriesMarkers.setMarkers(markers)
+        } catch (error) {
+          // Silently ignore errors
+        }
+      } finally {
+        this.isUpdatingTradeMarkers = false
       }
     },
     
@@ -897,6 +928,11 @@ export default {
      * Always brings state in line with showDealLines flag
      */
     updateDealLines() {
+      // Check if chart is busy
+      if (this.chartIsBusy()) {
+        return
+      }
+      
       // Check initialization first
       if (!this.chart) {
         return
@@ -906,114 +942,115 @@ export default {
         return
       }
       
-      // Remove existing deal lines first (always, regardless of flag)
+      // Set busy flag
+      this.isUpdatingDealLines = true
+      
       try {
-        this.dealLines.forEach(lineSeries => {
-          this.chart.removeSeries(lineSeries)
-        })
-        this.dealLines = []
-      } catch (error) {
-        this.$emit('chart-message', {
-          level: 'debug',
-          message: `Failed to remove deal lines: ${error.message}`
-        })
-      }
-      
-      // If flag is false, we're done (lines already removed)
-      if (!this.showDealLines) {
-        return
-      }
-      
-      // Flag is true, show lines
-      if (!this.backtestingResults) {
-        return
-      }
-      
-      // Get visible time range from chart
-      const visibleRange = this.chart.timeScale().getVisibleRange()
-      if (!visibleRange) {
-        // If visible range is not available, don't show any deals
-        return
-      }
-      
-      // Get all closed deals
-      const allDeals = this.backtestingResults.getAllDeals()
-      const closedDeals = allDeals.filter(deal => deal.is_closed)
-      
-      // For each closed deal, create a line if it's visible
-      closedDeals.forEach(deal => {
-        // Get trades for this deal
-        const dealTrades = this.backtestingResults.getTradesForDeal(deal.deal_id)
-        
-        if (dealTrades.length === 0) {
-          return
-        }
-        
-        // Get first and last trade times
-        const firstTrade = dealTrades[0]
-        const lastTrade = dealTrades[dealTrades.length - 1]
-        
-        // Convert times to Unix timestamps (seconds)
-        const startTime = Math.floor(new Date(firstTrade.time).getTime() / 1000)
-        const endTime = Math.floor(new Date(lastTrade.time).getTime() / 1000)
-        
-        // Check if deal is visible:
-        // 1. At least one end (start or end) must be in visible range, OR
-        // 2. Deal crosses the visible range (one end is before, other is after)
-        const isStartVisible = startTime >= visibleRange.from && startTime <= visibleRange.to
-        const isEndVisible = endTime >= visibleRange.from && endTime <= visibleRange.to
-        const crossesRange = startTime < visibleRange.from && endTime > visibleRange.to
-        if (!isStartVisible && !isEndVisible && !crossesRange) {
-          // Deal is not visible, skip it
-          return
-        }
-        
-        // Determine start and end prices based on deal type
-        let startPrice, endPrice
-        if (deal.type && deal.type.toLowerCase() === 'long') {
-          // LONG: from avg_buy_price to avg_sell_price
-          startPrice = parseFloat(deal.avg_buy_price)
-          endPrice = parseFloat(deal.avg_sell_price)
-        } else if (deal.type && deal.type.toLowerCase() === 'short') {
-          // SHORT: from avg_sell_price to avg_buy_price
-          startPrice = parseFloat(deal.avg_sell_price)
-          endPrice = parseFloat(deal.avg_buy_price)
-        } else {
-          // Unknown type, skip
-          return
-        }
-        
-        // Determine color based on profit
-        const profit = parseFloat(deal.profit || 0)
-        const lineColor = profit >= 0 ? '#4caf50' : '#f44336' // Green for profit, red for loss
-        
-        // Create line series for this deal
-        // In lightweight-charts 5.x, use addSeries() with LineSeries type
+        // Remove existing deal lines first (always, regardless of flag)
         try {
-          const lineSeries = this.chart.addSeries(LineSeries, {
-            color: lineColor,
-            lineWidth: 1,
-            lineStyle: 2, // Dashed line (0 = solid, 1 = dotted, 2 = dashed, 3 = large dashed, 4 = sparse dotted)
-            priceLineVisible: false,
-            lastValueVisible: false,
-            crosshairMarkerVisible: false
+          this.dealLines.forEach(lineSeries => {
+            this.chart.removeSeries(lineSeries)
           })
-          
-          // Set data: two points (start and end)
-          lineSeries.setData([
-            { time: startTime, value: startPrice },
-            { time: endTime, value: endPrice }
-          ])
-          
-          // Store line series reference
-          this.dealLines.push(lineSeries)
+          this.dealLines = []
         } catch (error) {
-          this.$emit('chart-message', {
-            level: 'debug',
-            message: `Failed to add deal line for deal ${deal.deal_id}: ${error.message}`
-          })
+          // Silently ignore errors
         }
-      })
+        
+        // If flag is false, we're done (lines already removed)
+        if (!this.showDealLines) {
+          return
+        }
+        
+        // Flag is true, show lines
+        if (!this.backtestingResults) {
+          return
+        }
+        
+        // Get visible time range from chart
+        const visibleRange = this.chart.timeScale().getVisibleRange()
+        if (!visibleRange) {
+          // If visible range is not available, don't show any deals
+          return
+        }
+        
+        // Get all closed deals
+        const allDeals = this.backtestingResults.getAllDeals()
+        const closedDeals = allDeals.filter(deal => deal.is_closed)
+        
+        // For each closed deal, create a line if it's visible
+        closedDeals.forEach(deal => {
+          // Get trades for this deal
+          const dealTrades = this.backtestingResults.getTradesForDeal(deal.deal_id)
+          
+          if (dealTrades.length === 0) {
+            return
+          }
+          
+          // Get first and last trade times
+          const firstTrade = dealTrades[0]
+          const lastTrade = dealTrades[dealTrades.length - 1]
+          
+          // Convert times to Unix timestamps (seconds)
+          const startTime = Math.floor(new Date(firstTrade.time).getTime() / 1000)
+          const endTime = Math.floor(new Date(lastTrade.time).getTime() / 1000)
+          
+          // Check if deal is visible:
+          // 1. At least one end (start or end) must be in visible range, OR
+          // 2. Deal crosses the visible range (one end is before, other is after)
+          const isStartVisible = startTime >= visibleRange.from && startTime <= visibleRange.to
+          const isEndVisible = endTime >= visibleRange.from && endTime <= visibleRange.to
+          const crossesRange = startTime < visibleRange.from && endTime > visibleRange.to
+          if (!isStartVisible && !isEndVisible && !crossesRange) {
+            // Deal is not visible, skip it
+            return
+          }
+          
+          // Determine start and end prices based on deal type
+          let startPrice, endPrice
+          if (deal.type && deal.type.toLowerCase() === 'long') {
+            // LONG: from avg_buy_price to avg_sell_price
+            startPrice = parseFloat(deal.avg_buy_price)
+            endPrice = parseFloat(deal.avg_sell_price)
+          } else if (deal.type && deal.type.toLowerCase() === 'short') {
+            // SHORT: from avg_sell_price to avg_buy_price
+            startPrice = parseFloat(deal.avg_sell_price)
+            endPrice = parseFloat(deal.avg_buy_price)
+          } else {
+            // Unknown type, skip
+            return
+          }
+          
+          // Determine color based on profit
+          const profit = parseFloat(deal.profit || 0)
+          const lineColor = profit >= 0 ? '#4caf50' : '#f44336' // Green for profit, red for loss
+          
+          // Create line series for this deal
+          // In lightweight-charts 5.x, use addSeries() with LineSeries type
+          try {
+            const lineSeries = this.chart.addSeries(LineSeries, {
+              color: lineColor,
+              lineWidth: 1,
+              lineStyle: 2, // Dashed line (0 = solid, 1 = dotted, 2 = dashed, 3 = large dashed, 4 = sparse dotted)
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false
+            })
+            
+            // Set data: two points (start and end)
+            lineSeries.setData([
+              { time: startTime, value: startPrice },
+              { time: endTime, value: endPrice }
+            ])
+            
+            // Store line series reference
+            this.dealLines.push(lineSeries)
+          } catch (error) {
+            // Silently ignore errors
+          }
+        })
+      } finally {
+        this.isUpdatingDealLines = false
+      }
     },
     
     /**
@@ -1129,20 +1166,68 @@ export default {
     clearChartData() {
       if (this.candlestickSeries) {
         this.candlestickSeries.setData([])
-        this.currentData = []
       }
+      
+      // Clear trade markers
+      if (this.seriesMarkers) {
+        try {
+          this.seriesMarkers.setMarkers([])
+        } catch (error) {
+          // Silently ignore errors
+        }
+      }
+      
+      // Remove deal lines
+      if (this.chart && this.dealLines.length > 0) {
+        try {
+          this.dealLines.forEach(lineSeries => {
+            this.chart.removeSeries(lineSeries)
+          })
+          this.dealLines = []
+        } catch (error) {
+          // Silently ignore errors
+        }
+      }
+      
+      this.currentData = []
       this.backtestingDateStart = null
       this.backtestingDateEnd = null
     },
     
     resetChart() {
-      // Cancel any pending requests
-      this.loadRequestId++
-      this.isLoading = false
       this.clearChartData()
     },
     
     cleanup() {
+      // Clear debounce timers
+      if (this.debounceTimer) {
+        clearTimeout(this.debounceTimer)
+        this.debounceTimer = null
+      }
+      
+      if (this.othersDebounceTimer) {
+        clearTimeout(this.othersDebounceTimer)
+        this.othersDebounceTimer = null
+      }
+      
+      // Unsubscribe from logical range changes
+      if (this.logicalRangeSubscription && this.chart) {
+        this.chart.timeScale().unsubscribeVisibleLogicalRangeChange(this.logicalRangeSubscription)
+        this.logicalRangeSubscription = null
+      }
+      
+      // Remove deal lines
+      if (this.chart && this.dealLines.length > 0) {
+        try {
+          this.dealLines.forEach(lineSeries => {
+            this.chart.removeSeries(lineSeries)
+          })
+          this.dealLines = []
+        } catch (error) {
+          // Silently ignore errors
+        }
+      }
+      
       // Disconnect ResizeObserver
       if (this.resizeObserver) {
         this.resizeObserver.disconnect()
@@ -1155,222 +1240,10 @@ export default {
         this.handleResizeBound = null
       }
       
-      // Unsubscribe from logical range changes
-      if (this.logicalRangeSubscription && this.chart) {
-        this.chart.timeScale().unsubscribeVisibleLogicalRangeChange(this.logicalRangeSubscription)
-        this.logicalRangeSubscription = null
-      }
-      
       // Remove chart
       if (this.chart) {
         this.chart.remove()
         this.chart = null
-      }
-    },
-    
-    /**
-     * Navigate to a specific date/time
-     * @param {number} timestamp - Unix timestamp in seconds
-     */
-    async goToDate(timestamp) {
-      if (!this.chart || !this.backtestingDateStart || !this.backtestingDateEnd) {
-        return
-      }
-      
-      if (!this.source || !this.symbol || !this.timeframe) {
-        return
-      }
-      
-      // Get current visible length to maintain zoom level
-      const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-      if (!currentLogicalRange) {
-        return
-      }
-      
-      const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-      const timeframeSeconds = this.getTimeframeSeconds()
-      if (timeframeSeconds === 0) {
-        return
-      }
-      
-      // Calculate load range
-      // From: timestamp - (visibleLength * LOAD_BARS_MULTIPLIER * timeframeSeconds)
-      const loadFrom = Math.max(
-        this.backtestingDateStart,
-        timestamp - (visibleLength * LOAD_BARS_MULTIPLIER * timeframeSeconds)
-      )
-      
-      // To: timestamp + ((visibleLength * LOAD_BARS_MULTIPLIER + visibleLength) * timeframeSeconds)
-      const loadTo = Math.min(
-        this.backtestingDateEnd,
-        timestamp + ((visibleLength * LOAD_BARS_MULTIPLIER + visibleLength) * timeframeSeconds)
-      )
-      
-      if (loadFrom >= loadTo) {
-        return
-      }
-      
-      // Load data
-      this.isLoading = true
-      try {
-        const quotes = await this.loadQuotes(loadFrom, loadTo)
-        
-        if (quotes.length === 0) {
-          return
-        }
-        
-        // Find the bar closest to the target timestamp
-        let targetBarIndex = -1
-        let minDiff = Infinity
-        
-        for (let i = 0; i < quotes.length; i++) {
-          const diff = Math.abs(quotes[i].time - timestamp)
-          if (diff < minDiff) {
-            minDiff = diff
-            targetBarIndex = i
-          }
-        }
-        
-        if (targetBarIndex === -1) {
-          return
-        }
-        
-        // Set data with visible range: from = targetBarIndex, to = targetBarIndex + visibleLength
-        const finalLogicalRange = {
-          from: targetBarIndex,
-          to: Math.min(targetBarIndex + visibleLength, quotes.length)
-        }
-        this.updateChartData(quotes, finalLogicalRange)
-      } catch (error) {
-        console.error('Failed to navigate to date:', error)
-        this.$emit('quotes-load-error', error)
-      } finally {
-        this.isLoading = false
-      }
-    },
-    
-    /**
-     * Navigate to the start of the chart data
-     */
-    async goToStart() {
-      if (!this.chart || !this.backtestingDateStart || !this.backtestingDateEnd) {
-        return
-      }
-      
-      if (!this.source || !this.symbol || !this.timeframe) {
-        return
-      }
-      
-      // Get current visible length to maintain zoom level
-      const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-      if (!currentLogicalRange) {
-        return
-      }
-      
-      const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-      const timeframeSeconds = this.getTimeframeSeconds()
-      if (timeframeSeconds === 0) {
-        return
-      }
-      
-      // Calculate number of bars to load: visibleLength * LOAD_BARS_MULTIPLIER
-      const barsToLoad = visibleLength * LOAD_BARS_MULTIPLIER
-      const timeRangeToLoad = barsToLoad * timeframeSeconds
-      
-      // Load from backtestingDateStart
-      const loadFrom = this.backtestingDateStart
-      const loadTo = Math.min(
-        this.backtestingDateEnd,
-        this.backtestingDateStart + timeRangeToLoad
-      )
-      
-      if (loadFrom >= loadTo) {
-        return
-      }
-      
-      // Load data
-      this.isLoading = true
-      try {
-        const quotes = await this.loadQuotes(loadFrom, loadTo)
-        
-        if (quotes.length === 0) {
-          return
-        }
-        
-        // Set data with visible range: from 0 to visibleLength
-        const finalLogicalRange = {
-          from: 0,
-          to: Math.min(visibleLength, quotes.length)
-        }
-        this.updateChartData(quotes, finalLogicalRange)
-      } catch (error) {
-        console.error('Failed to navigate to start:', error)
-        this.$emit('quotes-load-error', error)
-      } finally {
-        this.isLoading = false
-      }
-    },
-    
-    /**
-     * Navigate to the end of the chart data
-     */
-    async goToEnd() {
-      if (!this.chart || !this.backtestingDateStart || !this.backtestingDateEnd) {
-        return
-      }
-      
-      if (!this.source || !this.symbol || !this.timeframe) {
-        return
-      }
-      
-      // Get current visible length to maintain zoom level
-      const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-      if (!currentLogicalRange) {
-        return
-      }
-      
-      const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-      const timeframeSeconds = this.getTimeframeSeconds()
-      if (timeframeSeconds === 0) {
-        return
-      }
-      
-      // Calculate number of bars to load from end
-      // Load from: (visibleLength * LOAD_BARS_MULTIPLIER + visibleLength) bars before end
-      const barsToLoad = visibleLength * LOAD_BARS_MULTIPLIER + visibleLength
-      const timeRangeToLoad = barsToLoad * timeframeSeconds
-      
-      // Load to backtestingDateEnd
-      const loadTo = this.backtestingDateEnd
-      const loadFrom = Math.max(
-        this.backtestingDateStart,
-        this.backtestingDateEnd - timeRangeToLoad
-      )
-      
-      if (loadFrom >= loadTo) {
-        return
-      }
-      
-      // Load data
-      this.isLoading = true
-      try {
-        const quotes = await this.loadQuotes(loadFrom, loadTo)
-        
-        if (quotes.length === 0) {
-          return
-        }
-        
-        // Set data with visible range: from end - visibleLength to end
-        const finalLogicalRange = {
-          from: Math.max(0, quotes.length - visibleLength),
-          to: quotes.length
-        }
-        this.updateChartData(quotes, finalLogicalRange)
-      } catch (error) {
-        console.error('Failed to navigate to end:', error)
-        this.$emit('quotes-load-error', error)
-      } finally {
-        this.isLoading = false
       }
     },
     
@@ -1417,73 +1290,107 @@ export default {
       this.chart.timeScale().fitContent()
     },
     
+    // Navigation method stubs (to be implemented later)
+    async goToDate(timestamp) {
+      // TODO: implement navigation to specific date
+    },
+    
+    async goToStart() {
+      await this.moveToBegin()
+    },
+    
+    async goToEnd() {
+      await this.moveToEnd()
+    },
+    
     /**
-     * Scroll chart one page forward (PageDown)
+     * Scroll chart one page backward (PageDown)
      */
     pageDown() {
       if (!this.chart || !this.currentData || this.currentData.length === 0) {
         return
       }
       
-      const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-      if (!currentLogicalRange) {
+      // Don't run if chart is busy with any operation
+      if (this.chartIsBusy()) {
         return
       }
       
-      const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-      const dataLength = this.currentData.length
-      
-      // Calculate new range: from = to + 1, to = from + visibleLength
-      const newFrom = Math.floor(currentLogicalRange.to) + 1
-      const newTo = newFrom + visibleLength
-      
-      // Set new visible range (even if beyond current data - this will trigger loading)
-      this.chart.timeScale().setVisibleLogicalRange({
-        from: newFrom,
-        to: newTo
-      })
-      
-      // Wait for chart to update, then check boundaries and load data if needed
-      this.$nextTick(() => {
-        const newLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-        if (newLogicalRange) {
-          this.checkAndLoadData(newLogicalRange, true)
+      // Block visible range updates during chart update
+      this.isUpdatingChart = true
+      try {
+        const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
+        if (!currentLogicalRange) {
+          return
         }
-      })
+        
+        const visibleLength = currentLogicalRange.to - currentLogicalRange.from
+        const dataLength = this.currentData.length
+        
+        // Calculate new range: to = from - 1, from = to - visibleLength
+        let newTo = Math.floor(currentLogicalRange.from) - 1
+        let newFrom = newTo - visibleLength
+        
+        // Check if we're going before the start of data
+        if (newFrom < 0) {
+          // Set range to the beginning: from = 0, to = visibleLength
+          newFrom = 0
+          newTo = Math.min(dataLength, visibleLength)
+        }
+        
+        // Set new visible range
+        this.chart.timeScale().setVisibleLogicalRange({
+          from: newFrom,
+          to: newTo
+        })
+      } finally {
+        this.isUpdatingChart = false
+      }
     },
     
     /**
-     * Scroll chart one page backward (PageUp)
+     * Scroll chart one page forward (PageUp)
      */
     pageUp() {
       if (!this.chart || !this.currentData || this.currentData.length === 0) {
         return
       }
       
-      const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-      if (!currentLogicalRange) {
+      // Don't run if chart is busy with any operation
+      if (this.chartIsBusy()) {
         return
       }
       
-      const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-      
-      // Calculate new range: to = from - 1, from = to - visibleLength
-      const newTo = Math.floor(currentLogicalRange.from) - 1
-      const newFrom = newTo - visibleLength
-      
-      // Set new visible range (even if before current data - this will trigger loading)
-      this.chart.timeScale().setVisibleLogicalRange({
-        from: newFrom,
-        to: newTo
-      })
-      
-      // Wait for chart to update, then check boundaries and load data if needed
-      this.$nextTick(() => {
-        const newLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-        if (newLogicalRange) {
-          this.checkAndLoadData(newLogicalRange, true)
+      // Block visible range updates during chart update
+      this.isUpdatingChart = true
+      try {
+        const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
+        if (!currentLogicalRange) {
+          return
         }
-      })
+        
+        const visibleLength = currentLogicalRange.to - currentLogicalRange.from
+        const dataLength = this.currentData.length
+        
+        // Calculate new range: from = to + 1, to = from + visibleLength
+        let newFrom = Math.floor(currentLogicalRange.to) + 1
+        let newTo = newFrom + visibleLength
+        
+        // Check if we're going beyond the end of data
+        if (newTo > dataLength) {
+          // Set range to the end: to = dataLength, from = dataLength - visibleLength
+          newTo = dataLength
+          newFrom = Math.max(0, dataLength - visibleLength)
+        }
+        
+        // Set new visible range
+        this.chart.timeScale().setVisibleLogicalRange({
+          from: newFrom,
+          to: newTo
+        })
+      } finally {
+        this.isUpdatingChart = false
+      }
     }
   }
 }

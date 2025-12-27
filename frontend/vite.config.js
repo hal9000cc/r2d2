@@ -11,6 +11,10 @@ export default defineConfig({
         changeOrigin: true
       }
     }
+  },
+  resolve: {
+    // Force development mode for lightweight-charts
+    conditions: ['development', 'module', 'import', 'default']
   }
 })
 
