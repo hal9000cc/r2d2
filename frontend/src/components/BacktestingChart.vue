@@ -1,5 +1,10 @@
 <template>
-  <div ref="chartContainer" class="backtesting-chart"></div>
+  <div 
+    ref="chartContainer" 
+    class="backtesting-chart"
+    tabindex="0"
+    @keydown="handleKeyDown"
+  ></div>
 </template>
 
 <script>
@@ -1295,18 +1300,24 @@ export default {
       // TODO: implement navigation to specific date
     },
     
-    async goToStart() {
+    /**
+     * Move chart to the beginning
+     */
+    async moveChartToStart() {
       await this.moveToBegin()
     },
     
-    async goToEnd() {
+    /**
+     * Move chart to the end
+     */
+    async moveChartToEnd() {
       await this.moveToEnd()
     },
     
     /**
-     * Scroll chart one page backward (PageDown)
+     * Scroll chart one page backward
      */
-    pageDown() {
+    scrollChartBackward() {
       if (!this.chart || !this.currentData || this.currentData.length === 0) {
         return
       }
@@ -1349,9 +1360,9 @@ export default {
     },
     
     /**
-     * Scroll chart one page forward (PageUp)
+     * Scroll chart one page forward
      */
-    pageUp() {
+    scrollChartForward() {
       if (!this.chart || !this.currentData || this.currentData.length === 0) {
         return
       }
@@ -1390,6 +1401,41 @@ export default {
         })
       } finally {
         this.isUpdatingChart = false
+      }
+    },
+    
+    /**
+     * Handle keyboard events for chart navigation
+     * @param {KeyboardEvent} event - Keyboard event
+     */
+    handleKeyDown(event) {
+      // Ignore if focus is in input or textarea
+      if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
+        return
+      }
+      
+      // Only handle Shift+key combinations
+      if (!event.shiftKey) {
+        return
+      }
+      
+      // Prevent default behavior
+      event.preventDefault()
+      
+      // Handle Shift+key combinations
+      switch (event.key) {
+        case 'Home':
+          this.moveChartToStart()
+          break
+        case 'End':
+          this.moveChartToEnd()
+          break
+        case 'PageDown':
+          this.scrollChartBackward()
+          break
+        case 'PageUp':
+          this.scrollChartForward()
+          break
       }
     }
   }

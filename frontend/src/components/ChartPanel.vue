@@ -77,12 +77,12 @@ export default {
     },
     goToStart() {
       if (this.$refs.chartRef) {
-        this.$refs.chartRef.goToStart()
+        this.$refs.chartRef.moveChartToStart()
       }
     },
     goToEnd() {
       if (this.$refs.chartRef) {
-        this.$refs.chartRef.goToEnd()
+        this.$refs.chartRef.moveChartToEnd()
       }
     },
     toggleLogScale() {
@@ -97,12 +97,12 @@ export default {
     },
     pageDown() {
       if (this.$refs.chartRef) {
-        this.$refs.chartRef.pageDown()
+        this.$refs.chartRef.scrollChartBackward()
       }
     },
     pageUp() {
       if (this.$refs.chartRef) {
-        this.$refs.chartRef.pageUp()
+        this.$refs.chartRef.scrollChartForward()
       }
     }
   }
