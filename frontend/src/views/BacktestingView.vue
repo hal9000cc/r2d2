@@ -482,7 +482,8 @@ const {
   clearAllMessages,
   addLocalMessage,
   setBacktestingStarted,
-  resetBacktestingState
+  resetBacktestingState,
+  ensureConnection
 } = useBacktesting(currentTaskId)
 
 // Use backtesting results composable
@@ -741,6 +742,7 @@ watch([backtestProgressCurrentTime, backtestProgressResultId], async ([newCurren
   
   // Load results from last relevance time to current time
   try {
+    ensureConnection()
     const response = await backtestingApi.getBacktestingResults(
       currentTaskId.value,
       resultId.value,
@@ -1535,6 +1537,7 @@ async function handleTaskSelected(task) {
   // 4. Load fresh task data from API to ensure we have the latest version
   let freshTask = task
   try {
+    ensureConnection()
     freshTask = await backtestingApi.getTask(task.id)
   } catch (error) {
     console.error('Failed to load fresh task data:', error)
@@ -1757,6 +1760,7 @@ async function saveCurrentTask() {
       parameters: customParameters
     }
 
+    ensureConnection()
     const updatedTask = await backtestingApi.updateTask(currentTaskId.value, taskData)
     
     // Update currentTaskParameters from response to keep it in sync
@@ -1908,6 +1912,8 @@ async function handleStart(formData) {
   setBacktestingStarted()
   
   try {
+    // Ensure WebSocket connection before starting backtesting
+    ensureConnection()
     // Call API to start backtesting
     const response = await backtestingApi.startBacktest(currentTaskId.value)
     
@@ -1945,6 +1951,8 @@ async function handleStop() {
   }
 
   try {
+    // Ensure WebSocket connection before stopping backtesting
+    ensureConnection()
     // Call API to stop backtesting
     // All UI changes will happen via WebSocket packets (error packet)
     await backtestingApi.stopBacktest(currentTaskId.value)
