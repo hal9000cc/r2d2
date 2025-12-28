@@ -491,8 +491,14 @@ def worker_backtesting_task(task_id: int, result_id: str) -> None:
         logger.info(f"Starting background backtesting for task {task_id} with result_id {result_id}")
         process_backtesting_task(task, result_id)
     except Exception as e:
-        logger.error(f"Error running backtesting for task {task_id}: {str(e)}", exc_info=True)
-        task.backtesting_error(f"Error running backtesting: {str(e)}")
+        # Check if error occurred in strategy code
+        is_strategy, strategy_msg = Strategy.is_strategy_error(e)
+        if is_strategy:
+            logger.error(f"Strategy error in task {task_id}: {strategy_msg}", exc_info=True)
+            task.backtesting_error(strategy_msg)
+        else:
+            logger.error(f"Error running backtesting for task {task_id}: {str(e)}", exc_info=True)
+            task.backtesting_error(f"Error running backtesting: {str(e)}")
     finally:
         # Reload task to get latest state
         task = task_list.load(task_id)

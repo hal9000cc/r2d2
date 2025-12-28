@@ -1,5 +1,7 @@
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional, Union, List, Tuple, Dict, Any, Callable, TYPE_CHECKING
+import traceback
 import numpy as np
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
@@ -9,10 +11,9 @@ from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 
 if TYPE_CHECKING:
-    from app.services.tasks.broker_backtesting import BrokerBacktesting as Broker
+    from app.services.tasks.broker_backtesting import BrokerBacktesting as Broker, ta_proxy
 
 logger = get_logger(__name__)
-
 
 class Strategy(ABC):
     def __init__(self):
@@ -31,6 +32,9 @@ class Strategy(ABC):
         
         # Broker will be set when callbacks are created
         self.broker: Optional[Broker] = None
+
+        # TA proxy will be set when callbacks are created
+        self.talib: Optional[ta_proxy] = None
 
     def on_start(self):
         """
@@ -121,6 +125,53 @@ class Strategy(ABC):
         self.broker.logging(message, level)
     
     @staticmethod
+    def is_strategy_error(exception: Exception) -> Tuple[bool, Optional[str]]:
+        """
+        Analyze exception traceback to determine if error occurred in strategy code.
+        
+        Args:
+            exception: Exception that occurred
+            
+        Returns:
+            Tuple of (is_strategy_error: bool, error_message: Optional[str])
+            If is_strategy_error is True, error_message contains formatted message with line number.
+        """
+        tb = exception.__traceback__
+        if tb is None:
+            return False, None
+        
+        # Collect all traceback frames
+        frames = traceback.extract_tb(tb)
+        
+        # Look for strategy-related frames
+        strategy_frame = None
+        for frame in frames:
+            func_name = frame.name
+            
+            # Check if frame is in strategy code by method names: on_bar, on_start, on_finish
+            if func_name in ('on_bar', 'on_start', 'on_finish'):
+                strategy_frame = frame
+                break
+        
+        if strategy_frame is None:
+            return False, None
+        
+        # Format error message
+        method_name = strategy_frame.name
+        line_no = strategy_frame.lineno
+        line_text = strategy_frame.line or ""
+        
+        error_msg = (
+            f"Error in strategy code: {exception.__class__.__name__}: {str(exception)}\n"
+            f"Location: method '{method_name}' at line {line_no}"
+        )
+        
+        if line_text.strip():
+            error_msg += f"\nCode: {line_text.strip()}"
+        
+        return True, error_msg
+    
+    @staticmethod
     def create_strategy_callbacks(strategy: 'Strategy') -> Dict[str, Callable]:
         """
         Create callbacks for broker with closure on strategy.
@@ -131,8 +182,11 @@ class Strategy(ABC):
         Returns:
             Dictionary with callback functions for broker
         """
-        def __on_start(parameters: Dict[str, Any]):
+        def __on_start(parameters: Dict[str, Any], ta_proxies: Dict[str, ta_proxy]):
             strategy.parameters = parameters
+            # Set TA library proxies as strategy attributes
+            for name, proxy in ta_proxies.items():
+                setattr(strategy, name, proxy)
             strategy.on_start()
         
         def __on_bar(

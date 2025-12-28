@@ -1,9 +1,13 @@
 """
 Broker class for handling trading operations and backtesting execution.
 """
-from typing import Optional, Dict, Callable, List
+from abc import ABC, abstractmethod
+from typing import Optional, Dict, Callable, List, Tuple, Union
+import inspect
 import numpy as np
 import time
+import talib
+from pydantic import BaseModel
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
@@ -16,6 +20,234 @@ from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 
 logger = get_logger(__name__)
+
+
+class IndicatorDescription(BaseModel):
+    """
+    Description of technical analysis indicator.
+    """
+    values: List[str]  # List of positional parameter names (open, high, low, close, volume) in order
+
+
+class ta_proxy(ABC):
+    """
+    Abstract base class for technical analysis indicator proxy.
+    Different implementations for different TA libraries (talib, ta, etc.)
+    """
+    
+    def __init__(self, broker, quotes_data: dict):
+        """
+        Initialize TA proxy.
+        
+        Args:
+            broker: Reference to broker instance
+            quotes_data: Dictionary with quotes data (time, open, high, low, close, volume)
+        """
+        self.broker = broker
+        self.quotes_data = quotes_data
+        self._cache = {}
+    
+    @abstractmethod
+    def calc_indicator(self, name: str, **kwargs) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
+        """
+        Calculate indicator values for entire dataset.
+        Must be implemented in subclasses for specific TA libraries.
+        
+        Args:
+            name: Indicator name (e.g., 'SMA', 'EMA', 'RSI')
+            **kwargs: Indicator parameters
+            
+        Returns:
+            Numpy array or tuple of numpy arrays with indicator values for entire dataset
+        """
+        pass
+    
+    def get_indicator(self, name: str, **kwargs) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
+        """
+        Get indicator values with caching and slicing to current bar.
+        Common implementation for all TA libraries.
+        
+        Args:
+            name: Indicator name (e.g., 'SMA', 'EMA', 'RSI')
+            **kwargs: Indicator parameters
+            
+        Returns:
+            Numpy array or tuple of numpy arrays with indicator values sliced to current bar
+        """
+        # Create cache key from name and sorted parameters
+        cache_key = (name, tuple(sorted(kwargs.items())))
+        
+        # Check cache
+        if cache_key not in self._cache:
+            # Calculate indicator for entire dataset
+            self._cache[cache_key] = self.calc_indicator(name, **kwargs)
+        
+        # Return slice up to current bar (inclusive)
+        full_data = self._cache[cache_key]
+        
+        # Check if result is a tuple (multiple return values)
+        if isinstance(full_data, tuple):
+            # Return tuple of slices
+            return tuple(arr[:self.broker.i_time + 1] for arr in full_data)
+        else:
+            # Return single array slice
+            return full_data[:self.broker.i_time + 1]
+    
+    def __getattr__(self, indicator_name: str):
+        """
+        Intercept indicator name access (e.g., self.talib.SMA).
+        Returns a callable that will call get_indicator.
+        
+        Args:
+            indicator_name: Name of the indicator (e.g., 'SMA', 'EMA')
+            
+        Returns:
+            Callable that accepts **kwargs and returns indicator values
+        """
+        # Don't intercept private/special attributes
+        if indicator_name.startswith('_'):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{indicator_name}'")
+        
+        def indicator_caller(**kwargs):
+            return self.get_indicator(indicator_name, **kwargs)
+        
+        return indicator_caller
+
+
+class ta_proxy_talib(ta_proxy):
+    """
+    Technical analysis proxy for TA-Lib library.
+    """
+    
+    # Valid positional parameter names
+    VALID_POSITIONAL_PARAMS = {'open', 'high', 'low', 'close', 'volume', 'real'}
+    
+    def __init__(self, broker, quotes_data: dict):
+        """
+        Initialize TA-Lib proxy.
+        Analyzes talib functions and builds indicator descriptions.
+        
+        Args:
+            broker: Reference to broker instance
+            quotes_data: Dictionary with quotes data (time, open, high, low, close, volume)
+        """
+        super().__init__(broker, quotes_data)
+        
+        # Dictionary to store indicator descriptions
+        self._indicator_descriptions: Dict[str, IndicatorDescription] = {}
+        
+        # Analyze talib functions
+        self._analyze_talib_functions()
+    
+    def _analyze_talib_functions(self):
+        """
+        Analyze talib functions and build indicator descriptions.
+        Only includes functions with valid positional parameters (open, high, low, close, volume).
+        """
+        for name in dir(talib):
+            # Skip private/special attributes
+            if name.startswith('_'):
+                continue
+            
+            # Get attribute from talib
+            attr = getattr(talib, name)
+            
+            # Check if it's callable
+            if not callable(attr):
+                continue
+            
+            try:
+                # Get function signature
+                sig = inspect.signature(attr)
+                
+                # Extract positional parameter names that are in VALID_POSITIONAL_PARAMS
+                positional_params = []
+                skip_function = False
+                
+                for param_name, param in sig.parameters.items():
+                    # Check if parameter has default value (then it's in kwargs, not positional)
+                    if param.default != inspect.Parameter.empty:
+                        # This parameter will be in kwargs, skip it
+                        continue
+                    
+                    # This is a positional parameter (no default value)
+                    if param_name in self.VALID_POSITIONAL_PARAMS:
+                        positional_params.append(param_name)
+                    else:
+                        # Invalid positional parameter - skip this function
+                        logger.warning(
+                            f"TA-Lib function '{name}' has invalid positional parameter '{param_name}'. "
+                            f"Only {self.VALID_POSITIONAL_PARAMS} are allowed. Skipping."
+                        )
+                        skip_function = True
+                        break
+                
+                if not skip_function and positional_params:
+                    # All positional params are valid - save indicator description
+                    self._indicator_descriptions[name] = IndicatorDescription(values=positional_params)
+            except Exception as e:
+                # Skip functions that can't be analyzed
+                logger.debug(f"Could not analyze function '{name}': {e}")
+                continue
+    
+    def calc_indicator(self, name: str, **kwargs) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
+        """
+        Calculate indicator values using TA-Lib.
+        
+        Args:
+            name: Indicator name (e.g., 'SMA', 'EMA', 'RSI')
+            **kwargs: Indicator parameters (non-positional)
+            
+        Returns:
+            Numpy array or tuple of numpy arrays with indicator values for entire dataset
+            
+        Raises:
+            ValueError: If indicator name is not found in descriptions
+        """
+        # Get indicator description
+        if name not in self._indicator_descriptions:
+            raise ValueError(f"TA-Lib indicator '{name}' is not available or has invalid parameters")
+        
+        description = self._indicator_descriptions[name]
+        
+        # Get function from talib
+        talib_function = getattr(talib, name)
+        
+        # Build positional arguments from quotes_data
+        args = []
+        # Create a copy of kwargs to modify it (remove 'value' if used)
+        call_kwargs = kwargs.copy()
+        
+        for param_name in description.values:
+            if param_name == 'real':
+                # For 'real' parameter, get series name from kwargs['value']
+                if 'value' not in kwargs:
+                    raise ValueError(
+                        f"TA-Lib indicator '{name}' requires parameter 'real' (series name), "
+                        f"but 'value' parameter is not provided in kwargs"
+                    )
+                # Get series name from value parameter
+                series_name = kwargs['value']
+                # Remove 'value' from kwargs as it's not a talib parameter
+                call_kwargs.pop('value', None)
+                # Get data from quotes_data using series name
+                if series_name not in self.quotes_data:
+                    raise ValueError(
+                        f"TA-Lib indicator '{name}' requires series '{series_name}' "
+                        f"from 'value' parameter, but it's not available in quotes_data"
+                    )
+                args.append(self.quotes_data[series_name])
+            else:
+                # Regular parameter - get directly from quotes_data
+                args.append(self.quotes_data[param_name])
+        
+        try:
+            # Call talib function with *args and **kwargs (without 'value')
+            result = talib_function(*args, **call_kwargs)
+            return result
+        except Exception as e:
+            # Re-raise with more context
+            raise RuntimeError(f"Error calling talib.{name}(*args, **kwargs): {e}") from e
 
 
 class BrokerBacktesting(Broker):
@@ -54,6 +286,7 @@ class BrokerBacktesting(Broker):
         # Trading state
         self.price: Optional[PRICE_TYPE] = None
         self.current_time: Optional[np.datetime64] = None
+        self.i_time: int = 0  # Current bar index in backtesting loop
         
         # Progress tracking
         self.progress: float = 0.0
@@ -273,22 +506,30 @@ class BrokerBacktesting(Broker):
         state_update_period = 1.0
         last_update_time = time.time()
         
-        # Call on_start callback with task parameters
-        if 'on_start' in self.callbacks:
-            self.callbacks['on_start'](task.parameters)
+        # Create TA proxies dictionary
+        ta_proxies = {
+            'talib': ta_proxy_talib(broker=self, quotes_data=quotes_data)
+        }
         
-        for i in range(len(all_close)):
+        # Call on_start callback with task parameters and TA proxies
+        if 'on_start' in self.callbacks:
+            self.callbacks['on_start'](task.parameters, ta_proxies)
+        
+        for i_time in range(len(all_close)):
+            # Update current bar index
+            self.i_time = i_time
+            
             # Set current time and price
-            self.current_time = all_time[i]
-            self.price = all_close[i]
+            self.current_time = all_time[i_time]
+            self.price = all_close[i_time]
             
             # Prepare arrays for this bar
-            time_array = all_time[:i+1]
-            open_array = all_open[:i+1]
-            high_array = all_high[:i+1]
-            low_array = all_low[:i+1]
-            close_array = all_close[:i+1]
-            volume_array = all_volume[:i+1]
+            time_array = all_time[:i_time+1]
+            open_array = all_open[:i_time+1]
+            high_array = all_high[:i_time+1]
+            low_array = all_low[:i_time+1]
+            close_array = all_close[:i_time+1]
+            volume_array = all_volume[:i_time+1]
             
             # Call on_bar callback with all necessary data
             if 'on_bar' in self.callbacks:
