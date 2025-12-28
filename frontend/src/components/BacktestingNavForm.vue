@@ -69,10 +69,10 @@
 </template>
 
 <script>
+import { inject, computed } from 'vue'
 import SourceInput from './SourceInput.vue'
 import SymbolInput from './SymbolInput.vue'
 import { PlayIcon, StopIcon } from '@heroicons/vue/24/outline'
-import { strategiesApi } from '../services/strategiesApi'
 
 export default {
   name: 'BacktestingNavForm',
@@ -93,6 +93,13 @@ export default {
       default: false
     }
   },
+  setup() {
+    const timeframesComposable = inject('timeframes')
+    
+    return {
+      timeframesComposable
+    }
+  },
   data() {
     return {
       formData: {
@@ -102,20 +109,19 @@ export default {
         dateFrom: '',
         dateTo: ''
       },
-      isSourceValid: false,
-      timeframes: []
+      isSourceValid: false
     }
   },
   computed: {
     timeframeDatalistId() {
       return 'backtesting-timeframe-list'
     },
+    timeframes() {
+      return this.timeframesComposable.timeframesList
+    },
     isTimeframeValid() {
       return this.formData.timeframe && this.timeframes.includes(this.formData.timeframe)
     }
-  },
-  mounted() {
-    this.loadTimeframes()
   },
   watch: {
     formData: {
@@ -127,15 +133,6 @@ export default {
     }
   },
   methods: {
-    async loadTimeframes() {
-      try {
-        this.timeframes = await strategiesApi.getTimeframes()
-      } catch (error) {
-        console.error('Failed to load timeframes:', error)
-        // Fallback to common timeframes if API fails
-        this.timeframes = ['1s', '1m', '3m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '1w']
-      }
-    },
     handleAction() {
       if (this.isRunning) {
         this.$emit('stop')

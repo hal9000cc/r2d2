@@ -65,7 +65,9 @@ export default {
   setup() {
     // Inject backtesting results from parent
     const backtestingResults = inject('backtestingResults', null)
-    return { backtestingResults }
+    // Inject global timeframes composable
+    const timeframesComposable = inject('timeframes')
+    return { backtestingResults, timeframesComposable }
   },
   data() {
     return {
@@ -1014,6 +1016,7 @@ export default {
           const isStartVisible = startTime >= visibleRange.from && startTime <= visibleRange.to
           const isEndVisible = endTime >= visibleRange.from && endTime <= visibleRange.to
           const crossesRange = startTime < visibleRange.from && endTime > visibleRange.to
+          
           if (!isStartVisible && !isEndVisible && !crossesRange) {
             // Deal is not visible, skip it
             return
@@ -1133,34 +1136,14 @@ export default {
     },
     
     /**
-     * Get timeframe in seconds
+     * Get timeframe in seconds using global timeframes dictionary
      */
     getTimeframeSeconds() {
-      if (!this.timeframe) {
+      if (!this.timeframe || !this.timeframesComposable) {
         return 0
       }
       
-      // Parse timeframe string (e.g., "1h", "5m", "1d")
-      const match = this.timeframe.match(/^(\d+)([smhd])$/)
-      if (!match) {
-        return 0
-      }
-      
-      const value = parseInt(match[1], 10)
-      const unit = match[2]
-      
-      switch (unit) {
-        case 's':
-          return value
-        case 'm':
-          return value * 60
-        case 'h':
-          return value * 3600
-        case 'd':
-          return value * 86400
-        default:
-          return 0
-      }
+      return this.timeframesComposable.getTimeframeSeconds(this.timeframe)
     },
     
     /**

@@ -22,7 +22,8 @@ async function request(url, options = {}) {
 }
 
 export const strategiesApi = {
-  // Get list of available timeframes
+  // Get dictionary of available timeframes with values in milliseconds
+  // Returns: { '1s': 1000, '1m': 60000, '1h': 3600000, ... }
   async getTimeframes() {
     return request('/api/v1/common/timeframes')
   },

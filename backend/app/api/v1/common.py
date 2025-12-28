@@ -13,30 +13,29 @@ router = APIRouter(prefix="/api/v1/common", tags=["common"])
 source_symbols: Dict[str, List[str]] = {}
 
 
-def get_timeframes_list() -> List[str]:
+def get_timeframes_dict() -> Dict[str, int]:
     """
-    Get list of timeframes from Timeframe class.
+    Get dictionary of timeframes from Timeframe class.
     Selects all attributes that start with 't' and have numeric type.
-    Returns names without 't' prefix (e.g., '1m' instead of 't1m'),
-    sorted by value in ascending order.
+    Returns dict with names without 't' prefix as keys and values in milliseconds.
+    Example: { "1s": 1000, "1m": 60000, "1h": 3600000, ... }
     """
-    timeframes = []
+    timeframes = {}
     for attr_name in dir(Timeframe):
         if attr_name.startswith('t') and not attr_name.startswith('__'):
             attr_value = getattr(Timeframe, attr_name)
             if isinstance(attr_value, (int, float)):
-                # Store tuple (value, name) for sorting by value
-                timeframes.append((attr_value, attr_name[1:]))
-    # Sort by value (first element of tuple) and return only names
-    return [name for _, name in sorted(timeframes, key=lambda x: x[0])]
+                # Store name without 't' prefix and value in milliseconds
+                timeframes[attr_name[1:]] = int(attr_value)
+    return timeframes
 
 
-@router.get("/timeframes", response_model=List[str])
+@router.get("/timeframes", response_model=Dict[str, int])
 async def get_timeframes():
     """
-    Get list of available timeframes
+    Get dictionary of available timeframes with their values in milliseconds
     """
-    return get_timeframes_list()
+    return get_timeframes_dict()
 
 
 @router.get("/sources", response_model=List[str])
