@@ -287,7 +287,7 @@
           </Tabs>
         </ResizablePanel>
         <Tabs
-          :tabs="tabs"
+          :tabs="tabsWithBadge"
           default-tab="deals"
           @tab-change="handleTabChange"
         >
@@ -412,6 +412,10 @@ const tabs = [
   { id: 'messages', label: 'Messages' }
 ]
 const activeTab = ref('deals')
+
+// Unread important messages counter
+const unreadImportantMessagesCount = ref(0)
+const lastProcessedMessageIndex = ref(-1) // Track last processed message index
 const activeChartTab = ref('strategy')
 
 // Strategy state
@@ -646,6 +650,19 @@ const hasMessages = computed(() => {
   // Check if there are any messages (local or from WebSocket)
   return messagesCount.value > 0
 })
+
+// Computed: tabs with unread badge for Messages tab
+const tabsWithBadge = computed(() => {
+  return tabs.map(tab => {
+    if (tab.id === 'messages' && unreadImportantMessagesCount.value > 0) {
+      return {
+        ...tab,
+        badge: unreadImportantMessagesCount.value
+      }
+    }
+    return tab
+  })
+})
 // Watch strategy code changes for auto-save
 watch(strategyCode, (newValue, oldValue) => {
   // Mark as having unsaved changes when code is modified
@@ -662,6 +679,43 @@ watch(strategyCode, (newValue, oldValue) => {
     }, 5000)
   }
 })
+
+// Watch activeTab to reset unread counter when Messages tab is opened
+watch(activeTab, (newTab) => {
+  if (newTab === 'messages') {
+    // Reset counter and update last processed index when Messages tab is opened
+    unreadImportantMessagesCount.value = 0
+    lastProcessedMessageIndex.value = allMessages.value.length - 1
+  }
+})
+
+// Watch allMessages to count new important messages when Messages tab is closed
+watch(allMessages, (newMessages, oldMessages) => {
+  // Handle case when messages are cleared (array becomes shorter)
+  if (newMessages.length < oldMessages.length) {
+    // Reset counter and index when messages are cleared
+    unreadImportantMessagesCount.value = 0
+    lastProcessedMessageIndex.value = -1
+  }
+  
+  // Only count if Messages tab is not active
+  if (activeTab.value !== 'messages') {
+    // Process only new messages (after lastProcessedMessageIndex)
+    const startIndex = lastProcessedMessageIndex.value + 1
+    for (let i = startIndex; i < newMessages.length; i++) {
+      const message = newMessages[i]
+      // Check if message is important (error or critical level)
+      if (message.level === 'error' || message.level === 'critical') {
+        unreadImportantMessagesCount.value++
+      }
+    }
+    // Update last processed index
+    lastProcessedMessageIndex.value = newMessages.length - 1
+  } else {
+    // If Messages tab is active, just update last processed index without counting
+    lastProcessedMessageIndex.value = newMessages.length - 1
+  }
+}, { deep: true })
 
 // Watch for backtesting progress to load results
 watch([backtestProgressCurrentTime, backtestProgressResultId], async ([newCurrentTime, newResultId], [oldCurrentTime, oldResultId]) => {
@@ -733,6 +787,9 @@ onMounted(() => {
   loadChartSettings()
   // Add click outside listener for settings dropdown
   document.addEventListener('click', handleClickOutsideSettings)
+  
+  // Initialize last processed message index
+  lastProcessedMessageIndex.value = allMessages.value.length - 1
 })
 
 onBeforeUnmount(() => {

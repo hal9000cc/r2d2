@@ -9,7 +9,10 @@
           :class="{ active: activeTab === tab.id }"
           @click="selectTab(tab.id)"
         >
-          {{ tab.label }}
+          <span class="tab-label">{{ tab.label }}</span>
+          <span v-if="tab.badge && tab.badge > 0" class="tab-badge">
+            ({{ tab.badge }})
+          </span>
         </button>
       </div>
       <div v-if="strategyName && strategyName.length > 0" class="strategy-name-wrapper">
@@ -113,6 +116,17 @@ export default {
   color: var(--color-primary);
   border-bottom-color: var(--color-primary);
   background-color: var(--bg-primary);
+}
+
+.tab-label {
+  display: inline-block;
+}
+
+.tab-badge {
+  display: inline-block;
+  color: var(--color-danger);
+  margin-left: 4px;
+  font-weight: var(--font-weight-semibold);
 }
 
 .strategy-name-wrapper {
