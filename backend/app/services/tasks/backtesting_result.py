@@ -146,18 +146,11 @@ class BackTestingResults:
                 score = int(trade.time.astype('datetime64[ms]').astype(int))
                 trades_to_save[member] = score
             
-            # Save all trades to single key
-            if trades_to_save:
-                client.zadd(trades_key, trades_to_save)
+            # Prepare deals data
+            deals_key = f"{result_key_prefix}:{result_id}:deals"
+            deals_to_save = {}
             
-            # Update trades start index
-            self._trades_start_index = current_trades_size
-            
-            # Save deals for collected deal_id
             if deal_ids:
-                deals_key = f"{result_key_prefix}:{result_id}:deals"
-                deals_to_save = {}
-                
                 for deal in broker.deals:
                     if deal.deal_id in deal_ids:
                         # Format member: deal_id|type|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed
@@ -175,17 +168,15 @@ class BackTestingResults:
                         # Use deal_id as score (convert to int if needed)
                         score = int(deal.deal_id)
                         deals_to_save[member] = score
-                
-                if deals_to_save:
-                    client.zadd(deals_key, deals_to_save)
-                    logger.debug(f"Saved {len(deals_to_save)} deals to {deals_key}")
             
-            # Save statistics (update each time)
+            # Prepare statistics data
+            stats_key = f"{result_key_prefix}:{result_id}:stats"
+            stats_json = None
+            
             if broker.stats:
                 # Calculate additional statistics before saving
                 broker.stats.calc_stat()
                 
-                stats_key = f"{result_key_prefix}:{result_id}:stats"
                 # Create stats dict excluding internal fields
                 stats_dict = {
                     'initial_equity_usd': broker.stats.initial_equity_usd,
@@ -207,10 +198,35 @@ class BackTestingResults:
                     'profit_short': broker.stats.profit_short,
                 }
                 stats_json = json.dumps(stats_dict)
-                client.set(stats_key, stats_json)
-                logger.debug(f"Saved statistics to {stats_key}")
             
-            logger.debug(f"Saved {len(new_trades)} new trades")
+            # Use pipeline to execute all write operations in one batch
+            pipeline = client.pipeline()
+            
+            # Add trades to pipeline
+            if trades_to_save:
+                pipeline.zadd(trades_key, trades_to_save)
+            
+            # Add deals to pipeline
+            if deals_to_save:
+                pipeline.zadd(deals_key, deals_to_save)
+            
+            # Add statistics to pipeline
+            if stats_json:
+                pipeline.set(stats_key, stats_json)
+            
+            # Execute all operations in one batch
+            pipeline.execute()
+            
+            # Update trades start index only after successful save
+            self._trades_start_index = current_trades_size
+            
+            # Log operations
+            if trades_to_save:
+                logger.debug(f"Saved {len(new_trades)} new trades")
+            if deals_to_save:
+                logger.debug(f"Saved {len(deals_to_save)} deals to {deals_key}")
+            if stats_json:
+                logger.debug(f"Saved statistics to {stats_key}")
         except Exception as e:
             logger.error(f"Failed to save results: {str(e)}")
             raise RuntimeError(f"Failed to save results: {str(e)}") from e
