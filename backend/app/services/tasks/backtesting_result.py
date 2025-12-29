@@ -99,10 +99,13 @@ class BackTestingResults:
         return datetime.fromtimestamp(dt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
     
     
-    def put_result(self) -> None:
+    def put_result(self, is_finish: bool = False) -> None:
         """
         Save new trades and deals to Redis.
         Checks trades list size, saves new trades, collects deal_id, saves deals.
+        
+        Args:
+            is_finish: If True, marks the backtesting result as completed. Default: False.
         
         Raises:
             RuntimeError: If broker was not provided during initialization or save operation fails
@@ -196,6 +199,7 @@ class BackTestingResults:
                     'profit_gross': broker.stats.profit_gross,
                     'profit_long': broker.stats.profit_long,
                     'profit_short': broker.stats.profit_short,
+                    'completed': is_finish,
                 }
                 stats_json = json.dumps(stats_dict)
             

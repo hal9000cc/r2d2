@@ -718,6 +718,119 @@ watch(allMessages, (newMessages, oldMessages) => {
   }
 }, { deep: true })
 
+/**
+ * Load backtesting results from API
+ * @param {string|null} fromTime - Start time for loading (ISO string or null for all)
+ * @returns {Promise<boolean>} True if loaded successfully, false otherwise
+ */
+async function loadBacktestingResults(fromTime = null) {
+  if (!currentTaskId.value || !resultId.value) {
+    return false
+  }
+  
+  try {
+    ensureConnection()
+    const response = await backtestingApi.getBacktestingResults(
+      currentTaskId.value,
+      resultId.value,
+      fromTime || resultsRelevanceTime.value
+    )
+    
+    if (response.success && response.data) {
+      // Add trades (avoid duplicates)
+      let addedTrades = []
+      if (response.data.trades && response.data.trades.length > 0) {
+        addedTrades = addTrades(response.data.trades)
+      }
+      
+      // Update deals (add or update)
+      if (response.data.deals && response.data.deals.length > 0) {
+        updateDeals(response.data.deals)
+      }
+      
+      // Update statistics
+      if (response.data.stats) {
+        updateStats(response.data.stats)
+      }
+      
+      // Update relevance time based on maximum trade_id from added trades
+      if (addedTrades.length > 0) {
+        // Find maximum trade_id
+        const maxTradeId = Math.max(...addedTrades.map(t => parseInt(t.trade_id)))
+        // Find trade with maximum trade_id
+        const maxTrade = addedTrades.find(t => parseInt(t.trade_id) === maxTradeId)
+        if (maxTrade && maxTrade.time) {
+          // Add 1 second to the time
+          const maxTime = new Date(maxTrade.time)
+          maxTime.setSeconds(maxTime.getSeconds() + 1)
+          setRelevanceTime(maxTime.toISOString())
+        }
+      }
+      
+      return true
+    } else if (!response.success) {
+      console.error('Failed to load backtesting results:', response.error_message)
+      addLocalMessage({
+        level: 'error',
+        message: `Failed to load backtesting results: ${response.error_message || 'Unknown error'}`
+      })
+      return false
+    }
+    return false
+  } catch (error) {
+    console.error('Error loading backtesting results:', error)
+    addLocalMessage({
+      level: 'error',
+      message: `Error loading backtesting results: ${error.message || 'Unknown error'}`
+    })
+    return false
+  }
+}
+
+/**
+ * Validate that backtesting results are complete
+ * Checks completed flag and counts match
+ */
+function validateResultsCompleteness() {
+  // Check if stats are loaded
+  if (!stats.value) {
+    addLocalMessage({
+      level: 'error',
+      message: 'Backtesting results are incomplete: statistics not loaded'
+    })
+    return false
+  }
+  
+  // Check completed flag
+  if (stats.value.completed !== true) {
+    addLocalMessage({
+      level: 'error',
+      message: 'Backtesting results are incomplete: final results not saved to Redis'
+    })
+    return false
+  }
+  
+  // Check trades count
+  if (tradesCount.value !== stats.value.total_trades) {
+    addLocalMessage({
+      level: 'error',
+      message: `Backtesting results are incomplete: trades count mismatch (loaded: ${tradesCount.value}, expected: ${stats.value.total_trades})`
+    })
+    return false
+  }
+  
+  // Check deals count
+  if (dealsCount.value !== stats.value.total_deals) {
+    addLocalMessage({
+      level: 'error',
+      message: `Backtesting results are incomplete: deals count mismatch (loaded: ${dealsCount.value}, expected: ${stats.value.total_deals})`
+    })
+    return false
+  }
+  
+  return true
+}
+
 // Watch for backtesting progress to load results
 watch([backtestProgressCurrentTime, backtestProgressResultId], async ([newCurrentTime, newResultId], [oldCurrentTime, oldResultId]) => {
   // Only load results if:
@@ -741,37 +854,49 @@ watch([backtestProgressCurrentTime, backtestProgressResultId], async ([newCurren
   }
   
   // Load results from last relevance time to current time
-  try {
-    ensureConnection()
-    const response = await backtestingApi.getBacktestingResults(
-      currentTaskId.value,
-      resultId.value,
-      resultsRelevanceTime.value
-    )
+  await loadBacktestingResults()
+})
+
+// Watch for backtesting completion to load and validate final results
+watch(backtestProgressState, async (newState) => {
+  // Only process when backtesting is completed
+  if (newState !== 'completed') {
+    return
+  }
+  
+  // Check result_id matches
+  if (!backtestProgressResultId.value || !resultId.value || backtestProgressResultId.value !== resultId.value) {
+    return
+  }
+  
+  // Check if we already have results loaded
+  const hasResults = stats.value !== null
+  
+  if (hasResults) {
+    // Check if results are complete
+    const isComplete = stats.value.completed === true && 
+                       tradesCount.value === stats.value.total_trades &&
+                       dealsCount.value === stats.value.total_deals
     
-    if (response.success && response.data) {
-      // Add trades (avoid duplicates)
-      if (response.data.trades && response.data.trades.length > 0) {
-        addTrades(response.data.trades)
-      }
-      
-      // Update deals (add or update)
-      if (response.data.deals && response.data.deals.length > 0) {
-        updateDeals(response.data.deals)
-      }
-      
-      // Update statistics
-      if (response.data.stats) {
-        updateStats(response.data.stats)
-      }
-      
-      // Update relevance time to current time
-      setRelevanceTime(newCurrentTime)
-    } else if (!response.success) {
-      console.error('Failed to load backtesting results:', response.error_message)
+    if (isComplete) {
+      // Results are already complete, just validate
+      validateResultsCompleteness()
+      return
     }
-  } catch (error) {
-    console.error('Error loading backtesting results:', error)
+    // Results exist but are incomplete - need to load missing data
+  }
+  
+  // Load results (either we don't have them or they're incomplete)
+  const loaded = await loadBacktestingResults()
+  
+  if (loaded) {
+    // Validate completeness after loading
+    validateResultsCompleteness()
+  } else {
+    // Loading failed, but try to validate what we have (if any)
+    if (stats.value) {
+      validateResultsCompleteness()
+    }
   }
 })
 

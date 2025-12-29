@@ -372,7 +372,7 @@ class BrokerBacktesting(Broker):
         elif self.equity_symbol < 0:
             self.buy(abs(self.equity_symbol))
     
-    def update_state(self, results: BackTestingResults) -> None:
+    def update_state(self, results: BackTestingResults, is_finish: bool = False) -> None:
         """
         Update task state and progress.
         Checks if task is still running by reading isRunning flag from Redis.
@@ -381,6 +381,7 @@ class BrokerBacktesting(Broker):
         
         Args:
             results: BackTestingResults instance to save results to Redis
+            is_finish: If True, marks the backtesting result as completed. Default: False.
         
         Raises:
             RuntimeError: If task is stopped (isRunning == False) or duplicate worker detected
@@ -400,6 +401,9 @@ class BrokerBacktesting(Broker):
         date_start_iso = datetime64_to_iso(self.date_start) if self.date_start is not None else None
         current_time_iso = datetime64_to_iso(self.current_time) if self.current_time is not None else None
         
+        # Save results to Redis
+        results.put_result(is_finish=is_finish)
+        
         self.task.send_message(
             MessageType.EVENT, 
             {
@@ -410,9 +414,6 @@ class BrokerBacktesting(Broker):
                 "current_time": current_time_iso
             }
         )
-        
-        # Save results to Redis
-        results.put_result()
         
         # Load task from Redis to get current state
         current_task = self.task.load()
@@ -570,4 +571,4 @@ class BrokerBacktesting(Broker):
                 
         # Set current_time to date_end to ensure progress is 100% for final update
         self.current_time = self.date_end
-        self.update_state(results) 
+        self.update_state(results, is_finish=True) 

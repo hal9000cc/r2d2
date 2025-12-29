@@ -55,10 +55,11 @@ export function useBacktestingResults() {
   /**
    * Add new trades (avoid duplicates by trade_id)
    * @param {Array} newTrades - Array of trade objects
+   * @returns {Array} Array of actually added trades (after filtering duplicates)
    */
   function addTrades(newTrades) {
     if (!newTrades || newTrades.length === 0) {
-      return
+      return []
     }
     
     // Create a Set of existing trade IDs for fast lookup
@@ -83,6 +84,8 @@ export function useBacktestingResults() {
       // Trigger reactivity by creating a new Map
       tradesByDealId.value = new Map(tradesByDealId.value)
     }
+    
+    return uniqueTrades
   }
   
   /**
