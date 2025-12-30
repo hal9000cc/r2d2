@@ -137,15 +137,6 @@ export default {
         })
       }
     },
-    source() {
-      this.resetChart()
-    },
-    symbol() {
-      this.resetChart()
-    },
-    timeframe() {
-      this.resetChart()
-    },
     showTradeMarkers() {
       this.updateTradeMarkers()
     },

@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import { reactive, toRef } from 'vue'
 import { strategiesApi } from '@/services/strategiesApi'
 
 // Global state for timeframes
@@ -70,12 +70,12 @@ export function useTimeframes() {
   }
 
   return {
-    // State
-    timeframes: state.timeframes,
-    timeframesList: state.timeframesList,
-    isLoading: state.isLoading,
-    hasError: state.hasError,
-    errorMessage: state.errorMessage,
+    // State - use toRef to maintain reactivity
+    timeframes: toRef(state, 'timeframes'),
+    timeframesList: toRef(state, 'timeframesList'),
+    isLoading: toRef(state, 'isLoading'),
+    hasError: toRef(state, 'hasError'),
+    errorMessage: toRef(state, 'errorMessage'),
     
     // Methods
     loadTimeframes,

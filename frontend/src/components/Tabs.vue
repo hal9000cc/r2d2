@@ -61,6 +61,25 @@ export default {
       activeTab: this.defaultTab || (this.tabs.length > 0 ? this.tabs[0].id : null)
     }
   },
+  watch: {
+    tabs: {
+      handler(newTabs) {
+        // If current active tab is not in new tabs, switch to first tab
+        if (newTabs.length > 0 && !newTabs.find(tab => tab.id === this.activeTab)) {
+          this.activeTab = newTabs[0].id
+          this.$emit('tab-change', this.activeTab)
+        }
+      },
+      immediate: false
+    },
+    defaultTab(newDefaultTab) {
+      // Update active tab if defaultTab changes
+      if (newDefaultTab && this.tabs.find(tab => tab.id === newDefaultTab)) {
+        this.activeTab = newDefaultTab
+        this.$emit('tab-change', this.activeTab)
+      }
+    }
+  },
   methods: {
     selectTab(tabId) {
       this.activeTab = tabId

@@ -25,7 +25,7 @@
         v-model="formData.timeframe"
         type="text"
         class="form-input"
-        :class="{ 'invalid': formData.timeframe && !isTimeframeValid }"
+        :class="{ 'invalid': formData.timeframe && timeframes.length > 0 && !isTimeframeValid }"
         :list="timeframeDatalistId"
         placeholder="Type to search timeframe..."
         :disabled="disabled"
@@ -96,8 +96,20 @@ export default {
   setup() {
     const timeframesComposable = inject('timeframes')
     
+    // Create a computed that tracks the reactive timeframesList
+    // timeframesList is now a ref (via toRef), so access .value
+    const timeframesList = computed(() => {
+      if (!timeframesComposable) {
+        return []
+      }
+      // Access the ref value to ensure reactivity tracking
+      const list = timeframesComposable.timeframesList?.value || []
+      return Array.isArray(list) ? list : []
+    })
+    
     return {
-      timeframesComposable
+      timeframesComposable,
+      timeframesList
     }
   },
   data() {
@@ -117,10 +129,14 @@ export default {
       return 'backtesting-timeframe-list'
     },
     timeframes() {
-      return this.timeframesComposable.timeframesList
+      // Use the reactive ref from setup
+      return this.timeframesList
     },
     isTimeframeValid() {
-      return this.formData.timeframe && this.timeframes.includes(this.formData.timeframe)
+      if (!this.formData.timeframe || !this.timeframes.length) {
+        return false
+      }
+      return this.timeframes.includes(this.formData.timeframe)
     }
   },
   watch: {

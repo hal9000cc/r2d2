@@ -277,7 +277,7 @@
                 :clear-chart="clearChartFlag"
                 :show-trade-markers="showTradeMarkers"
                 :show-deal-lines="showDealLines"
-                @chart-cleared="clearChartFlag = false"
+                @chart-cleared="handleChartCleared"
                 @quotes-load-error="handleQuotesLoadError"
                 @chart-message="handleChartMessage"
                 @log-scale-changed="isLogScale = $event"
@@ -402,10 +402,14 @@ const resultsHeight = ref(null)
 const resultsMaxHeight = ref(null)
 
 // Tabs
-const chartTabs = [
-  { id: 'strategy', label: 'Strategy' },
-  { id: 'chart', label: 'Chart' }
-]
+const chartTabs = computed(() => {
+  const tabs = [{ id: 'strategy', label: 'Strategy' }]
+  // Only show Chart tab if strategy is selected
+  if (currentStrategyFilePath.value) {
+    tabs.push({ id: 'chart', label: 'Chart' })
+  }
+  return tabs
+})
 const tabs = [
   { id: 'deals', label: 'Deals' },
   { id: 'trades', label: 'Trades' },
@@ -1051,6 +1055,11 @@ function handleResultsResize(size) {
 }
 
 function handleChartTabChange(tabId) {
+  // If chart tab is selected but strategy is closed, switch back to strategy
+  if (tabId === 'chart' && !currentStrategyFilePath.value) {
+    activeChartTab.value = 'strategy'
+    return
+  }
   activeChartTab.value = tabId
 }
 
@@ -1583,6 +1592,9 @@ async function handleCloseStrategy() {
   selectMode.value = false
   selectedTasksCount.value = 0
   
+  // Reset chart tab to strategy (show task list)
+  activeChartTab.value = 'strategy'
+  
   // Clear messages when closing strategy
   clearAllMessages()
   
@@ -1631,6 +1643,10 @@ function handleChartError(errorMessage) {
   }
 }
 
+function handleChartCleared() {
+  clearChartFlag.value = false
+}
+
 // clearMessages is imported from composable
 // Use clearAllMessages if you need to clear both local and WebSocket messages
 async function handleStrategyCreated(strategyName) {
@@ -1672,6 +1688,11 @@ async function handleTaskSelected(task) {
   // 5. Store current task info
   currentTaskId.value = freshTask.id
   currentTask.value = freshTask
+  
+  // Clear chart when switching to a different task (new task may have different parameters)
+  clearChartFlag.value = false
+  await nextTick()
+  clearChartFlag.value = true
 
   // 6. Update form with task data
   if (navFormRef.value) {
@@ -2018,6 +2039,17 @@ async function handleStart(formData) {
   // Save current task before starting backtest
   try {
     await saveAll()
+    // Update currentTask with formData to ensure chart gets correct timeframe immediately
+    if (currentTask.value) {
+      currentTask.value = {
+        ...currentTask.value,
+        source: formData.source,
+        symbol: formData.symbol,
+        timeframe: formData.timeframe,
+        dateFrom: formData.dateFrom,
+        dateTo: formData.dateTo
+      }
+    }
   } catch (error) {
     console.error('Failed to save before starting backtest:', error)
     addLocalMessage({
@@ -2028,6 +2060,10 @@ async function handleStart(formData) {
   }
 
   // Clear chart before starting new backtest
+  // Reset flag to false first to ensure watcher triggers on next set to true
+  clearChartFlag.value = false
+  // Use nextTick to ensure the false value is processed before setting to true
+  await nextTick()
   clearChartFlag.value = true
   
   // Clear results before starting new backtest
