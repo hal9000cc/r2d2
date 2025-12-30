@@ -561,7 +561,11 @@ def process_backtesting_task(task: Task, result_id: str) -> None:
     strategy.broker = broker
     broker.run(task)
     
-    task.send_message(MessageType.EVENT, {"event": "backtesting_completed"})
+    # Send completion message with date_end
+    task.send_message(MessageType.EVENT, {
+        "event": "backtesting_completed",
+        "date_end": task.dateEnd
+    })
     
     message = f"Backtesting for task {task.id} completed successfully"
     task.message(message)

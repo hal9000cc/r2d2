@@ -30,6 +30,7 @@ export function useBacktesting(taskId) {
   const backtestProgressErrorType = ref(null) // 'error' | 'cancel' | null
   const backtestProgressDateStart = ref(null) // ISO string: date_start from backtesting_progress
   const backtestProgressCurrentTime = ref(null) // ISO string: current_time from backtesting_progress
+  const backtestProgressDateEnd = ref(null) // ISO string: date_end from backtesting_completed
   const backtestProgressResultId = ref(null) // Result ID from backtesting_started/backtesting_progress
   
   // Computed: combined messages sorted by timestamp
@@ -248,6 +249,11 @@ export function useBacktesting(taskId) {
               isBacktestingRunning.value = false
               backtestProgressState.value = 'completed'
               backtestProgress.value = 100
+              
+              // Save date_end from completion message
+              if (data.date_end) {
+                backtestProgressDateEnd.value = data.date_end
+              }
             }
           }
         } catch (e) {
@@ -367,6 +373,7 @@ export function useBacktesting(taskId) {
     backtestProgressErrorType.value = null
     backtestProgressDateStart.value = null
     backtestProgressCurrentTime.value = null
+    backtestProgressDateEnd.value = null
     backtestProgressResultId.value = null
   }
   
@@ -405,6 +412,7 @@ export function useBacktesting(taskId) {
     backtestProgressErrorType,
     backtestProgressDateStart,
     backtestProgressCurrentTime,
+    backtestProgressDateEnd,
     backtestProgressResultId,
     
     // Methods

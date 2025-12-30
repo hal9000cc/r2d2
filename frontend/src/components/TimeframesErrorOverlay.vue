@@ -5,7 +5,7 @@
       <h2>Failed to Load Application Data</h2>
       <p class="error-message">{{ message }}</p>
       <p class="error-description">
-        The application cannot start without loading timeframes configuration.
+        The application cannot start without loading required configuration data.
         Please check your internet connection and try again.
       </p>
       <button @click="onRetry" class="retry-button" :disabled="isRetrying">

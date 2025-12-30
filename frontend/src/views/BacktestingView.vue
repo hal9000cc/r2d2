@@ -313,7 +313,7 @@
             <DataTable 
               ref="tradesTableRef"
               :columns="tradesColumns"
-              :data="trades"
+              :data="allTrades"
               row-key="trade_id"
               :row-class="getTradesRowClass"
               empty-message="No trades yet"
@@ -450,10 +450,15 @@ const clearChartFlag = ref(false) // Flag to trigger chart clearing
 // Computed: backtesting progress data for chart
 const backtestingProgressData = computed(() => {
   if (backtestProgressDateStart.value && backtestProgressCurrentTime.value) {
-    return {
+    const data = {
       date_start: backtestProgressDateStart.value,
       current_time: backtestProgressCurrentTime.value
     }
+    // Add date_end if available (from backtesting_completed)
+    if (backtestProgressDateEnd.value) {
+      data.date_end = backtestProgressDateEnd.value
+    }
+    return data
   }
   return null
 })
@@ -477,6 +482,7 @@ const {
   backtestProgressErrorType,
   backtestProgressDateStart,
   backtestProgressCurrentTime,
+  backtestProgressDateEnd,
   backtestProgressResultId,
   clearMessages,
   clearAllMessages,
@@ -495,6 +501,7 @@ const {
   deals,
   tradesCount,
   dealsCount,
+  allTrades,
   stats,
   clearResults,
   setResultId,
@@ -502,7 +509,8 @@ const {
   addTrades,
   updateDeals,
   updateStats,
-  getAllDeals
+  getAllDeals,
+  getAllTrades
 } = backtestingResults
 
 // Provide backtesting results to child components
@@ -2260,6 +2268,8 @@ async function handleSaveStrategy() {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .backtest-progress {
@@ -2273,6 +2283,7 @@ async function handleSaveStrategy() {
   background-color: var(--bg-secondary);
   font-size: var(--font-size-sm);
   color: var(--text-secondary);
+  flex-shrink: 0;
 }
 
 .backtest-progress.error-state {
@@ -2323,7 +2334,8 @@ async function handleSaveStrategy() {
   display: flex;
   flex-direction: row;
   width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 

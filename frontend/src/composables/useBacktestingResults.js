@@ -12,8 +12,8 @@ export function useBacktestingResults() {
   // Time of last results update (ISO string)
   const resultsRelevanceTime = ref(null)
   
-  // Trades array (trades never change once added)
-  const trades = ref([])
+  // Trades Map (trades never change once added)
+  const trades = ref(new Map())
   
   // Deals Map (deals can be updated)
   const deals = ref(new Map())
@@ -30,7 +30,7 @@ export function useBacktestingResults() {
   function clearResults() {
     resultId.value = null
     resultsRelevanceTime.value = null
-    trades.value = []
+    trades.value = new Map()
     deals.value = new Map()
     tradesByDealId.value = new Map()
     stats.value = null
@@ -62,17 +62,18 @@ export function useBacktestingResults() {
       return []
     }
     
-    // Create a Set of existing trade IDs for fast lookup
-    const existingTradeIds = new Set(trades.value.map(t => t.trade_id))
+    // Filter out duplicates and add unique trades to Map
+    const uniqueTrades = []
+    newTrades.forEach(trade => {
+      const tradeIdStr = String(trade.trade_id)
+      if (!trades.value.has(tradeIdStr)) {
+        trades.value.set(tradeIdStr, trade)
+        uniqueTrades.push(trade)
+      }
+    })
     
-    // Filter out duplicates
-    const uniqueTrades = newTrades.filter(trade => !existingTradeIds.has(trade.trade_id))
-    
-    // Add unique trades
+    // Update tradesByDealId index
     if (uniqueTrades.length > 0) {
-      trades.value = [...trades.value, ...uniqueTrades]
-      
-      // Update tradesByDealId index
       uniqueTrades.forEach(trade => {
         const dealId = trade.deal_id
         if (!tradesByDealId.value.has(dealId)) {
@@ -81,7 +82,8 @@ export function useBacktestingResults() {
         tradesByDealId.value.get(dealId).push(trade)
       })
       
-      // Trigger reactivity by creating a new Map
+      // Trigger reactivity by creating new Maps
+      trades.value = new Map(trades.value)
       tradesByDealId.value = new Map(tradesByDealId.value)
     }
     
@@ -125,14 +127,16 @@ export function useBacktestingResults() {
    * @returns {Array} Filtered trades
    */
   function getTradesByDateRange(fromISO, toISO) {
+    const allTrades = Array.from(trades.value.values())
+    
     if (!fromISO || !toISO) {
-      return trades.value
+      return allTrades
     }
     
     const fromTime = new Date(fromISO).getTime()
     const toTime = new Date(toISO).getTime()
     
-    return trades.value.filter(trade => {
+    return allTrades.filter(trade => {
       const tradeTime = new Date(trade.time).getTime()
       return tradeTime >= fromTime && tradeTime <= toTime
     })
@@ -187,12 +191,21 @@ export function useBacktestingResults() {
     }
     // Convert tradeId to string for comparison (trade_id might be string or number)
     const tradeIdStr = String(tradeId)
-    return trades.value.find(trade => String(trade.trade_id) === tradeIdStr) || null
+    return trades.value.get(tradeIdStr) || null
+  }
+  
+  /**
+   * Get all trades as array
+   * @returns {Array} All trades
+   */
+  function getAllTrades() {
+    return Array.from(trades.value.values())
   }
   
   // Computed properties
-  const tradesCount = computed(() => trades.value.length)
+  const tradesCount = computed(() => trades.value.size)
   const dealsCount = computed(() => deals.value.size)
+  const allTrades = computed(() => Array.from(trades.value.values()))
   
   return {
     // State
@@ -206,6 +219,7 @@ export function useBacktestingResults() {
     // Computed
     tradesCount,
     dealsCount,
+    allTrades,
     
     // Methods
     clearResults,
@@ -218,7 +232,8 @@ export function useBacktestingResults() {
     getDealsByIds,
     getAllDeals,
     getTradesForDeal,
-    getTradeById
+    getTradeById,
+    getAllTrades
   }
 }
 

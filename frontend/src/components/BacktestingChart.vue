@@ -23,6 +23,13 @@ const TRADE_SELL_COLOR = '#8b1f1a' // Darker red for sell markers
 // Date marker color
 const DATE_MARKER_COLOR = '#1976D2' // Blue color for date marker
 
+// Chart grid colors
+const GRID_LINE_COLOR = '#e0e0e0' // Gray color for grid lines
+
+// Candlestick colors
+const CANDLESTICK_UP_COLOR = '#26a69a'   // Green color for bullish candles
+const CANDLESTICK_DOWN_COLOR = '#ef5350' // Red color for bearish candles
+
 export default {
   name: 'BacktestingChart',
   props: {
@@ -111,6 +118,13 @@ export default {
         if (newProgress && newProgress.date_start && newProgress.current_time) {
           this.handleBacktestingProgress(newProgress)
         }
+        // Handle date_end from backtesting_completed
+        if (newProgress && newProgress.date_end) {
+          const dateEnd = this.isoToUnix(newProgress.date_end)
+          if (dateEnd) {
+            this.backtestingDateEnd = dateEnd
+          }
+        }
       },
       immediate: true,
       deep: true
@@ -169,10 +183,10 @@ export default {
         },
         grid: {
           vertLines: {
-            color: 'var(--border-color, #e0e0e0)'
+            color: GRID_LINE_COLOR
           },
           horzLines: {
-            color: 'var(--border-color, #e0e0e0)'
+            color: GRID_LINE_COLOR
           }
         },
         width: this.$refs.chartContainer.clientWidth,
@@ -186,11 +200,11 @@ export default {
 
       // Create candlestick series
       this.candlestickSeries = this.chart.addSeries(CandlestickSeries, {
-        upColor: '#26a69a',
-        downColor: '#ef5350',
+        upColor: CANDLESTICK_UP_COLOR,
+        downColor: CANDLESTICK_DOWN_COLOR,
         borderVisible: false,
-        wickUpColor: '#26a69a',
-        wickDownColor: '#ef5350'
+        wickUpColor: CANDLESTICK_UP_COLOR,
+        wickDownColor: CANDLESTICK_DOWN_COLOR
       })
       
       // Create markers API for the series (lightweight-charts 5.x)
@@ -314,11 +328,6 @@ export default {
      * Handle backtesting progress update
      */
     handleBacktestingProgress(progress) {
-      // If chart is already initialized, ignore all subsequent progress messages
-      if (this.backtestingDateStart !== null) {
-        return
-      }
-      
       // Convert ISO strings to Unix timestamps
       const dateStart = progress.date_start ? this.isoToUnix(progress.date_start) : null
       const dateCurrent = progress.current_time ? this.isoToUnix(progress.current_time) : null
@@ -327,12 +336,16 @@ export default {
         return
       }
       
-      // Update backtesting bounds (only on first progress)
-      this.backtestingDateStart = dateStart
-      this.backtestingDateEnd = dateCurrent
-      
-      // Load initial data on first progress
-      this.loadInitialData()
+      // Initialize backtesting bounds on first progress
+      if (this.backtestingDateStart === null) {
+        this.backtestingDateStart = dateStart
+        this.backtestingDateEnd = dateCurrent
+        // Load initial data on first progress
+        this.loadInitialData()
+      } else {
+        // Update backtestingDateEnd on each progress message
+        this.backtestingDateEnd = dateCurrent
+      }
     },
     
     /**
@@ -1467,11 +1480,22 @@ export default {
         // Set data on chart
         this.candlestickSeries.setData(loadedQuotes)
         
-        // Calculate visible range as specified:
-        // from = visibleLength * LOAD_BARS_MULTIPLIER
-        // to = from + visibleLength
-        const rangeFrom = Math.max(0, Math.floor(selectedIndex - visibleLength / 2))
-        const rangeTo = Math.min(loadedQuotes.length, rangeFrom + visibleLength)
+        // Calculate visible range: try to center selectedIndex, but preserve visibleLength
+        // First, try to center the selected index
+        let rangeFrom = Math.floor(selectedIndex - visibleLength / 2)
+        let rangeTo = rangeFrom + visibleLength
+        
+        // If range goes beyond data bounds, adjust while preserving visibleLength
+        if (rangeFrom < 0) {
+          // Too close to start: align to start
+          rangeFrom = 0
+          rangeTo = Math.min(loadedQuotes.length, visibleLength)
+        } else if (rangeTo > loadedQuotes.length) {
+          // Too close to end: align to end
+          rangeTo = loadedQuotes.length + 5
+          rangeFrom = Math.max(0, rangeTo - visibleLength)
+        }
+        
         // Set visible logical range
         this.chart.timeScale().setVisibleLogicalRange({
           from: rangeFrom,
@@ -1480,11 +1504,36 @@ export default {
         
         // Handle date marker if requested
         if (showDateMarker) {
-          // Remove previous date marker if exists
-          this.removeDateMarker()
-          // Draw new date marker
-          this.drawDateMarker(timestamp)
+          // Find the bar for the timestamp (or closest bar) to set marker time
+          let markerTime = timestamp
+          let found = false
+          for (let i = 0; i < loadedQuotes.length; i++) {
+            if (loadedQuotes[i].time >= timestamp) {
+              markerTime = loadedQuotes[i].time
+              found = true
+              break
+            }
+          }
+          // If timestamp is after all bars, use last bar
+          if (!found && loadedQuotes.length > 0) {
+            markerTime = loadedQuotes[loadedQuotes.length - 1].time
+          }
+          // Set date marker timestamp (will be drawn by updateChartOthers)
+          this.dateMarkerTimestamp = markerTime
+        } else {
+          // Clear date marker if not requested
+          this.dateMarkerTimestamp = null
         }
+        
+        // Update trade markers and deal lines after a short delay
+        // This ensures the chart has finished adjusting the range
+        // updateChartOthers will also restore the date marker if dateMarkerTimestamp is set
+        setTimeout(() => {
+          const currentRange = this.chart.timeScale().getVisibleLogicalRange()
+          if (currentRange) {
+            this.updateChartOthers(currentRange)
+          }
+        }, 100)
       } finally {
         this.isUpdatingChart = false
       }
@@ -1545,42 +1594,23 @@ export default {
     /**
      * Remove date marker if exists
      */
-    removeDateMarker() {
-      if (!this.seriesMarkers || !this.dateMarkerTimestamp) {
-        return
-      }
-      
-      // Get current markers
-      const currentMarkers = this.seriesMarkers.markers() || []
-      
-      // Filter out date marker by timestamp and color
-      const filteredMarkers = currentMarkers.filter(marker => {
-        return !(marker.time === this.dateMarkerTimestamp && marker.color === DATE_MARKER_COLOR)
-      })
-      
-      // Set filtered markers
-      try {
-        this.seriesMarkers.setMarkers(filteredMarkers)
-        // Clear stored timestamp
-        this.dateMarkerTimestamp = null
-      } catch (error) {
-        // Silently ignore errors
-      }
-    },
-    
     /**
      * Get current date marker if exists
      * @returns {Object|null} Date marker object or null
      */
     getDateMarker() {
-      if (!this.seriesMarkers || !this.dateMarkerTimestamp) {
+      if (!this.dateMarkerTimestamp) {
         return null
       }
       
-      const currentMarkers = this.seriesMarkers.markers() || []
-      return currentMarkers.find(marker => 
-        marker.color === DATE_MARKER_COLOR && marker.time === this.dateMarkerTimestamp
-      ) || null
+      return {
+        time: this.dateMarkerTimestamp,
+        position: 'aboveBar',
+        color: DATE_MARKER_COLOR,
+        shape: 'arrowDown',
+        size: 3,
+        text: ''
+      }
     },
     
     /**

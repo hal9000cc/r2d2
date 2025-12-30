@@ -232,7 +232,7 @@ export default {
       if (index === 0) {
         container.scrollTo({
           top: 0,
-          behavior: 'smooth'
+          behavior: 'auto'
         })
         return
       }
@@ -257,7 +257,7 @@ export default {
         
         container.scrollTo({
           top: targetScrollTop,
-          behavior: 'smooth'
+          behavior: 'auto'
         })
       } else if (isBelow) {
         // Row is below visible area - scroll down
@@ -269,7 +269,7 @@ export default {
         
         container.scrollTo({
           top: targetScrollTop,
-          behavior: 'smooth'
+          behavior: 'auto'
         })
       }
       // If row is already visible, do nothing
