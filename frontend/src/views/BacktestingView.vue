@@ -761,18 +761,10 @@ async function loadBacktestingResults(fromTime = null) {
         updateStats(response.data.stats)
       }
       
-      // Update relevance time based on maximum trade_id from added trades
-      if (addedTrades.length > 0) {
-        // Find maximum trade_id
-        const maxTradeId = Math.max(...addedTrades.map(t => parseInt(t.trade_id)))
-        // Find trade with maximum trade_id
-        const maxTrade = addedTrades.find(t => parseInt(t.trade_id) === maxTradeId)
-        if (maxTrade && maxTrade.time) {
-          // Add 1 second to the time
-          const maxTime = new Date(maxTrade.time)
-          maxTime.setSeconds(maxTime.getSeconds() + 1)
-          setRelevanceTime(maxTime.toISOString())
-        }
+      // Update relevance time with current_time from progress
+      // We only update if we have current_time to ensure we track what we've actually loaded
+      if (backtestProgressCurrentTime.value) {
+        setRelevanceTime(backtestProgressCurrentTime.value)
       }
       
       return true

@@ -77,9 +77,9 @@ export function useBacktestingResults() {
       uniqueTrades.forEach(trade => {
         const dealId = trade.deal_id
         if (!tradesByDealId.value.has(dealId)) {
-          tradesByDealId.value.set(dealId, [])
+          tradesByDealId.value.set(dealId, new Set())
         }
-        tradesByDealId.value.get(dealId).push(trade)
+        tradesByDealId.value.get(dealId).add(trade)
       })
       
       // Trigger reactivity by creating new Maps
@@ -171,8 +171,12 @@ export function useBacktestingResults() {
    * @returns {Array} Trades for this deal, sorted by time
    */
   function getTradesForDeal(dealId) {
-    const dealTrades = tradesByDealId.value.get(dealId) || []
-    // Sort by time (ascending)
+    const dealTradesSet = tradesByDealId.value.get(dealId)
+    if (!dealTradesSet || dealTradesSet.size === 0) {
+      return []
+    }
+    // Convert Set to Array and sort by time (ascending)
+    const dealTrades = Array.from(dealTradesSet)
     return dealTrades.sort((a, b) => {
       const timeA = new Date(a.time).getTime()
       const timeB = new Date(b.time).getTime()
