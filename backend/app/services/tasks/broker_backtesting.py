@@ -2,7 +2,7 @@
 Broker class for handling trading operations and backtesting execution.
 """
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Callable, List, Tuple, Union
+from typing import Optional, Dict, Callable, List, Tuple, Union, Any
 import inspect
 import numpy as np
 import time
@@ -37,7 +37,7 @@ class UsedIndicatorDescription(BaseModel):
     
     values: Union[np.ndarray, Tuple[np.ndarray, ...]]  # Cached indicator values (series or tuple of series)
     visible: bool = True  # Visibility flag for frontend display
-    series_names: Optional[List[str]] = None  # Names of series (for tuple indicators, e.g., ['macd', 'signal', 'histogram'])
+    series_info: List[Dict[str, Any]]  # List of series descriptions: [{'name': str, 'is_price': bool}, ...]
 
 
 class ta_proxy(ABC):
@@ -93,18 +93,24 @@ class ta_proxy(ABC):
             # Calculate indicator for entire dataset
             indicator_values = self.calc_indicator(name, **kwargs)
             
-            # Determine series names
+            # Determine series info (names and is_price flags)
             is_tuple = isinstance(indicator_values, tuple)
-            tuple_length = len(indicator_values) if is_tuple else 0
-            series_names = None
+            tuple_length = len(indicator_values) if is_tuple else 1
+            series_info = []
             if isinstance(self, ta_proxy_talib):
-                series_names = self._get_series_names(name, is_tuple, tuple_length)
+                series_info = self._get_series_info(name, is_tuple, tuple_length)
+            else:
+                # For non-talib proxies, use generic logic
+                if is_tuple:
+                    series_info = [{'name': f'series{i}', 'is_price': True} for i in range(tuple_length)]
+                else:
+                    series_info = [{'name': name, 'is_price': True}]
             
             # Store in cache as UsedIndicatorDescription
             self.cache[cache_key] = UsedIndicatorDescription(
                 values=indicator_values,
                 visible=True,
-                series_names=series_names
+                series_info=series_info
             )
         
         # Get cached indicator description
@@ -148,17 +154,79 @@ class ta_proxy_talib(ta_proxy):
     # Valid positional parameter names
     VALID_POSITIONAL_PARAMS = {'open', 'high', 'low', 'close', 'volume', 'real'}
     
-    # Dictionary of standard series names for indicators that return multiple series
+    # Dictionary of indicator descriptions with series names and price chart displayability
+    # Format: {'is_price': bool, 'series': Optional[List[Dict]]}
+    # If 'series' is provided, uses those names. If not, generates generic names (series0, series1, ...)
+    # Each series can override 'is_price' by including it in its dict
     # Names are taken from TA-Lib documentation (Outputs section)
     INDICATOR_SERIES_NAMES = {
-        'MACD': ['macd', 'macdsignal', 'macdhist'],
-        'BBANDS': ['upperband', 'middleband', 'lowerband'],
-        'STOCH': ['slowk', 'slowd'],
-        'STOCHF': ['fastk', 'fastd'],
-        'STOCHRSI': ['fastk', 'fastd'],
-        'AROON': ['aroondown', 'aroonup'],
+        # Multi-series indicators
+        'MACD': {
+            'is_price': False,
+            'series': [{'name': 'macd'}, {'name': 'macdsignal'}, {'name': 'macdhist'}],
+        },
+        'BBANDS': {
+            'is_price': True,
+            'series': [{'name': 'upperband'}, {'name': 'middleband'}, {'name': 'lowerband'}],
+        },
+        'STOCH': {
+            'is_price': False,
+            'series': [{'name': 'slowk'}, {'name': 'slowd'}],
+        },
+        'STOCHF': {
+            'is_price': False,
+            'series': [{'name': 'fastk'}, {'name': 'fastd'}],
+        },
+        'STOCHRSI': {
+            'is_price': False,
+            'series': [{'name': 'fastk'}, {'name': 'fastd'}],
+        },
+        'AROON': {
+            'is_price': False,
+            'series': [{'name': 'aroondown'}, {'name': 'aroonup'}],
+        },
+        # Single-series non-price indicators
+        'ATR': {'is_price': False},
+        'NATR': {'is_price': False},
+        'TRANGE': {'is_price': False},
+        'ADX': {'is_price': False},
+        'ADXR': {'is_price': False},
+        'APO': {'is_price': False},
+        'AROONOSC': {'is_price': False},
+        'BOP': {'is_price': False},
+        'CCI': {'is_price': False},
+        'CMO': {'is_price': False},
+        'DX': {'is_price': False},
+        'MOM': {'is_price': False},
+        'PLUS_DI': {'is_price': False},
+        'PLUS_DM': {'is_price': False},
+        'MINUS_DI': {'is_price': False},
+        'MINUS_DM': {'is_price': False},
+        'PPO': {'is_price': False},
+        'ROC': {'is_price': False},
+        'ROCP': {'is_price': False},
+        'ROCR': {'is_price': False},
+        'ROCR100': {'is_price': False},
+        'RSI': {'is_price': False},
+        'ULTOSC': {'is_price': False},
+        'WILLR': {'is_price': False},
+        'HT_DCPERIOD': {'is_price': False},
+        'HT_DCPHASE': {'is_price': False},
+        'HT_TRENDMODE': {'is_price': False},
+        'LINEARREG': {'is_price': False},
+        'LINEARREG_ANGLE': {'is_price': False},
+        'LINEARREG_INTERCEPT': {'is_price': False},
+        'LINEARREG_SLOPE': {'is_price': False},
+        'STDDEV': {'is_price': False},
+        'VAR': {'is_price': False},
+        'TSF': {'is_price': False},
+        'MAX': {'is_price': False},
+        'MAXINDEX': {'is_price': False},
+        'MIN': {'is_price': False},
+        'MININDEX': {'is_price': False},
+        'SUM': {'is_price': False},
     }
-    
+
     def __init__(self, broker, quotes_data: dict):
         """
         Initialize TA-Lib proxy.
@@ -176,30 +244,60 @@ class ta_proxy_talib(ta_proxy):
         # Analyze talib functions
         self._analyze_talib_functions()
     
-    def _get_series_names(self, indicator_name: str, is_tuple: bool, tuple_length: int) -> Optional[List[str]]:
+    def _get_series_info(self, indicator_name: str, is_tuple: bool, tuple_length: int) -> List[Dict[str, Any]]:
         """
-        Get series names for indicator.
+        Get series info (names and is_price flags) for indicator.
         
         Args:
             indicator_name: Name of the indicator (e.g., 'MACD', 'BBANDS')
             is_tuple: Whether indicator returns tuple of arrays
-            tuple_length: Length of tuple (number of series)
+            tuple_length: Length of tuple (number of series), or 1 for single array
             
         Returns:
-            List of series names if available, None for single array, or generic names if not in dictionary
+            List of series info dictionaries: [{'name': str, 'is_price': bool}, ...]
         """
-        if not is_tuple:
-            return None
-        
-        # Check if indicator has standard names in dictionary
+        # Check if indicator has description in dictionary
         if indicator_name in self.INDICATOR_SERIES_NAMES:
-            standard_names = self.INDICATOR_SERIES_NAMES[indicator_name]
-            # Validate length matches
-            if len(standard_names) == tuple_length:
-                return standard_names
-        
-        # Return generic names
-        return [f'series{i}' for i in range(tuple_length)]
+            indicator_desc = self.INDICATOR_SERIES_NAMES[indicator_name]
+            default_is_price = indicator_desc.get('is_price', True)
+            series_list = indicator_desc.get('series')
+            
+            if series_list:
+                # Use provided series names
+                result = []
+                for i, series_desc in enumerate(series_list):
+                    series_name = series_desc.get('name', f'series{i}')
+                    # Use is_price from series if provided, otherwise use default
+                    series_is_price = series_desc.get('is_price', default_is_price)
+                    result.append({'name': series_name, 'is_price': series_is_price})
+                
+                # Validate length matches
+                if len(result) != tuple_length:
+                    logger.warning(
+                        f"Indicator '{indicator_name}' description has {len(result)} series, "
+                        f"but actual result has {tuple_length} series. Using actual count."
+                    )
+                    # Adjust to actual length
+                    if len(result) > tuple_length:
+                        result = result[:tuple_length]
+                    else:
+                        # Add generic names for missing series
+                        for i in range(len(result), tuple_length):
+                            result.append({'name': f'series{i}', 'is_price': default_is_price})
+                
+                return result
+            else:
+                # No series list provided, generate generic names with default is_price
+                if is_tuple:
+                    return [{'name': f'series{i}', 'is_price': default_is_price} for i in range(tuple_length)]
+                else:
+                    return [{'name': indicator_name, 'is_price': default_is_price}]
+        else:
+            # Indicator not in dictionary
+            if is_tuple:
+                return [{'name': f'series{i}', 'is_price': True} for i in range(tuple_length)]
+            else:
+                return [{'name': indicator_name, 'is_price': True}]
     
     def _analyze_talib_functions(self):
         """

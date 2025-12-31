@@ -401,11 +401,11 @@ async def get_backtesting_results(
         }
 
 
-@router.get("/tasks/{task_id}/results/{result_id}/indicators", response_model=Dict[str, Any])
+@router.post("/tasks/{task_id}/results/{result_id}/indicators", response_model=Dict[str, Any])
 async def get_backtesting_indicators(
     task_id: int,
     result_id: str,
-    received_keys: Optional[List[str]] = Query(None, description="List of indicator keys already received by frontend")
+    request_data: Optional[Dict[str, Any]] = None
 ):
     """
     Get new indicators from backtesting results that haven't been received yet.
@@ -413,8 +413,9 @@ async def get_backtesting_indicators(
     Args:
         task_id: Task ID
         result_id: Result ID (GUID) for the backtesting run
-        received_keys: Optional list of indicator keys already received
-                      Format: "{proxy_name}:{serialized_cache_key}"
+        request_data: Optional request body with "received_keys" list
+                      Format: {"received_keys": ["key1", "key2", ...]}
+                      Each key format: "{proxy_name}:{serialized_cache_key}"
     
     Returns:
         Dictionary with success flag, data (list of indicator objects), or error_message
@@ -426,6 +427,11 @@ async def get_backtesting_indicators(
     task = task_list.load(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Extract received_keys from request body
+    received_keys = None
+    if request_data and isinstance(request_data, dict):
+        received_keys = request_data.get('received_keys')
     
     try:
         # Create BackTestingResults instance without broker (read-only mode)

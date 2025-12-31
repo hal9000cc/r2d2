@@ -7,6 +7,7 @@ import json
 import weakref
 import numpy as np
 import msgpack
+import redis
 from app.services.tasks.tasks import Task
 from app.services.tasks.broker import Broker, OrderSide, DealType
 from app.core.logger import get_logger
@@ -80,6 +81,29 @@ class BackTestingResults:
             self._redis_client = self.task.get_redis_client()
         return self._redis_client
     
+    def _get_redis_client_binary(self):
+        """
+        Get Redis client configured for binary data (decode_responses=False).
+        Used for reading binary data like indicator values (msgpack).
+        
+        Returns:
+            redis.Redis: Redis client instance with decode_responses=False
+            
+        Raises:
+            RuntimeError: If task is not associated with a list or cannot get Redis client
+        """
+        # Get Redis params from task
+        redis_params = self.task.get_redis_params()
+        
+        # Create new client with decode_responses=False for binary data
+        return redis.Redis(
+            host=redis_params['host'],
+            port=redis_params['port'],
+            db=redis_params['db'],
+            password=redis_params.get('password'),
+            decode_responses=False  # Keep binary for msgpack data
+        )
+    
     def _format_value(self, value) -> str:
         """
         Format value for serialization.
@@ -128,13 +152,13 @@ class BackTestingResults:
         Similar to how quotes are serialized in quotes/server.py.
         
         Args:
-            indicator_desc: UsedIndicatorDescription object with values and series_names
+            indicator_desc: UsedIndicatorDescription object with values and series_info
             
         Returns:
             bytes: msgpack-serialized data with metadata and binary arrays
         """
         values = indicator_desc.values
-        series_names = indicator_desc.series_names
+        series_info = indicator_desc.series_info
         
         if isinstance(values, tuple):
             # Multiple arrays
@@ -151,7 +175,7 @@ class BackTestingResults:
                 'metadata': {
                     'is_tuple': True,
                     'arrays': arrays_metadata,
-                    'series_names': series_names
+                    'series_info': series_info
                 },
                 'binary_data': {
                     'arrays': arrays_binary
@@ -164,7 +188,7 @@ class BackTestingResults:
                     'is_tuple': False,
                     'dtype': str(values.dtype),
                     'shape': list(values.shape),
-                    'series_names': None
+                    'series_info': series_info
                 },
                 'binary_data': {
                     'array': values.tobytes()
@@ -314,7 +338,8 @@ class BackTestingResults:
         if not self.ta_proxies:
             return saved_indicator_keys
         
-        client = self._get_redis_client()
+        # Use binary client for saving indicator data (msgpack)
+        client = self._get_redis_client_binary()
         indicators_key_prefix = f"{result_key_prefix}:{result_id}:indicators"
         
         # Collect all current cache keys from all proxies
@@ -575,7 +600,7 @@ class BackTestingResults:
         binary_data = response_data.get('binary_data', {})
         
         is_tuple = metadata.get('is_tuple', False)
-        series_names = metadata.get('series_names')
+        series_info = metadata.get('series_info', [])
         
         if is_tuple:
             # Multiple arrays
@@ -593,15 +618,15 @@ class BackTestingResults:
                 arr = np.frombuffer(arr_bytes, dtype=dtype).reshape(shape)
                 reconstructed_arrays.append(arr)
             
-            # If series_names available, create dict with named keys
-            if series_names and len(series_names) == len(reconstructed_arrays):
-                values = {name: arr.tolist() for name, arr in zip(series_names, reconstructed_arrays)}
+            # Use series_info to create dict with named keys
+            if series_info and len(series_info) == len(reconstructed_arrays):
+                values = {info['name']: arr.tolist() for info, arr in zip(series_info, reconstructed_arrays)}
             else:
-                # Use generic names or indices
-                if series_names:
-                    names = series_names
-                else:
-                    names = [f'series{i}' for i in range(len(reconstructed_arrays))]
+                # Fallback: use generic names
+                names = [info.get('name', f'series{i}') for i, info in enumerate(series_info)] if series_info else [f'series{i}' for i in range(len(reconstructed_arrays))]
+                # Ensure we have enough names
+                while len(names) < len(reconstructed_arrays):
+                    names.append(f'series{len(names)}')
                 values = {name: arr.tolist() for name, arr in zip(names, reconstructed_arrays)}
         else:
             # Single array
@@ -614,7 +639,7 @@ class BackTestingResults:
         return {
             'metadata': {
                 'is_tuple': is_tuple,
-                'series_names': series_names
+                'series_info': series_info
             },
             'values': values
         }
@@ -636,7 +661,7 @@ class BackTestingResults:
                     "indicator_name": "SMA",
                     "parameters": {"timeperiod": 50},
                     "is_tuple": false,
-                    "series_names": null,
+                    "series_info": [{"name": "SMA", "is_price": true}],
                     "values": [1.0, 2.0, ...]
                 },
                 ...
@@ -646,11 +671,14 @@ class BackTestingResults:
             RuntimeError: If operation fails
         """
         try:
+            # Use binary client for reading indicator data (msgpack)
+            client_binary = self._get_redis_client_binary()
+            # Use regular client for keys (strings)
             client = self._get_redis_client()
             result_key_prefix = self.task.get_result_key()
             indicators_key_prefix = f"{result_key_prefix}:{result_id}:indicators"
             
-            # Get all indicator keys from Redis
+            # Get all indicator keys from Redis (using regular client for string keys)
             pattern = f"{indicators_key_prefix}:*"
             all_redis_keys = client.keys(pattern)
             
@@ -664,8 +692,8 @@ class BackTestingResults:
             new_indicator_keys = []
             redis_keys_to_fetch = []
             
-            for redis_key_bytes in all_redis_keys:
-                redis_key = redis_key_bytes.decode('utf-8') if isinstance(redis_key_bytes, bytes) else redis_key_bytes
+            for redis_key in all_redis_keys:
+                # redis_key is already a string (from client with decode_responses=True)
                 
                 # Extract indicator key: remove prefix "{prefix}:{result_id}:indicators:"
                 prefix_to_remove = f"{indicators_key_prefix}:"
@@ -682,8 +710,8 @@ class BackTestingResults:
             if not new_indicator_keys:
                 return {}
             
-            # Fetch indicator data from Redis using pipeline
-            pipeline = client.pipeline()
+            # Fetch indicator data from Redis using binary client pipeline
+            pipeline = client_binary.pipeline()
             for redis_key in redis_keys_to_fetch:
                 pipeline.get(redis_key)
             
@@ -729,7 +757,7 @@ class BackTestingResults:
                         'indicator_name': indicator_name,
                         'parameters': parameters,
                         'is_tuple': deserialized['metadata']['is_tuple'],
-                        'series_names': deserialized['metadata']['series_names'],
+                        'series_info': deserialized['metadata']['series_info'],
                         'values': deserialized['values']
                     }
                 except Exception as e:

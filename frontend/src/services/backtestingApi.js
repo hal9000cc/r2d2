@@ -78,5 +78,25 @@ export const backtestingApi = {
       { params }
     )
     return response.data
+  },
+
+  /**
+   * Get backtesting indicators
+   * @param {number} taskId - Task ID
+   * @param {string} resultId - Result ID (UUID)
+   * @param {Array<string>} receivedKeys - Optional array of indicator keys already received
+   * @returns {Promise<Object>} Indicators data with list of indicator objects
+   */
+  async getBacktestingIndicators(taskId, resultId, receivedKeys = null) {
+    const requestData = {}
+    if (receivedKeys && receivedKeys.length > 0) {
+      requestData.received_keys = receivedKeys
+    }
+    
+    const response = await axios.post(
+      `${API_BASE_URL}/api/v1/backtesting/tasks/${taskId}/results/${resultId}/indicators`,
+      requestData
+    )
+    return response.data
   }
 }

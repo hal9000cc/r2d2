@@ -24,6 +24,9 @@ export function useBacktestingResults() {
   // Statistics (updated on each progress event)
   const stats = ref(null)
   
+  // Indicators Map (key: indicator key string, value: indicator object)
+  const indicators = ref(new Map())
+  
   /**
    * Clear all results data
    */
@@ -34,6 +37,7 @@ export function useBacktestingResults() {
     deals.value = new Map()
     tradesByDealId.value = new Map()
     stats.value = null
+    indicators.value = new Map()
   }
   
   /**
@@ -206,10 +210,43 @@ export function useBacktestingResults() {
     return Array.from(trades.value.values())
   }
   
+  /**
+   * Add new indicators (avoid duplicates by key)
+   * @param {Array} newIndicators - Array of indicator objects
+   */
+  function addIndicators(newIndicators) {
+    if (!newIndicators || newIndicators.length === 0) {
+      return
+    }
+    
+    // Add each indicator to Map (key is indicator.key)
+    newIndicators.forEach(indicator => {
+      if (indicator && indicator.key) {
+        indicators.value.set(indicator.key, indicator)
+      }
+    })
+    
+    // Trigger reactivity by creating a new Map
+    indicators.value = new Map(indicators.value)
+  }
+  
+  /**
+   * Get indicator by key
+   * @param {string} key - Indicator key
+   * @returns {Object|null} Indicator object or null if not found
+   */
+  function getIndicatorByKey(key) {
+    if (!key) {
+      return null
+    }
+    return indicators.value.get(key) || null
+  }
+  
   // Computed properties
   const tradesCount = computed(() => trades.value.size)
   const dealsCount = computed(() => deals.value.size)
   const allTrades = computed(() => Array.from(trades.value.values()))
+  const indicatorKeys = computed(() => Array.from(indicators.value.keys()))
   
   return {
     // State
@@ -219,11 +256,13 @@ export function useBacktestingResults() {
     deals,
     tradesByDealId,
     stats,
+    indicators,
     
     // Computed
     tradesCount,
     dealsCount,
     allTrades,
+    indicatorKeys,
     
     // Methods
     clearResults,
@@ -232,6 +271,8 @@ export function useBacktestingResults() {
     addTrades,
     updateDeals,
     updateStats,
+    addIndicators,
+    getIndicatorByKey,
     getTradesByDateRange,
     getDealsByIds,
     getAllDeals,
