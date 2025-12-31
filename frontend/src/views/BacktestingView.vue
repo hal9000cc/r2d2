@@ -239,6 +239,14 @@
                       />
                       <span>Show deals</span>
                     </label>
+                    <label class="settings-option">
+                      <input 
+                        type="checkbox" 
+                        v-model="showIndicators"
+                        @change="saveChartSettings"
+                      />
+                      <span>Show indicators</span>
+                    </label>
                   </div>
                 </div>
               </div>
@@ -277,6 +285,7 @@
                 :clear-chart="clearChartFlag"
                 :show-trade-markers="showTradeMarkers"
                 :show-deal-lines="showDealLines"
+                :show-indicators="showIndicators"
                 @chart-cleared="handleChartCleared"
                 @quotes-load-error="handleQuotesLoadError"
                 @chart-message="handleChartMessage"
@@ -1131,6 +1140,7 @@ const isChartSettingsOpen = ref(false)
 const chartSettingsRef = ref(null)
 const showTradeMarkers = ref(true)
 const showDealLines = ref(true)
+const showIndicators = ref(true)
 
 /**
  * Parse partial datetime input into object with optional fields
@@ -1421,17 +1431,22 @@ function toggleChartSettings() {
 function saveChartSettings() {
   localStorage.setItem('chart-show-trade-markers', showTradeMarkers.value.toString())
   localStorage.setItem('chart-show-deal-lines', showDealLines.value.toString())
+  localStorage.setItem('chart-show-indicators', showIndicators.value.toString())
 }
 
 function loadChartSettings() {
   const savedShowTrades = localStorage.getItem('chart-show-trade-markers')
   const savedShowDeals = localStorage.getItem('chart-show-deal-lines')
+  const savedShowIndicators = localStorage.getItem('chart-show-indicators')
   
   if (savedShowTrades !== null) {
     showTradeMarkers.value = savedShowTrades === 'true'
   }
   if (savedShowDeals !== null) {
     showDealLines.value = savedShowDeals === 'true'
+  }
+  if (savedShowIndicators !== null) {
+    showIndicators.value = savedShowIndicators === 'true'
   }
 }
 

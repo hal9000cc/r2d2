@@ -66,6 +66,10 @@ export default {
     showDealLines: {
       type: Boolean,
       default: true
+    },
+    showIndicators: {
+      type: Boolean,
+      default: true
     }
   },
   emits: ['chart-cleared', 'log-scale-changed', 'quotes-load-error', 'chart-error'],
@@ -142,6 +146,10 @@ export default {
     },
     showDealLines() {
       this.updateDealLines()
+    },
+    showIndicators() {
+      // TODO: Implement indicator visibility update
+      // this.updateIndicators()
     }
   },
   mounted() {

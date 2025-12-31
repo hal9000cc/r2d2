@@ -9,6 +9,7 @@
       :clear-chart="clearChart"
       :show-trade-markers="showTradeMarkers"
       :show-deal-lines="showDealLines"
+      :show-indicators="showIndicators"
       @chart-cleared="handleChartCleared"
       @quotes-load-error="handleQuotesLoadError"
       @chart-message="handleChartMessage"
@@ -52,6 +53,10 @@ export default {
       default: true
     },
     showDealLines: {
+      type: Boolean,
+      default: true
+    },
+    showIndicators: {
       type: Boolean,
       default: true
     }
