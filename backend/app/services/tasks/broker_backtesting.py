@@ -7,7 +7,7 @@ import inspect
 import numpy as np
 import time
 import talib
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
@@ -29,6 +29,16 @@ class IndicatorDescription(BaseModel):
     values: List[str]  # List of positional parameter names (open, high, low, close, volume) in order
 
 
+class UsedIndicatorDescription(BaseModel):
+    """
+    Description of a used indicator with its cached values and visibility flag.
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    values: Union[np.ndarray, Tuple[np.ndarray, ...]]  # Cached indicator values (series or tuple of series)
+    visible: bool = True  # Visibility flag for frontend display
+
+
 class ta_proxy(ABC):
     """
     Abstract base class for technical analysis indicator proxy.
@@ -45,7 +55,7 @@ class ta_proxy(ABC):
         """
         self.broker = broker
         self.quotes_data = quotes_data
-        self._cache = {}
+        self.cache = {}
     
     @abstractmethod
     def calc_indicator(self, name: str, **kwargs) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
@@ -78,12 +88,15 @@ class ta_proxy(ABC):
         cache_key = (name, tuple(sorted(kwargs.items())))
         
         # Check cache
-        if cache_key not in self._cache:
+        if cache_key not in self.cache:
             # Calculate indicator for entire dataset
-            self._cache[cache_key] = self.calc_indicator(name, **kwargs)
+            indicator_values = self.calc_indicator(name, **kwargs)
+            # Store in cache as UsedIndicatorDescription
+            self.cache[cache_key] = UsedIndicatorDescription(values=indicator_values, visible=True)
         
-        # Return slice up to current bar (inclusive)
-        full_data = self._cache[cache_key]
+        # Get cached indicator description
+        indicator_desc = self.cache[cache_key]
+        full_data = indicator_desc.values
         
         # Check if result is a tuple (multiple return values)
         if isinstance(full_data, tuple):
@@ -468,9 +481,6 @@ class BrokerBacktesting(Broker):
         # Reset broker state
         self.reset()
         
-        # Create BackTestingResults instance
-        results = BackTestingResults(self.task, self)
-        
         # Convert timeframe string to Timeframe object
         try:
             timeframe = Timeframe.cast(task.timeframe)
@@ -504,13 +514,16 @@ class BrokerBacktesting(Broker):
         else:
             raise RuntimeError("No quotes data available for backtesting")
         
-        state_update_period = 1.0
-        last_update_time = time.time()
-        
         # Create TA proxies dictionary
         ta_proxies = {
             'talib': ta_proxy_talib(broker=self, quotes_data=quotes_data)
         }
+        
+        # Create BackTestingResults instance (after ta_proxies are created)
+        results = BackTestingResults(self.task, self, ta_proxies)
+        
+        state_update_period = 1.0
+        last_update_time = time.time()
         
         # Call on_start callback with task parameters and TA proxies
         if 'on_start' in self.callbacks:

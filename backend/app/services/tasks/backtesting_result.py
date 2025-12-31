@@ -2,10 +2,11 @@
 Class for writing and reading backtesting results to/from Redis.
 Uses Sorted Set to store trades and deals.
 """
-from typing import Optional, Dict
+from typing import Optional, Dict, Any, Tuple, Union
 import json
 import weakref
 import numpy as np
+import msgpack
 from app.services.tasks.tasks import Task
 from app.services.tasks.broker import Broker, OrderSide, DealType
 from app.core.logger import get_logger
@@ -20,7 +21,7 @@ class BackTestingResults:
     Uses Sorted Set (ZADD) to store trades and deals.
     """
     
-    def __init__(self, task: Task, broker: Optional[Broker] = None):
+    def __init__(self, task: Task, broker: Optional[Broker] = None, ta_proxies: Optional[Dict[str, Any]] = None):
         """
         Constructor.
         
@@ -28,6 +29,8 @@ class BackTestingResults:
             task: Task instance (must have get_result_key() and get_redis_client() methods)
             broker: Optional Broker instance to track. If provided, initializes for writing results.
                    If None, instance is used only for reading results.
+            ta_proxies: Optional dictionary of TA proxies (e.g., {'talib': ta_proxy_talib(...)}).
+                       Used to access indicator cache for frontend display.
             
         Raises:
             RuntimeError: If initialization fails
@@ -36,6 +39,8 @@ class BackTestingResults:
         self._redis_client = None
         self._broker_ref: Optional[weakref.ReferenceType[Broker]] = None
         self._trades_start_index: int = 0
+        self.ta_proxies: Optional[Dict[str, Any]] = ta_proxies  # Store TA proxies for access to indicator cache
+        self._sent_indicator_keys: set = set()  # Track which indicator keys have been sent to Redis
         
         try:
             if broker is not None:
@@ -98,6 +103,262 @@ class BackTestingResults:
         from datetime import datetime, timezone
         return datetime.fromtimestamp(dt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
     
+    def _serialize_cache_key(self, cache_key: Tuple) -> str:
+        """
+        Serialize cache key (tuple) to JSON string for use in Redis key.
+        
+        Args:
+            cache_key: Tuple (name, tuple(sorted(kwargs.items())))
+            
+        Returns:
+            str: JSON-serialized string representation of the cache key
+        """
+        # cache_key is (name, tuple(sorted(kwargs.items())))
+        # Convert to JSON-serializable format: [name, dict(kwargs)]
+        name, kwargs_tuple = cache_key
+        kwargs_dict = dict(kwargs_tuple)
+        return json.dumps([name, kwargs_dict], sort_keys=True)
+    
+    def _serialize_indicator_values(self, values: Union[np.ndarray, Tuple[np.ndarray, ...]]) -> bytes:
+        """
+        Serialize indicator values (numpy array or tuple of arrays) to bytes with metadata.
+        Similar to how quotes are serialized in quotes/server.py.
+        
+        Args:
+            values: numpy array or tuple of numpy arrays
+            
+        Returns:
+            bytes: msgpack-serialized data with metadata and binary arrays
+        """
+        if isinstance(values, tuple):
+            # Multiple arrays
+            arrays_metadata = []
+            arrays_binary = []
+            for arr in values:
+                arrays_metadata.append({
+                    'dtype': str(arr.dtype),
+                    'shape': list(arr.shape)
+                })
+                arrays_binary.append(arr.tobytes())
+            
+            response_data = {
+                'metadata': {
+                    'is_tuple': True,
+                    'arrays': arrays_metadata
+                },
+                'binary_data': {
+                    'arrays': arrays_binary
+                }
+            }
+        else:
+            # Single array
+            response_data = {
+                'metadata': {
+                    'is_tuple': False,
+                    'dtype': str(values.dtype),
+                    'shape': list(values.shape)
+                },
+                'binary_data': {
+                    'array': values.tobytes()
+                }
+            }
+        
+        # Serialize with MessagePack (supports binary data)
+        return msgpack.packb(response_data, use_bin_type=True)
+    
+    
+    def _prepare_trades_data(self, broker, result_key_prefix: str, result_id: str):
+        """
+        Prepare trades data for saving to Redis.
+        
+        Args:
+            broker: Broker instance
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            
+        Returns:
+            tuple: (trades_key, trades_to_save, new_trades, deal_ids, current_trades_size)
+                  Returns None if no new trades
+        """
+        # Get new trades (from remembered index to current size)
+        current_trades_size = len(broker.trades)
+        new_trades = broker.trades[self._trades_start_index:current_trades_size]
+        
+        if not new_trades:
+            return None
+        
+        # Collect unique deal_id from new trades
+        deal_ids = set(trade.deal_id for trade in new_trades)
+        
+        # Prepare trades data for Redis
+        trades_key = f"{result_key_prefix}:{result_id}:trades"
+        trades_to_save = {}
+        
+        for trade in new_trades:
+            time_iso = datetime64_to_iso(trade.time)
+            side_str = trade.side.value  # "buy" or "sell"
+            
+            # Format member: trade_id|deal_id|order_id|time_iso|side|price|quantity|fee|sum
+            member = f"{trade.trade_id}|{trade.deal_id}|{trade.order_id}|{time_iso}|{side_str}|{trade.price}|{trade.quantity}|{trade.fee}|{trade.sum}"
+            
+            # Use time as score (numeric representation in milliseconds)
+            # Convert numpy int64 to Python int for Redis compatibility
+            score = int(trade.time.astype('datetime64[ms]').astype(int))
+            trades_to_save[member] = score
+        
+        return (trades_key, trades_to_save, new_trades, deal_ids, current_trades_size)
+    
+    def _prepare_deals_data(self, broker, result_key_prefix: str, result_id: str, deal_ids: set):
+        """
+        Prepare deals data for saving to Redis.
+        
+        Args:
+            broker: Broker instance
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            deal_ids: Set of deal IDs to save
+            
+        Returns:
+            tuple: (deals_key, deals_to_save)
+        """
+        deals_key = f"{result_key_prefix}:{result_id}:deals"
+        deals_to_save = {}
+        
+        if deal_ids:
+            for deal in broker.deals:
+                if deal.deal_id in deal_ids:
+                    # Format member: deal_id|type|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed
+                    member = (
+                        f"{deal.deal_id}|"
+                        f"{deal.type.value if deal.type else ''}|"
+                        f"{self._format_value(deal.avg_buy_price)}|"
+                        f"{self._format_value(deal.avg_sell_price)}|"
+                        f"{deal.quantity}|"
+                        f"{deal.fee}|"
+                        f"{self._format_value(deal.profit)}|"
+                        f"{self._format_value(deal.is_closed)}"
+                    )
+                    
+                    # Use deal_id as score (convert to int if needed)
+                    score = int(deal.deal_id)
+                    deals_to_save[member] = score
+        
+        return (deals_key, deals_to_save)
+    
+    def _prepare_stats_data(self, broker, result_key_prefix: str, result_id: str, is_finish: bool):
+        """
+        Prepare statistics data for saving to Redis.
+        
+        Args:
+            broker: Broker instance
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            is_finish: Whether this is the final save
+            
+        Returns:
+            tuple: (stats_key, stats_json) or (stats_key, None) if no stats
+        """
+        stats_key = f"{result_key_prefix}:{result_id}:stats"
+        stats_json = None
+        
+        if broker.stats:
+            # Calculate additional statistics before saving
+            broker.stats.calc_stat()
+            
+            # Create stats dict excluding internal fields
+            stats_dict = {
+                'initial_equity_usd': broker.stats.initial_equity_usd,
+                'total_trades': broker.stats.total_trades,
+                'buy_trades': broker.stats.buy_trades,
+                'sell_trades': broker.stats.sell_trades,
+                'max_market_volume': broker.stats.max_market_volume,
+                'total_fees': broker.stats.total_fees,
+                'profit': broker.stats.profit,
+                'drawdown_max': broker.stats.drawdown_max,
+                'total_deals': broker.stats.total_deals,
+                'long_deals': broker.stats.long_deals,
+                'short_deals': broker.stats.short_deals,
+                'profit_deals': broker.stats.profit_deals,
+                'loss_deals': broker.stats.loss_deals,
+                'profit_per_deal': broker.stats.profit_per_deal,
+                'profit_gross': broker.stats.profit_gross,
+                'profit_long': broker.stats.profit_long,
+                'profit_short': broker.stats.profit_short,
+                'completed': is_finish,
+            }
+            stats_json = json.dumps(stats_dict)
+        
+        return (stats_key, stats_json)
+    
+    def _save_indicators(self, result_key_prefix: str, result_id: str):
+        """
+        Save new indicators from TA proxies cache to Redis using separate pipeline.
+        
+        Args:
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            
+        Returns:
+            set: Set of composite keys (proxy_name, cache_key) that were actually saved
+        """
+        saved_indicator_keys = set()
+        
+        if not self.ta_proxies:
+            return saved_indicator_keys
+        
+        client = self._get_redis_client()
+        indicators_key_prefix = f"{result_key_prefix}:{result_id}:indicators"
+        
+        # Collect all current cache keys from all proxies
+        current_cache_keys = set()
+        for proxy_name, proxy in self.ta_proxies.items():
+            if hasattr(proxy, 'cache') and proxy.cache:
+                for cache_key in proxy.cache.keys():
+                    # Create composite key: (proxy_name, cache_key)
+                    composite_key = (proxy_name, cache_key)
+                    current_cache_keys.add(composite_key)
+        
+        # Find new keys using set difference
+        new_indicator_keys = current_cache_keys - self._sent_indicator_keys
+        
+        if not new_indicator_keys:
+            return saved_indicator_keys
+        
+        # Create separate pipeline for indicators
+        indicators_pipeline = client.pipeline()
+        
+        # Process and save new indicators
+        for composite_key in new_indicator_keys:
+            proxy_name, cache_key = composite_key
+            proxy = self.ta_proxies[proxy_name]
+            
+            # Get indicator description from cache
+            indicator_desc = proxy.cache[cache_key]
+            
+            # Skip if not visible
+            if not indicator_desc.visible:
+                continue
+            
+            # Serialize cache key for Redis key
+            serialized_cache_key = self._serialize_cache_key(cache_key)
+            
+            # Serialize indicator values
+            indicator_bytes = self._serialize_indicator_values(indicator_desc.values)
+            
+            # Create Redis key: {prefix}:{result_id}:indicators:{proxy_name}:{serialized_cache_key}
+            indicator_redis_key = f"{indicators_key_prefix}:{proxy_name}:{serialized_cache_key}"
+            
+            # Add to pipeline
+            indicators_pipeline.set(indicator_redis_key, indicator_bytes)
+            
+            # Mark as saved
+            saved_indicator_keys.add(composite_key)
+        
+        # Execute indicators pipeline if there are any indicators to save
+        if saved_indicator_keys:
+            indicators_pipeline.execute()
+        
+        return saved_indicator_keys
     
     def put_result(self, is_finish: bool = False) -> None:
         """
@@ -123,85 +384,18 @@ class BackTestingResults:
             result_key_prefix = self.task.get_result_key()
             result_id = broker.result_id
             
-            # Get new trades (from remembered index to current size)
-            current_trades_size = len(broker.trades)
-            new_trades = broker.trades[self._trades_start_index:current_trades_size]
+            # Prepare trades data
+            trades_data = self._prepare_trades_data(broker, result_key_prefix, result_id)
+            if trades_data is None:
+                return  # No new trades
             
-            if not new_trades:
-                return
-            
-            # Collect unique deal_id from new trades
-            deal_ids = set(trade.deal_id for trade in new_trades)
-            
-            # Save new trades to Redis (all trades in one key)
-            trades_key = f"{result_key_prefix}:{result_id}:trades"
-            
-            trades_to_save = {}
-            for trade in new_trades:
-                time_iso = datetime64_to_iso(trade.time)
-                side_str = trade.side.value  # "buy" or "sell"
-                
-                # Format member: trade_id|deal_id|order_id|time_iso|side|price|quantity|fee|sum
-                member = f"{trade.trade_id}|{trade.deal_id}|{trade.order_id}|{time_iso}|{side_str}|{trade.price}|{trade.quantity}|{trade.fee}|{trade.sum}"
-                
-                # Use time as score (numeric representation in milliseconds)
-                # Convert numpy int64 to Python int for Redis compatibility
-                score = int(trade.time.astype('datetime64[ms]').astype(int))
-                trades_to_save[member] = score
+            trades_key, trades_to_save, new_trades, deal_ids, current_trades_size = trades_data
             
             # Prepare deals data
-            deals_key = f"{result_key_prefix}:{result_id}:deals"
-            deals_to_save = {}
-            
-            if deal_ids:
-                for deal in broker.deals:
-                    if deal.deal_id in deal_ids:
-                        # Format member: deal_id|type|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed
-                        member = (
-                            f"{deal.deal_id}|"
-                            f"{deal.type.value if deal.type else ''}|"
-                            f"{self._format_value(deal.avg_buy_price)}|"
-                            f"{self._format_value(deal.avg_sell_price)}|"
-                            f"{deal.quantity}|"
-                            f"{deal.fee}|"
-                            f"{self._format_value(deal.profit)}|"
-                            f"{self._format_value(deal.is_closed)}"
-                        )
-                        
-                        # Use deal_id as score (convert to int if needed)
-                        score = int(deal.deal_id)
-                        deals_to_save[member] = score
+            deals_key, deals_to_save = self._prepare_deals_data(broker, result_key_prefix, result_id, deal_ids)
             
             # Prepare statistics data
-            stats_key = f"{result_key_prefix}:{result_id}:stats"
-            stats_json = None
-            
-            if broker.stats:
-                # Calculate additional statistics before saving
-                broker.stats.calc_stat()
-                
-                # Create stats dict excluding internal fields
-                stats_dict = {
-                    'initial_equity_usd': broker.stats.initial_equity_usd,
-                    'total_trades': broker.stats.total_trades,
-                    'buy_trades': broker.stats.buy_trades,
-                    'sell_trades': broker.stats.sell_trades,
-                    'max_market_volume': broker.stats.max_market_volume,
-                    'total_fees': broker.stats.total_fees,
-                    'profit': broker.stats.profit,
-                    'drawdown_max': broker.stats.drawdown_max,
-                    'total_deals': broker.stats.total_deals,
-                    'long_deals': broker.stats.long_deals,
-                    'short_deals': broker.stats.short_deals,
-                    'profit_deals': broker.stats.profit_deals,
-                    'loss_deals': broker.stats.loss_deals,
-                    'profit_per_deal': broker.stats.profit_per_deal,
-                    'profit_gross': broker.stats.profit_gross,
-                    'profit_long': broker.stats.profit_long,
-                    'profit_short': broker.stats.profit_short,
-                    'completed': is_finish,
-                }
-                stats_json = json.dumps(stats_dict)
+            stats_key, stats_json = self._prepare_stats_data(broker, result_key_prefix, result_id, is_finish)
             
             # Use pipeline to execute all write operations in one batch
             pipeline = client.pipeline()
@@ -218,11 +412,18 @@ class BackTestingResults:
             if stats_json:
                 pipeline.set(stats_key, stats_json)
             
-            # Execute all operations in one batch
+            # Execute main pipeline (trades, deals, stats)
             pipeline.execute()
             
             # Update trades start index only after successful save
             self._trades_start_index = current_trades_size
+            
+            # Save indicators in separate pipeline
+            saved_indicator_keys = self._save_indicators(result_key_prefix, result_id)
+            
+            # Update sent indicator keys only after successful save (only visible ones)
+            if saved_indicator_keys:
+                self._sent_indicator_keys.update(saved_indicator_keys)
             
             # Log operations
             if trades_to_save:
@@ -231,6 +432,8 @@ class BackTestingResults:
                 logger.debug(f"Saved {len(deals_to_save)} deals to {deals_key}")
             if stats_json:
                 logger.debug(f"Saved statistics to {stats_key}")
+            if saved_indicator_keys:
+                logger.debug(f"Saved {len(saved_indicator_keys)} new indicators to Redis")
         except Exception as e:
             logger.error(f"Failed to save results: {str(e)}")
             raise RuntimeError(f"Failed to save results: {str(e)}") from e
