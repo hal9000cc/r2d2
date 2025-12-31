@@ -401,6 +401,56 @@ async def get_backtesting_results(
         }
 
 
+@router.get("/tasks/{task_id}/results/{result_id}/indicators", response_model=Dict[str, Any])
+async def get_backtesting_indicators(
+    task_id: int,
+    result_id: str,
+    received_keys: Optional[List[str]] = Query(None, description="List of indicator keys already received by frontend")
+):
+    """
+    Get new indicators from backtesting results that haven't been received yet.
+    
+    Args:
+        task_id: Task ID
+        result_id: Result ID (GUID) for the backtesting run
+        received_keys: Optional list of indicator keys already received
+                      Format: "{proxy_name}:{serialized_cache_key}"
+    
+    Returns:
+        Dictionary with success flag, data (list of indicator objects), or error_message
+        
+    Raises:
+        HTTPException: If task not found or operation fails
+    """
+    # Load task
+    task = task_list.load(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    try:
+        # Create BackTestingResults instance without broker (read-only mode)
+        results = BackTestingResults(task, broker=None)
+        
+        # Get indicators
+        indicators_dict = results.get_indicators(result_id, received_keys)
+        
+        # Convert dictionary to list of indicator objects
+        indicators_list = []
+        for key, indicator_data in indicators_dict.items():
+            indicators_list.append({
+                'key': key,
+                **indicator_data
+            })
+        
+        return {
+            "success": True,
+            "data": indicators_list
+        }
+    except Exception as e:
+        logger.error(f"Error getting backtesting indicators for task {task_id}, result_id {result_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get indicators: {str(e)}")
+
+
 def start_backtesting_worker(task_id: int) -> str:
     """
     Start backtesting worker in a separate process.

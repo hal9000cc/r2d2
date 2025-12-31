@@ -37,6 +37,7 @@ class UsedIndicatorDescription(BaseModel):
     
     values: Union[np.ndarray, Tuple[np.ndarray, ...]]  # Cached indicator values (series or tuple of series)
     visible: bool = True  # Visibility flag for frontend display
+    series_names: Optional[List[str]] = None  # Names of series (for tuple indicators, e.g., ['macd', 'signal', 'histogram'])
 
 
 class ta_proxy(ABC):
@@ -91,8 +92,20 @@ class ta_proxy(ABC):
         if cache_key not in self.cache:
             # Calculate indicator for entire dataset
             indicator_values = self.calc_indicator(name, **kwargs)
+            
+            # Determine series names
+            is_tuple = isinstance(indicator_values, tuple)
+            tuple_length = len(indicator_values) if is_tuple else 0
+            series_names = None
+            if isinstance(self, ta_proxy_talib):
+                series_names = self._get_series_names(name, is_tuple, tuple_length)
+            
             # Store in cache as UsedIndicatorDescription
-            self.cache[cache_key] = UsedIndicatorDescription(values=indicator_values, visible=True)
+            self.cache[cache_key] = UsedIndicatorDescription(
+                values=indicator_values,
+                visible=True,
+                series_names=series_names
+            )
         
         # Get cached indicator description
         indicator_desc = self.cache[cache_key]
@@ -135,6 +148,17 @@ class ta_proxy_talib(ta_proxy):
     # Valid positional parameter names
     VALID_POSITIONAL_PARAMS = {'open', 'high', 'low', 'close', 'volume', 'real'}
     
+    # Dictionary of standard series names for indicators that return multiple series
+    # Names are taken from TA-Lib documentation (Outputs section)
+    INDICATOR_SERIES_NAMES = {
+        'MACD': ['macd', 'macdsignal', 'macdhist'],
+        'BBANDS': ['upperband', 'middleband', 'lowerband'],
+        'STOCH': ['slowk', 'slowd'],
+        'STOCHF': ['fastk', 'fastd'],
+        'STOCHRSI': ['fastk', 'fastd'],
+        'AROON': ['aroondown', 'aroonup'],
+    }
+    
     def __init__(self, broker, quotes_data: dict):
         """
         Initialize TA-Lib proxy.
@@ -151,6 +175,31 @@ class ta_proxy_talib(ta_proxy):
         
         # Analyze talib functions
         self._analyze_talib_functions()
+    
+    def _get_series_names(self, indicator_name: str, is_tuple: bool, tuple_length: int) -> Optional[List[str]]:
+        """
+        Get series names for indicator.
+        
+        Args:
+            indicator_name: Name of the indicator (e.g., 'MACD', 'BBANDS')
+            is_tuple: Whether indicator returns tuple of arrays
+            tuple_length: Length of tuple (number of series)
+            
+        Returns:
+            List of series names if available, None for single array, or generic names if not in dictionary
+        """
+        if not is_tuple:
+            return None
+        
+        # Check if indicator has standard names in dictionary
+        if indicator_name in self.INDICATOR_SERIES_NAMES:
+            standard_names = self.INDICATOR_SERIES_NAMES[indicator_name]
+            # Validate length matches
+            if len(standard_names) == tuple_length:
+                return standard_names
+        
+        # Return generic names
+        return [f'series{i}' for i in range(tuple_length)]
     
     def _analyze_talib_functions(self):
         """

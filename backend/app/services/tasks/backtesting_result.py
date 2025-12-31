@@ -2,7 +2,7 @@
 Class for writing and reading backtesting results to/from Redis.
 Uses Sorted Set to store trades and deals.
 """
-from typing import Optional, Dict, Any, Tuple, Union
+from typing import Optional, Dict, Any, Tuple, Union, List, TYPE_CHECKING
 import json
 import weakref
 import numpy as np
@@ -11,6 +11,9 @@ from app.services.tasks.tasks import Task
 from app.services.tasks.broker import Broker, OrderSide, DealType
 from app.core.logger import get_logger
 from app.core.datetime_utils import datetime64_to_iso
+
+if TYPE_CHECKING:
+    from app.services.tasks.broker_backtesting import UsedIndicatorDescription
 
 logger = get_logger(__name__)
 
@@ -119,17 +122,20 @@ class BackTestingResults:
         kwargs_dict = dict(kwargs_tuple)
         return json.dumps([name, kwargs_dict], sort_keys=True)
     
-    def _serialize_indicator_values(self, values: Union[np.ndarray, Tuple[np.ndarray, ...]]) -> bytes:
+    def _serialize_indicator_values(self, indicator_desc: 'UsedIndicatorDescription') -> bytes:
         """
         Serialize indicator values (numpy array or tuple of arrays) to bytes with metadata.
         Similar to how quotes are serialized in quotes/server.py.
         
         Args:
-            values: numpy array or tuple of numpy arrays
+            indicator_desc: UsedIndicatorDescription object with values and series_names
             
         Returns:
             bytes: msgpack-serialized data with metadata and binary arrays
         """
+        values = indicator_desc.values
+        series_names = indicator_desc.series_names
+        
         if isinstance(values, tuple):
             # Multiple arrays
             arrays_metadata = []
@@ -144,7 +150,8 @@ class BackTestingResults:
             response_data = {
                 'metadata': {
                     'is_tuple': True,
-                    'arrays': arrays_metadata
+                    'arrays': arrays_metadata,
+                    'series_names': series_names
                 },
                 'binary_data': {
                     'arrays': arrays_binary
@@ -156,7 +163,8 @@ class BackTestingResults:
                 'metadata': {
                     'is_tuple': False,
                     'dtype': str(values.dtype),
-                    'shape': list(values.shape)
+                    'shape': list(values.shape),
+                    'series_names': None
                 },
                 'binary_data': {
                     'array': values.tobytes()
@@ -343,7 +351,7 @@ class BackTestingResults:
             serialized_cache_key = self._serialize_cache_key(cache_key)
             
             # Serialize indicator values
-            indicator_bytes = self._serialize_indicator_values(indicator_desc.values)
+            indicator_bytes = self._serialize_indicator_values(indicator_desc)
             
             # Create Redis key: {prefix}:{result_id}:indicators:{proxy_name}:{serialized_cache_key}
             indicator_redis_key = f"{indicators_key_prefix}:{proxy_name}:{serialized_cache_key}"
@@ -548,4 +556,189 @@ class BackTestingResults:
         except Exception as e:
             logger.error(f"Failed to get results: {str(e)}")
             raise RuntimeError(f"Failed to get results: {str(e)}") from e
+    
+    def _deserialize_indicator_values(self, indicator_bytes: bytes) -> Dict[str, Any]:
+        """
+        Deserialize indicator values from bytes (msgpack) to numpy arrays.
+        Similar to how quotes are deserialized in quotes/client.py.
+        
+        Args:
+            indicator_bytes: msgpack-serialized indicator data
+            
+        Returns:
+            Dictionary with 'metadata' and 'values' (numpy arrays)
+        """
+        # Deserialize MessagePack response
+        response_data = msgpack.unpackb(indicator_bytes, raw=False)
+        
+        metadata = response_data.get('metadata', {})
+        binary_data = response_data.get('binary_data', {})
+        
+        is_tuple = metadata.get('is_tuple', False)
+        series_names = metadata.get('series_names')
+        
+        if is_tuple:
+            # Multiple arrays
+            arrays_metadata = metadata.get('arrays', [])
+            arrays_binary = binary_data.get('arrays', [])
+            
+            if len(arrays_metadata) != len(arrays_binary):
+                raise ValueError(f"Mismatch between arrays metadata ({len(arrays_metadata)}) and binary data ({len(arrays_binary)})")
+            
+            # Reconstruct numpy arrays
+            reconstructed_arrays = []
+            for arr_meta, arr_bytes in zip(arrays_metadata, arrays_binary):
+                dtype = np.dtype(arr_meta['dtype'])
+                shape = tuple(arr_meta['shape'])
+                arr = np.frombuffer(arr_bytes, dtype=dtype).reshape(shape)
+                reconstructed_arrays.append(arr)
+            
+            # If series_names available, create dict with named keys
+            if series_names and len(series_names) == len(reconstructed_arrays):
+                values = {name: arr.tolist() for name, arr in zip(series_names, reconstructed_arrays)}
+            else:
+                # Use generic names or indices
+                if series_names:
+                    names = series_names
+                else:
+                    names = [f'series{i}' for i in range(len(reconstructed_arrays))]
+                values = {name: arr.tolist() for name, arr in zip(names, reconstructed_arrays)}
+        else:
+            # Single array
+            dtype = np.dtype(metadata['dtype'])
+            shape = tuple(metadata['shape'])
+            arr_bytes = binary_data.get('array')
+            arr = np.frombuffer(arr_bytes, dtype=dtype).reshape(shape)
+            values = arr.tolist()
+        
+        return {
+            'metadata': {
+                'is_tuple': is_tuple,
+                'series_names': series_names
+            },
+            'values': values
+        }
+    
+    def get_indicators(self, result_id: str, received_keys: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+        """
+        Get new indicators from Redis that haven't been received yet.
+        
+        Args:
+            result_id: Result ID
+            received_keys: Optional list of indicator keys already received by frontend
+                          Format: "{proxy_name}:{serialized_cache_key}"
+            
+        Returns:
+            Dictionary mapping indicator key to indicator data:
+            {
+                "talib:[\"SMA\",{\"timeperiod\":50}]": {
+                    "proxy_name": "talib",
+                    "indicator_name": "SMA",
+                    "parameters": {"timeperiod": 50},
+                    "is_tuple": false,
+                    "series_names": null,
+                    "values": [1.0, 2.0, ...]
+                },
+                ...
+            }
+            
+        Raises:
+            RuntimeError: If operation fails
+        """
+        try:
+            client = self._get_redis_client()
+            result_key_prefix = self.task.get_result_key()
+            indicators_key_prefix = f"{result_key_prefix}:{result_id}:indicators"
+            
+            # Get all indicator keys from Redis
+            pattern = f"{indicators_key_prefix}:*"
+            all_redis_keys = client.keys(pattern)
+            
+            if not all_redis_keys:
+                return {}
+            
+            # Convert received_keys to set for efficient lookup
+            received_keys_set = set(received_keys) if received_keys else set()
+            
+            # Extract indicator keys (remove prefix to get {proxy_name}:{serialized_cache_key})
+            new_indicator_keys = []
+            redis_keys_to_fetch = []
+            
+            for redis_key_bytes in all_redis_keys:
+                redis_key = redis_key_bytes.decode('utf-8') if isinstance(redis_key_bytes, bytes) else redis_key_bytes
+                
+                # Extract indicator key: remove prefix "{prefix}:{result_id}:indicators:"
+                prefix_to_remove = f"{indicators_key_prefix}:"
+                if not redis_key.startswith(prefix_to_remove):
+                    continue
+                
+                indicator_key = redis_key[len(prefix_to_remove):]  # {proxy_name}:{serialized_cache_key}
+                
+                # Check if already received
+                if indicator_key not in received_keys_set:
+                    new_indicator_keys.append(indicator_key)
+                    redis_keys_to_fetch.append(redis_key)
+            
+            if not new_indicator_keys:
+                return {}
+            
+            # Fetch indicator data from Redis using pipeline
+            pipeline = client.pipeline()
+            for redis_key in redis_keys_to_fetch:
+                pipeline.get(redis_key)
+            
+            indicator_data_list = pipeline.execute()
+            
+            # Process and deserialize indicators
+            result = {}
+            
+            for indicator_key, indicator_bytes in zip(new_indicator_keys, indicator_data_list):
+                if indicator_bytes is None:
+                    logger.warning(f"Indicator key {indicator_key} not found in Redis")
+                    continue
+                
+                try:
+                    # Deserialize indicator
+                    deserialized = self._deserialize_indicator_values(indicator_bytes)
+                    
+                    # Parse indicator key to extract proxy_name and cache_key
+                    parts = indicator_key.split(':', 1)
+                    if len(parts) != 2:
+                        logger.warning(f"Invalid indicator key format: {indicator_key}")
+                        continue
+                    
+                    proxy_name = parts[0]
+                    serialized_cache_key = parts[1]
+                    
+                    # Parse cache_key JSON to get indicator_name and parameters
+                    try:
+                        cache_key_data = json.loads(serialized_cache_key)
+                        if not isinstance(cache_key_data, list) or len(cache_key_data) != 2:
+                            logger.warning(f"Invalid cache key format: {serialized_cache_key}")
+                            continue
+                        
+                        indicator_name = cache_key_data[0]
+                        parameters = cache_key_data[1]
+                    except (json.JSONDecodeError, ValueError, IndexError) as e:
+                        logger.warning(f"Failed to parse cache key {serialized_cache_key}: {e}")
+                        continue
+                    
+                    # Build result entry
+                    result[indicator_key] = {
+                        'proxy_name': proxy_name,
+                        'indicator_name': indicator_name,
+                        'parameters': parameters,
+                        'is_tuple': deserialized['metadata']['is_tuple'],
+                        'series_names': deserialized['metadata']['series_names'],
+                        'values': deserialized['values']
+                    }
+                except Exception as e:
+                    logger.error(f"Failed to deserialize indicator {indicator_key}: {e}", exc_info=True)
+                    raise RuntimeError(f"Failed to deserialize indicator {indicator_key}: {str(e)}") from e
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to get indicators: {str(e)}")
+            raise RuntimeError(f"Failed to get indicators: {str(e)}") from e
 
