@@ -401,44 +401,56 @@ async def get_backtesting_results(
         }
 
 
-@router.post("/tasks/{task_id}/results/{result_id}/indicators", response_model=Dict[str, Any])
+@router.get("/tasks/{task_id}/results/{result_id}/indicators", response_model=Dict[str, Any])
 async def get_backtesting_indicators(
     task_id: int,
     result_id: str,
-    request_data: Optional[Dict[str, Any]] = None
+    date_start: str = Query(..., description="Start date/time in ISO format (e.g., '2024-01-01T00:00:00Z')"),
+    date_end: str = Query(..., description="End date/time in ISO format (e.g., '2024-01-31T23:59:59Z')")
 ):
     """
-    Get new indicators from backtesting results that haven't been received yet.
+    Get all indicators from backtesting results filtered by date range.
     
     Args:
         task_id: Task ID
         result_id: Result ID (GUID) for the backtesting run
-        request_data: Optional request body with "received_keys" list
-                      Format: {"received_keys": ["key1", "key2", ...]}
-                      Each key format: "{proxy_name}:{serialized_cache_key}"
+        date_start: Start date/time in ISO format for filtering indicators
+        date_end: End date/time in ISO format for filtering indicators
     
     Returns:
         Dictionary with success flag, data (list of indicator objects), or error_message
         
     Raises:
-        HTTPException: If task not found or operation fails
+        HTTPException: If task not found, invalid date format, or operation fails
     """
     # Load task
     task = task_list.load(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # Extract received_keys from request body
-    received_keys = None
-    if request_data and isinstance(request_data, dict):
-        received_keys = request_data.get('received_keys')
+    # Parse dates
+    try:
+        date_start_dt64 = parse_utc_datetime64(date_start)
+        date_end_dt64 = parse_utc_datetime64(date_end)
+    except Exception as e:
+        return {
+            "success": False,
+            "error_message": f"Invalid date format: {str(e)}"
+        }
+    
+    # Validate date range
+    if date_start_dt64 >= date_end_dt64:
+        return {
+            "success": False,
+            "error_message": "date_start must be before date_end"
+        }
     
     try:
         # Create BackTestingResults instance without broker (read-only mode)
         results = BackTestingResults(task, broker=None)
         
         # Get indicators
-        indicators_dict = results.get_indicators(result_id, received_keys)
+        indicators_dict = results.get_indicators(result_id, date_start_dt64, date_end_dt64)
         
         # Convert dictionary to list of indicator objects
         indicators_list = []
@@ -454,7 +466,10 @@ async def get_backtesting_indicators(
         }
     except Exception as e:
         logger.error(f"Error getting backtesting indicators for task {task_id}, result_id {result_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get indicators: {str(e)}")
+        return {
+            "success": False,
+            "error_message": f"Failed to get indicators: {str(e)}"
+        }
 
 
 def start_backtesting_worker(task_id: int) -> str:

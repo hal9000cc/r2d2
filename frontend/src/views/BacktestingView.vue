@@ -516,14 +516,12 @@ const {
   dealsCount,
   allTrades,
   stats,
-  indicatorKeys,
   clearResults,
   setResultId,
   setRelevanceTime,
   addTrades,
   updateDeals,
   updateStats,
-  addIndicators,
   getAllDeals,
   getAllTrades
 } = backtestingResults
@@ -782,9 +780,6 @@ async function loadBacktestingResults(fromTime = null) {
         setRelevanceTime(backtestProgressCurrentTime.value)
       }
       
-      // Load indicators after successful results load
-      await loadBacktestingIndicators()
-      
       return true
     } else if (!response.success) {
       console.error('Failed to load backtesting results:', response.error_message)
@@ -800,48 +795,6 @@ async function loadBacktestingResults(fromTime = null) {
     addLocalMessage({
       level: 'error',
       message: `Error loading backtesting results: ${error.message || 'Unknown error'}`
-    })
-    return false
-  }
-}
-
-/**
- * Load backtesting indicators
- * @returns {Promise<boolean>} True if loaded successfully, false otherwise
- */
-async function loadBacktestingIndicators() {
-  if (!currentTaskId.value || !resultId.value) {
-    return false
-  }
-  
-  try {
-    ensureConnection()
-    const response = await backtestingApi.getBacktestingIndicators(
-      currentTaskId.value,
-      resultId.value,
-      indicatorKeys.value
-    )
-    
-    if (response.success && response.data) {
-      // Add indicators (avoid duplicates by key)
-      if (response.data.length > 0) {
-        addIndicators(response.data)
-      }
-      return true
-    } else if (!response.success) {
-      console.error('Failed to load backtesting indicators:', response.error_message)
-      addLocalMessage({
-        level: 'error',
-        message: `Failed to load backtesting indicators: ${response.error_message || 'Unknown error'}`
-      })
-      return false
-    }
-    return false
-  } catch (error) {
-    console.error('Error loading backtesting indicators:', error)
-    addLocalMessage({
-      level: 'error',
-      message: `Error loading backtesting indicators: ${error.message || 'Unknown error'}`
     })
     return false
   }
@@ -915,8 +868,6 @@ watch([backtestProgressCurrentTime, backtestProgressResultId], async ([newCurren
   
   // Load results from last relevance time to current time
   await loadBacktestingResults()
-  // Load indicators after results
-  await loadBacktestingIndicators()
 })
 
 // Watch for backtesting completion to load and validate final results
@@ -943,18 +894,13 @@ watch(backtestProgressState, async (newState) => {
     if (isComplete) {
       // Results are already complete, just validate
       validateResultsCompleteness()
-      // Still load indicators (they might be new)
-      await loadBacktestingIndicators()
       return
     }
     // Results exist but are incomplete - need to load missing data
-  }
-  
+      }
+      
   // Load results (either we don't have them or they're incomplete)
   const loaded = await loadBacktestingResults()
-  
-  // Load indicators (even if results loading failed, try to load indicators)
-  await loadBacktestingIndicators()
   
   if (loaded) {
     // Validate completeness after loading

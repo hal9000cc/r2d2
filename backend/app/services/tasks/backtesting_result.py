@@ -146,6 +146,48 @@ class BackTestingResults:
         kwargs_dict = dict(kwargs_tuple)
         return json.dumps([name, kwargs_dict], sort_keys=True)
     
+    def _serialize_array(self, arr: np.ndarray) -> bytes:
+        """
+        Serialize a single numpy array to bytes using msgpack.
+        
+        Args:
+            arr: numpy array to serialize
+            
+        Returns:
+            bytes: msgpack-serialized data with metadata and binary array
+        """
+        response_data = {
+            'metadata': {
+                'dtype': str(arr.dtype),
+                'shape': list(arr.shape)
+            },
+            'binary_data': {
+                'array': arr.tobytes()
+            }
+        }
+        return msgpack.packb(response_data, use_bin_type=True)
+    
+    def _deserialize_array(self, arr_bytes: bytes) -> np.ndarray:
+        """
+        Deserialize a single numpy array from bytes (msgpack).
+        
+        Args:
+            arr_bytes: msgpack-serialized array data
+            
+        Returns:
+            numpy array
+        """
+        response_data = msgpack.unpackb(arr_bytes, raw=False)
+        metadata = response_data.get('metadata', {})
+        binary_data = response_data.get('binary_data', {})
+        
+        dtype = np.dtype(metadata['dtype'])
+        shape = tuple(metadata['shape'])
+        arr_bytes_data = binary_data.get('array')
+        arr = np.frombuffer(arr_bytes_data, dtype=dtype).reshape(shape)
+        
+        return arr
+    
     def _serialize_indicator_values(self, indicator_desc: 'UsedIndicatorDescription') -> bytes:
         """
         Serialize indicator values (numpy array or tuple of arrays) to bytes with metadata.
@@ -182,7 +224,7 @@ class BackTestingResults:
                 }
             }
         else:
-            # Single array
+            # Single array - build response with series_info
             response_data = {
                 'metadata': {
                     'is_tuple': False,
@@ -194,9 +236,7 @@ class BackTestingResults:
                     'array': values.tobytes()
                 }
             }
-        
-        # Serialize with MessagePack (supports binary data)
-        return msgpack.packb(response_data, use_bin_type=True)
+            return msgpack.packb(response_data, use_bin_type=True)
     
     
     def _prepare_trades_data(self, broker, result_key_prefix: str, result_id: str):
@@ -321,6 +361,45 @@ class BackTestingResults:
             stats_json = json.dumps(stats_dict)
         
         return (stats_key, stats_json)
+    
+    def _save_quotes_time(self, result_key_prefix: str, result_id: str):
+        """
+        Save quotes time series to Redis (only on first call).
+        Uses msgpack format similar to indicators.
+        
+        Args:
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            
+        Returns:
+            bool: True if saved (first time), False if already exists
+        """
+        if not self.ta_proxies:
+            return False
+        
+        # Get first proxy to access quotes_data
+        first_proxy = next(iter(self.ta_proxies.values()))
+        if not hasattr(first_proxy, 'quotes_data') or 'time' not in first_proxy.quotes_data:
+            return False
+        
+        time_array = first_proxy.quotes_data['time']
+        
+        # Serialize time array using msgpack (same format as indicators)
+        client_binary = self._get_redis_client_binary()
+        time_key = f"{result_key_prefix}:{result_id}:time"
+        
+        # Check if already saved (using binary client for consistency)
+        if client_binary.exists(time_key.encode('utf-8')):
+            return False  # Already saved
+        
+        # Serialize time array
+        time_bytes = self._serialize_array(time_array)
+        
+        # Save to Redis
+        client_binary.set(time_key.encode('utf-8'), time_bytes)
+        
+        logger.debug(f"Saved quotes time series to {time_key}")
+        return True
     
     def _save_indicators(self, result_key_prefix: str, result_id: str):
         """
@@ -450,6 +529,9 @@ class BackTestingResults:
             
             # Update trades start index only after successful save
             self._trades_start_index = current_trades_size
+            
+            # Save quotes time series (only on first call)
+            self._save_quotes_time(result_key_prefix, result_id)
             
             # Save indicators in separate pipeline
             saved_indicator_keys = self._save_indicators(result_key_prefix, result_id)
@@ -644,14 +726,39 @@ class BackTestingResults:
             'values': values
         }
     
-    def get_indicators(self, result_id: str, received_keys: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+    def _load_quotes_time(self, result_key_prefix: str, result_id: str) -> Optional[np.ndarray]:
         """
-        Get new indicators from Redis that haven't been received yet.
+        Load quotes time series from Redis.
+        
+        Args:
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            
+        Returns:
+            numpy array with time series or None if not found
+        """
+        try:
+            client_binary = self._get_redis_client_binary()
+            time_key = f"{result_key_prefix}:{result_id}:time"
+            
+            time_bytes = client_binary.get(time_key.encode('utf-8'))
+            if time_bytes is None:
+                return None
+            
+            # Deserialize array
+            return self._deserialize_array(time_bytes)
+        except Exception as e:
+            logger.warning(f"Failed to load quotes time series: {e}")
+            return None
+    
+    def get_indicators(self, result_id: str, date_start: np.datetime64, date_end: np.datetime64) -> Dict[str, Dict[str, Any]]:
+        """
+        Get all indicators from Redis filtered by date range.
         
         Args:
             result_id: Result ID
-            received_keys: Optional list of indicator keys already received by frontend
-                          Format: "{proxy_name}:{serialized_cache_key}"
+            date_start: Start date (datetime64) for filtering
+            date_end: End date (datetime64) for filtering
             
         Returns:
             Dictionary mapping indicator key to indicator data:
@@ -662,7 +769,9 @@ class BackTestingResults:
                     "parameters": {"timeperiod": 50},
                     "is_tuple": false,
                     "series_info": [{"name": "SMA", "is_price": true}],
-                    "values": [1.0, 2.0, ...]
+                    "values": [1.0, 2.0, ...],  # filtered by date range
+                    "date_start": "ISO string",
+                    "date_end": "ISO string"
                 },
                 ...
             }
@@ -671,11 +780,28 @@ class BackTestingResults:
             RuntimeError: If operation fails
         """
         try:
+            # Load quotes time series to determine indices
+            result_key_prefix = self.task.get_result_key()
+            time_array = self._load_quotes_time(result_key_prefix, result_id)
+            
+            if time_array is None or len(time_array) == 0:
+                logger.warning(f"No quotes time series found for result_id {result_id}")
+                return {}
+            
+            # Find indices for date range using numpy searchsorted
+            # Find first index where time >= date_start
+            start_idx = np.searchsorted(time_array, date_start, side='left')
+            # Find last index where time <= date_end (inclusive)
+            end_idx = np.searchsorted(time_array, date_end, side='right')
+            
+            # Clamp indices to array bounds
+            start_idx = max(0, min(start_idx, len(time_array) - 1))
+            end_idx = max(start_idx, min(end_idx, len(time_array)))
+            
             # Use binary client for reading indicator data (msgpack)
             client_binary = self._get_redis_client_binary()
             # Use regular client for keys (strings)
             client = self._get_redis_client()
-            result_key_prefix = self.task.get_result_key()
             indicators_key_prefix = f"{result_key_prefix}:{result_id}:indicators"
             
             # Get all indicator keys from Redis (using regular client for string keys)
@@ -685,11 +811,8 @@ class BackTestingResults:
             if not all_redis_keys:
                 return {}
             
-            # Convert received_keys to set for efficient lookup
-            received_keys_set = set(received_keys) if received_keys else set()
-            
             # Extract indicator keys (remove prefix to get {proxy_name}:{serialized_cache_key})
-            new_indicator_keys = []
+            indicator_keys = []
             redis_keys_to_fetch = []
             
             for redis_key in all_redis_keys:
@@ -701,32 +824,33 @@ class BackTestingResults:
                     continue
                 
                 indicator_key = redis_key[len(prefix_to_remove):]  # {proxy_name}:{serialized_cache_key}
-                
-                # Check if already received
-                if indicator_key not in received_keys_set:
-                    new_indicator_keys.append(indicator_key)
-                    redis_keys_to_fetch.append(redis_key)
+                indicator_keys.append(indicator_key)
+                redis_keys_to_fetch.append(redis_key)
             
-            if not new_indicator_keys:
+            if not indicator_keys:
                 return {}
             
-            # Fetch indicator data from Redis using binary client pipeline
+            # Fetch all indicator data from Redis using binary client pipeline
             pipeline = client_binary.pipeline()
             for redis_key in redis_keys_to_fetch:
                 pipeline.get(redis_key)
             
             indicator_data_list = pipeline.execute()
             
+            # Convert date_start and date_end to ISO strings for metadata
+            date_start_iso = datetime64_to_iso(date_start)
+            date_end_iso = datetime64_to_iso(date_end)
+            
             # Process and deserialize indicators
             result = {}
             
-            for indicator_key, indicator_bytes in zip(new_indicator_keys, indicator_data_list):
+            for indicator_key, indicator_bytes in zip(indicator_keys, indicator_data_list):
                 if indicator_bytes is None:
                     logger.warning(f"Indicator key {indicator_key} not found in Redis")
                     continue
                 
                 try:
-                    # Deserialize indicator
+                    # Deserialize indicator (returns numpy arrays, not lists)
                     deserialized = self._deserialize_indicator_values(indicator_bytes)
                     
                     # Parse indicator key to extract proxy_name and cache_key
@@ -751,14 +875,52 @@ class BackTestingResults:
                         logger.warning(f"Failed to parse cache key {serialized_cache_key}: {e}")
                         continue
                     
+                    # Apply date range filtering to values
+                    # Note: _deserialize_indicator_values returns lists, not numpy arrays
+                    # We need to work with the deserialized data structure
+                    is_tuple = deserialized['metadata']['is_tuple']
+                    filtered_values = None
+                    
+                    if is_tuple:
+                        # Multiple series (dict with series names as keys, values are lists)
+                        filtered_values = {}
+                        for series_name, values_list in deserialized['values'].items():
+                            if len(values_list) > 0:
+                                # Clamp indices to array bounds
+                                arr_start = min(start_idx, len(values_list))
+                                arr_end = min(end_idx, len(values_list))
+                                if arr_start < arr_end:
+                                    # Slice list (inclusive end: end_idx+1)
+                                    filtered_values[series_name] = values_list[arr_start:arr_end+1]
+                                else:
+                                    filtered_values[series_name] = []
+                            else:
+                                filtered_values[series_name] = []
+                    else:
+                        # Single series (list)
+                        values_list = deserialized['values']
+                        if len(values_list) > 0:
+                            # Clamp indices to array bounds
+                            arr_start = min(start_idx, len(values_list))
+                            arr_end = min(end_idx, len(values_list))
+                            if arr_start < arr_end:
+                                # Slice list (inclusive end: end_idx+1)
+                                filtered_values = values_list[arr_start:arr_end+1]
+                            else:
+                                filtered_values = []
+                        else:
+                            filtered_values = []
+                    
                     # Build result entry
                     result[indicator_key] = {
                         'proxy_name': proxy_name,
                         'indicator_name': indicator_name,
                         'parameters': parameters,
-                        'is_tuple': deserialized['metadata']['is_tuple'],
+                        'is_tuple': is_tuple,
                         'series_info': deserialized['metadata']['series_info'],
-                        'values': deserialized['values']
+                        'values': filtered_values,
+                        'date_start': date_start_iso,
+                        'date_end': date_end_iso
                     }
                 except Exception as e:
                     logger.error(f"Failed to deserialize indicator {indicator_key}: {e}", exc_info=True)

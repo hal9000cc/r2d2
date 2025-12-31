@@ -146,10 +146,6 @@ export default {
     },
     showDealLines() {
       this.updateDealLines()
-    },
-    showIndicators() {
-      // TODO: Implement indicator visibility update
-      // this.updateIndicators()
     }
   },
   mounted() {
@@ -337,10 +333,10 @@ export default {
       
       // Initialize backtesting bounds on first progress
       if (this.backtestingDateStart === null) {
-        this.backtestingDateStart = dateStart
-        this.backtestingDateEnd = dateCurrent
-        // Load initial data on first progress
-        this.loadInitialData()
+      this.backtestingDateStart = dateStart
+      this.backtestingDateEnd = dateCurrent
+      // Load initial data on first progress
+      this.loadInitialData()
       } else {
         // Update backtestingDateEnd on each progress message
         this.backtestingDateEnd = dateCurrent
@@ -1531,7 +1527,7 @@ export default {
           const currentRange = this.chart.timeScale().getVisibleLogicalRange()
           if (currentRange) {
             this.updateChartOthers(currentRange)
-          }
+        }
         }, 100)
       } finally {
         this.isUpdatingChart = false
