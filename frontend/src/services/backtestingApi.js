@@ -80,4 +80,25 @@ export const backtestingApi = {
     return response.data
   },
 
+  /**
+   * Get backtesting indicators
+   * @param {number} taskId - Task ID
+   * @param {string} resultId - Result ID (UUID)
+   * @param {string} dateStart - Start date/time in ISO format
+   * @param {string} dateEnd - End date/time in ISO format
+   * @returns {Promise<Object>} Indicators data with list of indicator objects
+   */
+  async getBacktestingIndicators(taskId, resultId, dateStart, dateEnd) {
+    const params = {
+      date_start: dateStart,
+      date_end: dateEnd
+    }
+    
+    const response = await axios.get(
+      `${API_BASE_URL}/api/v1/backtesting/tasks/${taskId}/results/${resultId}/indicators`,
+      { params }
+    )
+    return response.data
+  }
+
 }

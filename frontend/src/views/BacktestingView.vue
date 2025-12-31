@@ -283,6 +283,7 @@
                 :timeframe="currentTask?.timeframe || null"
                 :backtesting-progress="backtestingProgressData"
                 :clear-chart="clearChartFlag"
+                :task-id="currentTaskId"
                 :show-trade-markers="showTradeMarkers"
                 :show-deal-lines="showDealLines"
                 :show-indicators="showIndicators"

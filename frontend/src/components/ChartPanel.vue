@@ -7,6 +7,7 @@
       :timeframe="timeframe"
       :backtesting-progress="backtestingProgress"
       :clear-chart="clearChart"
+      :task-id="taskId"
       :show-trade-markers="showTradeMarkers"
       :show-deal-lines="showDealLines"
       :show-indicators="showIndicators"
@@ -47,6 +48,10 @@ export default {
     clearChart: {
       type: Boolean,
       default: false
+    },
+    taskId: {
+      type: Number,
+      default: null
     },
     showTradeMarkers: {
       type: Boolean,

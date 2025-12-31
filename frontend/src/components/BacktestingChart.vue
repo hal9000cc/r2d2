@@ -9,6 +9,7 @@
 import { createChart, ColorType, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts'
 import { inject } from 'vue'
 import axios from 'axios'
+import { backtestingApi } from '../services/backtestingApi.js'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'
 
@@ -44,6 +45,11 @@ export default {
     },
     timeframe: {
       type: String,
+      default: null
+    },
+    // Task ID for loading indicators
+    taskId: {
+      type: Number,
       default: null
     },
     // Backtesting progress info
@@ -98,6 +104,9 @@ export default {
       
       currentData: [], // Array of {time, open, high, low, close}
       
+      // Indicators storage
+      indicatorSeries: new Map(), // Map<indicatorKey, {series: LineSeries[], isPrice: boolean[]}>
+      
       // Flags to block concurrent updates
       isUpdatingChart: false,      // Flag for chart bars update
       isUpdatingTradeMarkers: false, // Flag for trade markers update
@@ -146,6 +155,17 @@ export default {
     },
     showDealLines() {
       this.updateDealLines()
+    },
+    showIndicators() {
+      if (this.showIndicators) {
+        // Load indicators if we have data
+        if (this.currentData.length > 0 && this.backtestingDateStart && this.backtestingDateEnd) {
+          this.loadIndicators(this.backtestingDateStart, this.backtestingDateEnd)
+        }
+      } else {
+        // Remove all indicators
+        this.removeAllIndicators()
+      }
     }
   },
   mounted() {
@@ -369,6 +389,11 @@ export default {
         // Set initial single bar to determine visible range
         this.candlestickSeries.setData([quotes[0]])
         
+        // Load indicators in parallel
+        if (this.showIndicators) {
+          this.loadIndicators(this.backtestingDateStart, limitedDateEnd)
+        }
+        
         // Move to begin
         this.$nextTick(async () => {
           await this.moveToBegin()
@@ -508,6 +533,11 @@ export default {
         
         // Set data on chart
         this.candlestickSeries.setData(loadedQuotes)
+        
+        // Load indicators in parallel
+        if (this.showIndicators) {
+          this.loadIndicators(loadFrom, loadTo)
+        }
         
         // Set visible logical range: from end - visibleLength to end
         this.chart.timeScale().setVisibleLogicalRange({
@@ -706,6 +736,13 @@ export default {
         if (wasDeleted || wasAdded) {
           // Set data on chart
           this.candlestickSeries.setData(this.currentData)
+          
+          // Load indicators if enabled
+          if (this.showIndicators && this.currentData.length > 0) {
+            const firstTime = this.currentData[0].time
+            const lastTime = this.currentData[this.currentData.length - 1].time
+            this.loadIndicators(firstTime, lastTime)
+          }
           
           // Set visible range using adjusted values
           this.chart.timeScale().setVisibleLogicalRange({
@@ -1193,6 +1230,9 @@ export default {
           // Silently ignore errors
         }
       }
+      
+      // Remove all indicators
+      this.removeAllIndicators()
       
       this.currentData = []
       this.backtestingDateStart = null
@@ -1710,6 +1750,213 @@ export default {
       } finally {
         this.isUpdatingChart = false
       }
+    },
+    
+    /**
+     * Load indicators from API
+     * @param {number} fromTimestamp - Start timestamp in Unix seconds
+     * @param {number} toTimestamp - End timestamp in Unix seconds
+     * @returns {Promise<boolean>} True if loaded successfully
+     */
+    async loadIndicators(fromTimestamp, toTimestamp) {
+      if (!this.showIndicators) {
+        return false
+      }
+      
+      if (!this.taskId || !this.backtestingResults?.resultId) {
+        return false
+      }
+      
+      try {
+        // Convert timestamps to ISO strings
+        const fromISO = this.unixToISO(fromTimestamp)
+        const toISO = this.unixToISO(toTimestamp)
+        
+        // Load indicators from API
+        const response = await backtestingApi.getBacktestingIndicators(
+          this.taskId,
+          this.backtestingResults.resultId,
+          fromISO,
+          toISO
+        )
+        
+        if (response.success && response.data) {
+          // Update indicators on chart
+          this.updateIndicators(response.data)
+          return true
+        } else {
+          console.error('Failed to load indicators:', response.error_message)
+          return false
+        }
+      } catch (error) {
+        console.error('Error loading indicators:', error)
+        return false
+      }
+    },
+    
+    /**
+     * Remove all indicator series from chart
+     */
+    removeAllIndicators() {
+      if (!this.chart || this.indicatorSeries.size === 0) {
+        return
+      }
+      
+      try {
+        this.indicatorSeries.forEach((seriesData) => {
+          seriesData.series.forEach(lineSeries => {
+            this.chart.removeSeries(lineSeries)
+          })
+        })
+        this.indicatorSeries.clear()
+      } catch (error) {
+        console.error('Error removing indicators:', error)
+      }
+    },
+    
+    /**
+     * Update indicators on chart (remove all and create new)
+     * @param {Array} indicatorsList - List of indicator objects from API
+     */
+    updateIndicators(indicatorsList) {
+      if (!this.chart || !indicatorsList || indicatorsList.length === 0) {
+        return
+      }
+      
+      // Remove all existing indicators
+      this.removeAllIndicators()
+      
+      // Color palette for indicators (simple rotation)
+      const colors = [
+        '#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
+        '#00BCD4', '#8BC34A', '#FFC107', '#E91E63', '#795548'
+      ]
+      let colorIndex = 0
+      
+      // Process each indicator
+      indicatorsList.forEach((indicator) => {
+        const { key, values, time, series_info, is_tuple } = indicator
+        
+        if (!time || !values) {
+          return
+        }
+        
+        // Convert time ISO strings to Unix timestamps
+        const timeStamps = time.map(iso => this.isoToUnix(iso))
+        
+        // Prepare series data for this indicator
+        const seriesData = {
+          series: [],
+          isPrice: []
+        }
+        
+        if (is_tuple) {
+          // Multiple series (values is object: {seriesName: [values]})
+          series_info.forEach((seriesInfo, index) => {
+            const seriesName = seriesInfo.name
+            const isPrice = seriesInfo.is_price
+            const seriesValues = values[seriesName]
+            
+            if (!seriesValues || seriesValues.length === 0) {
+              return
+            }
+            
+            // Create data points: {time, value}
+            const dataPoints = []
+            for (let i = 0; i < Math.min(timeStamps.length, seriesValues.length); i++) {
+              const value = seriesValues[i]
+              // Skip null/undefined/NaN values
+              if (value !== null && value !== undefined && !isNaN(value)) {
+                dataPoints.push({
+                  time: timeStamps[i],
+                  value: value
+                })
+              }
+            }
+            
+            if (dataPoints.length === 0) {
+              return
+            }
+            
+            // Create line series
+            const lineSeries = this.chart.addSeries(LineSeries, {
+              color: colors[colorIndex % colors.length],
+              lineWidth: 2,
+              priceScaleId: isPrice ? undefined : `indicator-${key}-${index}`,
+              priceFormat: {
+                type: 'price',
+                precision: 4,
+                minMove: 0.0001
+              }
+            })
+            
+            // Set data
+            lineSeries.setData(dataPoints)
+            
+            // Store series reference
+            seriesData.series.push(lineSeries)
+            seriesData.isPrice.push(isPrice)
+            
+            colorIndex++
+          })
+        } else {
+          // Single series (values is array)
+          if (series_info.length === 0) {
+            return
+          }
+          
+          const seriesInfo = series_info[0]
+          const isPrice = seriesInfo.is_price
+          const seriesValues = Array.isArray(values) ? values : []
+          
+          if (seriesValues.length === 0) {
+            return
+          }
+          
+          // Create data points: {time, value}
+          const dataPoints = []
+          for (let i = 0; i < Math.min(timeStamps.length, seriesValues.length); i++) {
+            const value = seriesValues[i]
+            // Skip null/undefined/NaN values
+            if (value !== null && value !== undefined && !isNaN(value)) {
+              dataPoints.push({
+                time: timeStamps[i],
+                value: value
+              })
+            }
+          }
+          
+          if (dataPoints.length === 0) {
+            return
+          }
+          
+          // Create line series
+          const lineSeries = this.chart.addSeries(LineSeries, {
+            color: colors[colorIndex % colors.length],
+            lineWidth: 2,
+            priceScaleId: isPrice ? undefined : `indicator-${key}`,
+            priceFormat: {
+              type: 'price',
+              precision: 4,
+              minMove: 0.0001
+            }
+          })
+          
+          // Set data
+          lineSeries.setData(dataPoints)
+          
+          // Store series reference
+          seriesData.series.push(lineSeries)
+          seriesData.isPrice.push(isPrice)
+          
+          colorIndex++
+        }
+        
+        // Store indicator series data
+        if (seriesData.series.length > 0) {
+          this.indicatorSeries.set(key, seriesData)
+        }
+      })
     }
   }
 }

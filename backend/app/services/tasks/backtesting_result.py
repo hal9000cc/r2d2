@@ -751,6 +751,201 @@ class BackTestingResults:
             logger.warning(f"Failed to load quotes time series: {e}")
             return None
     
+    def _get_indicator_slice_indices(self, time_array: np.ndarray, date_start: np.datetime64, date_end: np.datetime64) -> tuple[int, int]:
+        """
+        Calculate slice indices for filtering indicators by date range.
+        
+        Args:
+            time_array: Array of datetime64 timestamps
+            date_start: Start date (datetime64) for filtering
+            date_end: End date (datetime64) for filtering
+            
+        Returns:
+            Tuple of (start_idx, end_idx) for slicing
+        """
+        # Find first index where time >= date_start
+        start_idx = np.searchsorted(time_array, date_start, side='left')
+        # Find last index where time <= date_end (inclusive)
+        end_idx = np.searchsorted(time_array, date_end, side='right')
+        
+        # Clamp indices to array bounds
+        start_idx = max(0, min(start_idx, len(time_array) - 1))
+        end_idx = max(start_idx, min(end_idx, len(time_array)))
+        
+        return start_idx, end_idx
+    
+    def _get_indicator_keys_from_redis(self, result_key_prefix: str, result_id: str) -> tuple[list[str], list[str]]:
+        """
+        Get indicator keys from Redis and extract indicator key names.
+        
+        Args:
+            result_key_prefix: Result key prefix
+            result_id: Result ID
+            
+        Returns:
+            Tuple of (indicator_keys, redis_keys_to_fetch)
+            indicator_keys: List of indicator key names (e.g., "talib:[\"SMA\",{\"timeperiod\":50}]")
+            redis_keys_to_fetch: List of full Redis keys to fetch
+        """
+        client = self._get_redis_client()
+        indicators_key_prefix = f"{result_key_prefix}:{result_id}:indicators"
+        
+        # Get all indicator keys from Redis
+        pattern = f"{indicators_key_prefix}:*"
+        all_redis_keys = client.keys(pattern)
+        
+        if not all_redis_keys:
+            return [], []
+        
+        # Extract indicator keys (remove prefix to get {proxy_name}:{serialized_cache_key})
+        indicator_keys = []
+        redis_keys_to_fetch = []
+        
+        for redis_key in all_redis_keys:
+            # Extract indicator key: remove prefix "{prefix}:{result_id}:indicators:"
+            prefix_to_remove = f"{indicators_key_prefix}:"
+            if not redis_key.startswith(prefix_to_remove):
+                continue
+            
+            indicator_key = redis_key[len(prefix_to_remove):]  # {proxy_name}:{serialized_cache_key}
+            indicator_keys.append(indicator_key)
+            redis_keys_to_fetch.append(redis_key)
+        
+        return indicator_keys, redis_keys_to_fetch
+    
+    def _fetch_indicator_data_from_redis(self, redis_keys_to_fetch: list[str]) -> list[bytes]:
+        """
+        Fetch indicator data from Redis using pipeline.
+        
+        Args:
+            redis_keys_to_fetch: List of Redis keys to fetch
+            
+        Returns:
+            List of indicator data bytes (or None if key not found)
+        """
+        client_binary = self._get_redis_client_binary()
+        pipeline = client_binary.pipeline()
+        for redis_key in redis_keys_to_fetch:
+            pipeline.get(redis_key)
+        return pipeline.execute()
+    
+    def _parse_indicator_key(self, indicator_key: str) -> tuple[str, str, dict]:
+        """
+        Parse indicator key to extract proxy_name, indicator_name, and parameters.
+        
+        Args:
+            indicator_key: Indicator key in format "{proxy_name}:{serialized_cache_key}"
+            
+        Returns:
+            Tuple of (proxy_name, indicator_name, parameters)
+            
+        Raises:
+            ValueError: If key format is invalid
+        """
+        # Parse indicator key to extract proxy_name and cache_key
+        parts = indicator_key.split(':', 1)
+        if len(parts) != 2:
+            raise ValueError(f"Invalid indicator key format: {indicator_key}")
+        
+        proxy_name = parts[0]
+        serialized_cache_key = parts[1]
+        
+        # Parse cache_key JSON to get indicator_name and parameters
+        cache_key_data = json.loads(serialized_cache_key)
+        if not isinstance(cache_key_data, list) or len(cache_key_data) != 2:
+            raise ValueError(f"Invalid cache key format: {serialized_cache_key}")
+        
+        indicator_name = cache_key_data[0]
+        parameters = cache_key_data[1]
+        
+        return proxy_name, indicator_name, parameters
+    
+    def _filter_indicator_values_by_range(self, values: Any, is_tuple: bool, start_idx: int, end_idx: int) -> Any:
+        """
+        Filter indicator values by date range indices.
+        
+        Args:
+            values: Indicator values (dict for multi-series, list for single series)
+            is_tuple: Whether indicator has multiple series
+            start_idx: Start index for slicing
+            end_idx: End index for slicing (inclusive)
+            
+        Returns:
+            Filtered values (same structure as input)
+        """
+        if is_tuple:
+            # Multiple series (dict with series names as keys, values are lists)
+            filtered_values = {}
+            for series_name, values_list in values.items():
+                if len(values_list) > 0:
+                    # Clamp indices to array bounds
+                    arr_start = min(start_idx, len(values_list))
+                    arr_end = min(end_idx, len(values_list))
+                    if arr_start < arr_end:
+                        # Slice list (inclusive end: end_idx+1)
+                        filtered_values[series_name] = values_list[arr_start:arr_end+1]
+                    else:
+                        filtered_values[series_name] = []
+                else:
+                    filtered_values[series_name] = []
+            return filtered_values
+        else:
+            # Single series (list)
+            if len(values) > 0:
+                # Clamp indices to array bounds
+                arr_start = min(start_idx, len(values))
+                arr_end = min(end_idx, len(values))
+                if arr_start < arr_end:
+                    # Slice list (inclusive end: end_idx+1)
+                    return values[arr_start:arr_end+1]
+                else:
+                    return []
+            else:
+                return []
+    
+    def _build_indicator_result_entry(
+        self,
+        indicator_key: str,
+        proxy_name: str,
+        indicator_name: str,
+        parameters: dict,
+        is_tuple: bool,
+        series_info: list,
+        filtered_values: Any,
+        time_range_iso: list[str],
+        date_start_iso: str,
+        date_end_iso: str
+    ) -> dict[str, Any]:
+        """
+        Build result entry for a single indicator.
+        
+        Args:
+            indicator_key: Indicator key
+            proxy_name: Proxy name
+            indicator_name: Indicator name
+            parameters: Indicator parameters
+            is_tuple: Whether indicator has multiple series
+            series_info: Series information
+            filtered_values: Filtered indicator values
+            time_range_iso: Time range as ISO strings
+            date_start_iso: Start date as ISO string
+            date_end_iso: End date as ISO string
+            
+        Returns:
+            Dictionary with indicator data
+        """
+        return {
+            'proxy_name': proxy_name,
+            'indicator_name': indicator_name,
+            'parameters': parameters,
+            'is_tuple': is_tuple,
+            'series_info': series_info,
+            'values': filtered_values,
+            'time': time_range_iso,
+            'date_start': date_start_iso,
+            'date_end': date_end_iso
+        }
+    
     def get_indicators(self, result_id: str, date_start: np.datetime64, date_end: np.datetime64) -> Dict[str, Dict[str, Any]]:
         """
         Get all indicators from Redis filtered by date range.
@@ -788,58 +983,29 @@ class BackTestingResults:
                 logger.warning(f"No quotes time series found for result_id {result_id}")
                 return {}
             
-            # Find indices for date range using numpy searchsorted
-            # Find first index where time >= date_start
-            start_idx = np.searchsorted(time_array, date_start, side='left')
-            # Find last index where time <= date_end (inclusive)
-            end_idx = np.searchsorted(time_array, date_end, side='right')
+            # Calculate slice indices for date range
+            start_idx, end_idx = self._get_indicator_slice_indices(time_array, date_start, date_end)
             
-            # Clamp indices to array bounds
-            start_idx = max(0, min(start_idx, len(time_array) - 1))
-            end_idx = max(start_idx, min(end_idx, len(time_array)))
-            
-            # Use binary client for reading indicator data (msgpack)
-            client_binary = self._get_redis_client_binary()
-            # Use regular client for keys (strings)
-            client = self._get_redis_client()
-            indicators_key_prefix = f"{result_key_prefix}:{result_id}:indicators"
-            
-            # Get all indicator keys from Redis (using regular client for string keys)
-            pattern = f"{indicators_key_prefix}:*"
-            all_redis_keys = client.keys(pattern)
-            
-            if not all_redis_keys:
+            if start_idx > end_idx:
+                logger.info(f"Requested date range {date_start} - {date_end} is outside quotes time range. Returning empty indicators.")
                 return {}
             
-            # Extract indicator keys (remove prefix to get {proxy_name}:{serialized_cache_key})
-            indicator_keys = []
-            redis_keys_to_fetch = []
-            
-            for redis_key in all_redis_keys:
-                # redis_key is already a string (from client with decode_responses=True)
-                
-                # Extract indicator key: remove prefix "{prefix}:{result_id}:indicators:"
-                prefix_to_remove = f"{indicators_key_prefix}:"
-                if not redis_key.startswith(prefix_to_remove):
-                    continue
-                
-                indicator_key = redis_key[len(prefix_to_remove):]  # {proxy_name}:{serialized_cache_key}
-                indicator_keys.append(indicator_key)
-                redis_keys_to_fetch.append(redis_key)
+            # Get indicator keys from Redis
+            indicator_keys, redis_keys_to_fetch = self._get_indicator_keys_from_redis(result_key_prefix, result_id)
             
             if not indicator_keys:
                 return {}
             
-            # Fetch all indicator data from Redis using binary client pipeline
-            pipeline = client_binary.pipeline()
-            for redis_key in redis_keys_to_fetch:
-                pipeline.get(redis_key)
+            # Fetch indicator data from Redis
+            indicator_data_list = self._fetch_indicator_data_from_redis(redis_keys_to_fetch)
             
-            indicator_data_list = pipeline.execute()
-            
-            # Convert date_start and date_end to ISO strings for metadata
+            # Convert dates to ISO strings for metadata
             date_start_iso = datetime64_to_iso(date_start)
             date_end_iso = datetime64_to_iso(date_end)
+            
+            # Extract time range for indicators (matching the filtered values)
+            time_range = time_array[start_idx:end_idx+1]
+            time_range_iso = [datetime64_to_iso(t) for t in time_range]
             
             # Process and deserialize indicators
             result = {}
@@ -850,78 +1016,38 @@ class BackTestingResults:
                     continue
                 
                 try:
-                    # Deserialize indicator (returns numpy arrays, not lists)
+                    # Deserialize indicator
                     deserialized = self._deserialize_indicator_values(indicator_bytes)
                     
-                    # Parse indicator key to extract proxy_name and cache_key
-                    parts = indicator_key.split(':', 1)
-                    if len(parts) != 2:
-                        logger.warning(f"Invalid indicator key format: {indicator_key}")
-                        continue
-                    
-                    proxy_name = parts[0]
-                    serialized_cache_key = parts[1]
-                    
-                    # Parse cache_key JSON to get indicator_name and parameters
+                    # Parse indicator key
                     try:
-                        cache_key_data = json.loads(serialized_cache_key)
-                        if not isinstance(cache_key_data, list) or len(cache_key_data) != 2:
-                            logger.warning(f"Invalid cache key format: {serialized_cache_key}")
-                            continue
-                        
-                        indicator_name = cache_key_data[0]
-                        parameters = cache_key_data[1]
-                    except (json.JSONDecodeError, ValueError, IndexError) as e:
-                        logger.warning(f"Failed to parse cache key {serialized_cache_key}: {e}")
+                        proxy_name, indicator_name, parameters = self._parse_indicator_key(indicator_key)
+                    except (ValueError, json.JSONDecodeError) as e:
+                        logger.warning(f"Failed to parse indicator key {indicator_key}: {e}")
                         continue
                     
-                    # Apply date range filtering to values
-                    # Note: _deserialize_indicator_values returns lists, not numpy arrays
-                    # We need to work with the deserialized data structure
+                    # Filter values by date range
                     is_tuple = deserialized['metadata']['is_tuple']
-                    filtered_values = None
-                    
-                    if is_tuple:
-                        # Multiple series (dict with series names as keys, values are lists)
-                        filtered_values = {}
-                        for series_name, values_list in deserialized['values'].items():
-                            if len(values_list) > 0:
-                                # Clamp indices to array bounds
-                                arr_start = min(start_idx, len(values_list))
-                                arr_end = min(end_idx, len(values_list))
-                                if arr_start < arr_end:
-                                    # Slice list (inclusive end: end_idx+1)
-                                    filtered_values[series_name] = values_list[arr_start:arr_end+1]
-                                else:
-                                    filtered_values[series_name] = []
-                            else:
-                                filtered_values[series_name] = []
-                    else:
-                        # Single series (list)
-                        values_list = deserialized['values']
-                        if len(values_list) > 0:
-                            # Clamp indices to array bounds
-                            arr_start = min(start_idx, len(values_list))
-                            arr_end = min(end_idx, len(values_list))
-                            if arr_start < arr_end:
-                                # Slice list (inclusive end: end_idx+1)
-                                filtered_values = values_list[arr_start:arr_end+1]
-                            else:
-                                filtered_values = []
-                        else:
-                            filtered_values = []
+                    filtered_values = self._filter_indicator_values_by_range(
+                        deserialized['values'],
+                        is_tuple,
+                        start_idx,
+                        end_idx
+                    )
                     
                     # Build result entry
-                    result[indicator_key] = {
-                        'proxy_name': proxy_name,
-                        'indicator_name': indicator_name,
-                        'parameters': parameters,
-                        'is_tuple': is_tuple,
-                        'series_info': deserialized['metadata']['series_info'],
-                        'values': filtered_values,
-                        'date_start': date_start_iso,
-                        'date_end': date_end_iso
-                    }
+                    result[indicator_key] = self._build_indicator_result_entry(
+                        indicator_key=indicator_key,
+                        proxy_name=proxy_name,
+                        indicator_name=indicator_name,
+                        parameters=parameters,
+                        is_tuple=is_tuple,
+                        series_info=deserialized['metadata']['series_info'],
+                        filtered_values=filtered_values,
+                        time_range_iso=time_range_iso,
+                        date_start_iso=date_start_iso,
+                        date_end_iso=date_end_iso
+                    )
                 except Exception as e:
                     logger.error(f"Failed to deserialize indicator {indicator_key}: {e}", exc_info=True)
                     raise RuntimeError(f"Failed to deserialize indicator {indicator_key}: {str(e)}") from e
