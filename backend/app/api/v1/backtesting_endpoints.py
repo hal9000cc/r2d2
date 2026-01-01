@@ -446,11 +446,14 @@ async def get_backtesting_indicators(
         }
     
     try:
+        # Ensure result_id is a string (FastAPI should handle this, but be explicit)
+        result_id_str = str(result_id)
+        
         # Create BackTestingResults instance without broker (read-only mode)
         results = BackTestingResults(task, broker=None)
         
         # Get indicators
-        indicators_dict = results.get_indicators(result_id, date_start_dt64, date_end_dt64)
+        indicators_dict = results.get_indicators(result_id_str, date_start_dt64, date_end_dt64)
         
         # Convert dictionary to list of indicator objects
         indicators_list = []

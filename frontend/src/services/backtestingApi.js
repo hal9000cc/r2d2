@@ -89,15 +89,17 @@ export const backtestingApi = {
    * @returns {Promise<Object>} Indicators data with list of indicator objects
    */
   async getBacktestingIndicators(taskId, resultId, dateStart, dateEnd) {
+    // Ensure resultId is a string (handle Vue ref objects)
+    const resultIdStr = String((resultId?.value ?? resultId) || '')
+    
     const params = {
       date_start: dateStart,
       date_end: dateEnd
     }
     
-    const response = await axios.get(
-      `${API_BASE_URL}/api/v1/backtesting/tasks/${taskId}/results/${resultId}/indicators`,
-      { params }
-    )
+    const url = `${API_BASE_URL}/api/v1/backtesting/tasks/${taskId}/results/${resultIdStr}/indicators`
+    
+    const response = await axios.get(url, { params })
     return response.data
   }
 

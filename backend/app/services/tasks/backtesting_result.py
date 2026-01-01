@@ -742,11 +742,14 @@ class BackTestingResults:
             time_key = f"{result_key_prefix}:{result_id}:time"
             
             time_bytes = client_binary.get(time_key.encode('utf-8'))
+            
             if time_bytes is None:
                 return None
             
             # Deserialize array
-            return self._deserialize_array(time_bytes)
+            deserialized = self._deserialize_array(time_bytes)
+            
+            return deserialized
         except Exception as e:
             logger.warning(f"Failed to load quotes time series: {e}")
             return None
@@ -860,6 +863,37 @@ class BackTestingResults:
         
         return proxy_name, indicator_name, parameters
     
+    def _convert_dict_numpy_types(self, obj: Any) -> Any:
+        """
+        Recursively convert numpy types in a dictionary to Python types.
+        Similar to how quotes are converted in get_quotes endpoint.
+        """
+        if isinstance(obj, dict):
+            return {key: self._convert_dict_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_dict_numpy_types(item) for item in obj]
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            val_float = float(obj)
+            if np.isnan(val_float):
+                return None
+            return val_float
+        elif isinstance(obj, (int, float)):
+            if isinstance(obj, float) and (obj != obj):
+                return None
+            return obj
+        else:
+            try:
+                if hasattr(obj, 'item'):
+                    val_item = obj.item()
+                    if isinstance(val_item, float) and (val_item != val_item):
+                        return None
+                    return val_item
+                return obj
+            except (AttributeError, ValueError, TypeError):
+                return obj
+    
     def _filter_indicator_values_by_range(self, values: Any, is_tuple: bool, start_idx: int, end_idx: int) -> Any:
         """
         Filter indicator values by date range indices.
@@ -871,8 +905,41 @@ class BackTestingResults:
             end_idx: End index for slicing (inclusive)
             
         Returns:
-            Filtered values (same structure as input)
+            Filtered values (same structure as input, with numpy types converted to Python types)
         """
+        def convert_value(val):
+            """
+            Convert a single value from numpy type to Python type.
+            Similar to how quotes are converted in get_quotes endpoint (float(open_array[i])).
+            """
+            if val is None:
+                return None
+            # Check for numpy types first
+            if isinstance(val, np.integer):
+                return int(val)
+            elif isinstance(val, np.floating):
+                val_float = float(val)
+                # Convert NaN to None for JSON compatibility
+                if np.isnan(val_float):
+                    return None
+                return val_float
+            elif isinstance(val, (int, float)):
+                # Check if float is NaN
+                if isinstance(val, float) and (val != val):
+                    return None
+                return val
+            else:
+                # Fallback: try to convert numpy scalar
+                try:
+                    if hasattr(val, 'item'):
+                        val_item = val.item()
+                        if isinstance(val_item, float) and (val_item != val_item):
+                            return None
+                        return val_item
+                    return val
+                except (AttributeError, ValueError, TypeError):
+                    return val
+        
         if is_tuple:
             # Multiple series (dict with series names as keys, values are lists)
             filtered_values = {}
@@ -883,7 +950,9 @@ class BackTestingResults:
                     arr_end = min(end_idx, len(values_list))
                     if arr_start < arr_end:
                         # Slice list (inclusive end: end_idx+1)
-                        filtered_values[series_name] = values_list[arr_start:arr_end+1]
+                        sliced = values_list[arr_start:arr_end+1]
+                        # Convert each value explicitly, like in get_quotes: float(open_array[i])
+                        filtered_values[series_name] = [convert_value(val) for val in sliced]
                     else:
                         filtered_values[series_name] = []
                 else:
@@ -897,7 +966,9 @@ class BackTestingResults:
                 arr_end = min(end_idx, len(values))
                 if arr_start < arr_end:
                     # Slice list (inclusive end: end_idx+1)
-                    return values[arr_start:arr_end+1]
+                    sliced = values[arr_start:arr_end+1]
+                    # Convert each value explicitly, like in get_quotes: float(open_array[i])
+                    return [convert_value(val) for val in sliced]
                 else:
                     return []
             else:
@@ -985,6 +1056,9 @@ class BackTestingResults:
             
             # Calculate slice indices for date range
             start_idx, end_idx = self._get_indicator_slice_indices(time_array, date_start, date_end)
+            # Ensure indices are Python int, not numpy int
+            start_idx = int(start_idx)
+            end_idx = int(end_idx)
             
             if start_idx > end_idx:
                 logger.info(f"Requested date range {date_start} - {date_end} is outside quotes time range. Returning empty indicators.")
@@ -1005,10 +1079,12 @@ class BackTestingResults:
             
             # Extract time range for indicators (matching the filtered values)
             time_range = time_array[start_idx:end_idx+1]
-            time_range_iso = [datetime64_to_iso(t) for t in time_range]
+            # Convert datetime64 to ISO strings (ensure Python strings, not numpy types)
+            time_range_iso = [str(datetime64_to_iso(t)) for t in time_range]
             
             # Process and deserialize indicators
             result = {}
+            indicators_processed = 0
             
             for indicator_key, indicator_bytes in zip(indicator_keys, indicator_data_list):
                 if indicator_bytes is None:
@@ -1022,12 +1098,16 @@ class BackTestingResults:
                     # Parse indicator key
                     try:
                         proxy_name, indicator_name, parameters = self._parse_indicator_key(indicator_key)
+                        # Convert numpy types in parameters to Python types (like in get_quotes)
+                        parameters = self._convert_dict_numpy_types(parameters)
                     except (ValueError, json.JSONDecodeError) as e:
                         logger.warning(f"Failed to parse indicator key {indicator_key}: {e}")
                         continue
                     
                     # Filter values by date range
-                    is_tuple = deserialized['metadata']['is_tuple']
+                    # Ensure is_tuple is Python bool, not numpy bool
+                    is_tuple = bool(deserialized['metadata']['is_tuple'])
+                    
                     filtered_values = self._filter_indicator_values_by_range(
                         deserialized['values'],
                         is_tuple,
@@ -1035,24 +1115,37 @@ class BackTestingResults:
                         end_idx
                     )
                     
+                    # Convert series_info numpy types to Python types
+                    series_info = self._convert_dict_numpy_types(deserialized['metadata']['series_info'])
+                    
                     # Build result entry
-                    result[indicator_key] = self._build_indicator_result_entry(
+                    entry = self._build_indicator_result_entry(
                         indicator_key=indicator_key,
                         proxy_name=proxy_name,
                         indicator_name=indicator_name,
                         parameters=parameters,
                         is_tuple=is_tuple,
-                        series_info=deserialized['metadata']['series_info'],
+                        series_info=series_info,
                         filtered_values=filtered_values,
                         time_range_iso=time_range_iso,
                         date_start_iso=date_start_iso,
                         date_end_iso=date_end_iso
                     )
+                    
+                    # Convert entry to ensure all numpy types are converted
+                    entry = self._convert_dict_numpy_types(entry)
+                    
+                    result[indicator_key] = entry
+                    indicators_processed += 1
                 except Exception as e:
                     logger.error(f"Failed to deserialize indicator {indicator_key}: {e}", exc_info=True)
                     raise RuntimeError(f"Failed to deserialize indicator {indicator_key}: {str(e)}") from e
             
-            return result
+            # Convert all numpy types in the entire result structure before returning
+            # This ensures JSON serialization will work (like in get_quotes)
+            converted_result = self._convert_dict_numpy_types(result)
+            
+            return converted_result
             
         except Exception as e:
             logger.error(f"Failed to get indicators: {str(e)}")

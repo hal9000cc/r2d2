@@ -1334,7 +1334,7 @@ function handleGoToDate() {
   
   // Convert to timestamp and navigate
   const timestamp = dateTimeToTimestamp(finalDateTime)
-  chartPanelRef.value.goToDate(timestamp)
+  chartPanelRef.value.goToTime(timestamp, true)
   
   // Write back the used values to fields for feedback
   chartDateFields.value = {

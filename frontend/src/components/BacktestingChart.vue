@@ -104,9 +104,6 @@ export default {
       
       currentData: [], // Array of {time, open, high, low, close}
       
-      // Indicators storage
-      indicatorSeries: new Map(), // Map<indicatorKey, {series: LineSeries[], isPrice: boolean[]}>
-      
       // Flags to block concurrent updates
       isUpdatingChart: false,      // Flag for chart bars update
       isUpdatingTradeMarkers: false, // Flag for trade markers update
@@ -162,9 +159,6 @@ export default {
         if (this.currentData.length > 0 && this.backtestingDateStart && this.backtestingDateEnd) {
           this.loadIndicators(this.backtestingDateStart, this.backtestingDateEnd)
         }
-      } else {
-        // Remove all indicators
-        this.removeAllIndicators()
       }
     }
   },
@@ -353,10 +347,10 @@ export default {
       
       // Initialize backtesting bounds on first progress
       if (this.backtestingDateStart === null) {
-      this.backtestingDateStart = dateStart
-      this.backtestingDateEnd = dateCurrent
-      // Load initial data on first progress
-      this.loadInitialData()
+        this.backtestingDateStart = dateStart
+        this.backtestingDateEnd = dateCurrent
+        // Load initial data on first progress
+        this.loadInitialData()
       } else {
         // Update backtestingDateEnd on each progress message
         this.backtestingDateEnd = dateCurrent
@@ -389,10 +383,6 @@ export default {
         // Set initial single bar to determine visible range
         this.candlestickSeries.setData([quotes[0]])
         
-        // Load indicators in parallel
-        if (this.showIndicators) {
-          this.loadIndicators(this.backtestingDateStart, limitedDateEnd)
-        }
         
         // Move to begin
         this.$nextTick(async () => {
@@ -734,21 +724,21 @@ export default {
 
         // Update chart only if data was modified
         if (wasDeleted || wasAdded) {
-          // Set data on chart
+          // Set data on chart (currentData was updated by addChartBars)
           this.candlestickSeries.setData(this.currentData)
-          
-          // Load indicators if enabled
-          if (this.showIndicators && this.currentData.length > 0) {
-            const firstTime = this.currentData[0].time
-            const lastTime = this.currentData[this.currentData.length - 1].time
-            this.loadIndicators(firstTime, lastTime)
-          }
           
           // Set visible range using adjusted values
           this.chart.timeScale().setVisibleLogicalRange({
             from: range.from,
             to: range.to
           })
+          
+          // Load indicators if enabled (after currentData is updated)
+          if (this.showIndicators && this.currentData.length > 0) {
+            const firstTime = this.currentData[0].time
+            const lastTime = this.currentData[this.currentData.length - 1].time
+            this.loadIndicators(firstTime, lastTime)
+          }
         }
 
       } finally {
@@ -1116,14 +1106,12 @@ export default {
     },
     
     /**
-     * Universal data loading procedure
-     * @param {string} dataType - Type of data to load ('quotes', 'deals', 'indicators', etc.)
+     * Load quotes from API
      * @param {number} fromTimestamp - Start timestamp in Unix seconds
      * @param {number} toTimestamp - End timestamp in Unix seconds
-     * @param {Object} options - Additional options (fields, etc.)
-     * @returns {Promise<Array>} Loaded data array
+     * @returns {Promise<Array>} Loaded quotes array
      */
-    async loadData(dataType, fromTimestamp, toTimestamp, options = {}) {
+    async loadQuotes(fromTimestamp, toTimestamp) {
       if (!this.source || !this.symbol || !this.timeframe) {
         return []
       }
@@ -1139,45 +1127,19 @@ export default {
           symbol: this.symbol,
           timeframe: this.timeframe,
           date_start: fromISO,
-          date_end: toISO
+          date_end: toISO,
+          fields: 'time,open,high,low,close'
         }
-        
-        // Add type-specific parameters
-        if (dataType === 'quotes') {
-          // For quotes, request only fields needed for candlestick chart
-          params.fields = options.fields || 'time,open,high,low,close'
-        }
-        // Future: add handling for 'deals', 'indicators', etc.
-        
-        // Determine API endpoint based on data type
-        let endpoint = '/api/v1/common/quotes'
-        if (dataType === 'quotes') {
-          endpoint = '/api/v1/common/quotes'
-        }
-        // Future: add endpoints for other data types
-        // else if (dataType === 'deals') {
-        //   endpoint = '/api/v1/common/deals'
-        // }
         
         // Make API request
-        const response = await axios.get(`${API_BASE_URL}${endpoint}`, { params })
+        const response = await axios.get(`${API_BASE_URL}/api/v1/common/quotes`, { params })
         
         return response.data || []
       } catch (error) {
-        console.error(`Failed to load ${dataType}:`, error)
+        console.error('Failed to load quotes:', error)
         this.$emit('quotes-load-error', error)
         return []
       }
-    },
-    
-    /**
-     * Load quotes from API (wrapper for loadData)
-     * @param {number} fromTimestamp - Start timestamp in Unix seconds
-     * @param {number} toTimestamp - End timestamp in Unix seconds
-     * @returns {Promise<Array>} Loaded quotes array
-     */
-    async loadQuotes(fromTimestamp, toTimestamp) {
-      return this.loadData('quotes', fromTimestamp, toTimestamp)
     },
     
     /**
@@ -1230,9 +1192,6 @@ export default {
           // Silently ignore errors
         }
       }
-      
-      // Remove all indicators
-      this.removeAllIndicators()
       
       this.currentData = []
       this.backtestingDateStart = null
@@ -1337,15 +1296,6 @@ export default {
     },
     
     /**
-     * Navigate to specific date (public method for external control)
-     * @param {number} timestamp - Unix timestamp in seconds
-     * @param {boolean} showDateMarker - Whether to show a marker at the selected date
-     */
-    async goToDate(timestamp) {
-      await this.moveChartToTime(timestamp, true)
-    },
-    
-    /**
      * Get current time at the center of visible range
      * @returns {number|null} Unix timestamp in seconds, or null if chart/data not available
      */
@@ -1399,7 +1349,7 @@ export default {
       const timestamp = this.isoToUnix(trade.time)
       
       // Navigate to trade time
-      await this.moveChartToTime(timestamp, showMarker)
+      await this.goToTime(timestamp, showMarker)
     },
     
     /**
@@ -1428,12 +1378,12 @@ export default {
     },
     
     /**
-     * Move chart to specific time
+     * Go to specific time on the chart
      * Loads data around the selected time and centers it in the visible range
      * @param {number} timestamp - Unix timestamp in seconds
      * @param {boolean} showDateMarker - Whether to show a marker at the selected date
      */
-    async moveChartToTime(timestamp, showDateMarker = false) {
+    async goToTime(timestamp, showDateMarker = false) {
       if (!this.chart || !this.candlestickSeries) {
         return
       }
@@ -1649,23 +1599,23 @@ export default {
     },
     
     /**
-     * Move chart to the beginning (public method for external control)
+     * Go to the beginning of the chart (public method for external control)
      */
-    async moveChartToStart() {
+    async goToStart() {
       await this.moveToBegin()
     },
     
     /**
-     * Move chart to the end (public method for external control)
+     * Go to the end of the chart (public method for external control)
      */
-    async moveChartToEnd() {
+    async goToEnd() {
       await this.moveToEnd()
     },
     
     /**
      * Scroll chart one page backward (public method for external control)
      */
-    scrollChartBackward() {
+    scrollPageBackward() {
       if (!this.chart || !this.currentData || this.currentData.length === 0) {
         return
       }
@@ -1710,7 +1660,7 @@ export default {
     /**
      * Scroll chart one page forward (public method for external control)
      */
-    scrollChartForward() {
+    scrollPageForward() {
       if (!this.chart || !this.currentData || this.currentData.length === 0) {
         return
       }
@@ -1756,15 +1706,15 @@ export default {
      * Load indicators from API
      * @param {number} fromTimestamp - Start timestamp in Unix seconds
      * @param {number} toTimestamp - End timestamp in Unix seconds
-     * @returns {Promise<boolean>} True if loaded successfully
+     * @returns {Promise<Array>} Loaded indicators array
      */
     async loadIndicators(fromTimestamp, toTimestamp) {
       if (!this.showIndicators) {
-        return false
+        return []
       }
       
       if (!this.taskId || !this.backtestingResults?.resultId) {
-        return false
+        return []
       }
       
       try {
@@ -1773,190 +1723,25 @@ export default {
         const toISO = this.unixToISO(toTimestamp)
         
         // Load indicators from API
+        // backtestingApi.getBacktestingIndicators handles Vue ref conversion internally
         const response = await backtestingApi.getBacktestingIndicators(
           this.taskId,
-          this.backtestingResults.resultId,
+          this.backtestingResults?.resultId,
           fromISO,
           toISO
         )
         
+        // Return indicators array from response
         if (response.success && response.data) {
-          // Update indicators on chart
-          this.updateIndicators(response.data)
-          return true
+          return response.data
         } else {
           console.error('Failed to load indicators:', response.error_message)
-          return false
+          return []
         }
       } catch (error) {
         console.error('Error loading indicators:', error)
-        return false
+        return []
       }
-    },
-    
-    /**
-     * Remove all indicator series from chart
-     */
-    removeAllIndicators() {
-      if (!this.chart || this.indicatorSeries.size === 0) {
-        return
-      }
-      
-      try {
-        this.indicatorSeries.forEach((seriesData) => {
-          seriesData.series.forEach(lineSeries => {
-            this.chart.removeSeries(lineSeries)
-          })
-        })
-        this.indicatorSeries.clear()
-      } catch (error) {
-        console.error('Error removing indicators:', error)
-      }
-    },
-    
-    /**
-     * Update indicators on chart (remove all and create new)
-     * @param {Array} indicatorsList - List of indicator objects from API
-     */
-    updateIndicators(indicatorsList) {
-      if (!this.chart || !indicatorsList || indicatorsList.length === 0) {
-        return
-      }
-      
-      // Remove all existing indicators
-      this.removeAllIndicators()
-      
-      // Color palette for indicators (simple rotation)
-      const colors = [
-        '#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336',
-        '#00BCD4', '#8BC34A', '#FFC107', '#E91E63', '#795548'
-      ]
-      let colorIndex = 0
-      
-      // Process each indicator
-      indicatorsList.forEach((indicator) => {
-        const { key, values, time, series_info, is_tuple } = indicator
-        
-        if (!time || !values) {
-          return
-        }
-        
-        // Convert time ISO strings to Unix timestamps
-        const timeStamps = time.map(iso => this.isoToUnix(iso))
-        
-        // Prepare series data for this indicator
-        const seriesData = {
-          series: [],
-          isPrice: []
-        }
-        
-        if (is_tuple) {
-          // Multiple series (values is object: {seriesName: [values]})
-          series_info.forEach((seriesInfo, index) => {
-            const seriesName = seriesInfo.name
-            const isPrice = seriesInfo.is_price
-            const seriesValues = values[seriesName]
-            
-            if (!seriesValues || seriesValues.length === 0) {
-              return
-            }
-            
-            // Create data points: {time, value}
-            const dataPoints = []
-            for (let i = 0; i < Math.min(timeStamps.length, seriesValues.length); i++) {
-              const value = seriesValues[i]
-              // Skip null/undefined/NaN values
-              if (value !== null && value !== undefined && !isNaN(value)) {
-                dataPoints.push({
-                  time: timeStamps[i],
-                  value: value
-                })
-              }
-            }
-            
-            if (dataPoints.length === 0) {
-              return
-            }
-            
-            // Create line series
-            const lineSeries = this.chart.addSeries(LineSeries, {
-              color: colors[colorIndex % colors.length],
-              lineWidth: 2,
-              priceScaleId: isPrice ? undefined : `indicator-${key}-${index}`,
-              priceFormat: {
-                type: 'price',
-                precision: 4,
-                minMove: 0.0001
-              }
-            })
-            
-            // Set data
-            lineSeries.setData(dataPoints)
-            
-            // Store series reference
-            seriesData.series.push(lineSeries)
-            seriesData.isPrice.push(isPrice)
-            
-            colorIndex++
-          })
-        } else {
-          // Single series (values is array)
-          if (series_info.length === 0) {
-            return
-          }
-          
-          const seriesInfo = series_info[0]
-          const isPrice = seriesInfo.is_price
-          const seriesValues = Array.isArray(values) ? values : []
-          
-          if (seriesValues.length === 0) {
-            return
-          }
-          
-          // Create data points: {time, value}
-          const dataPoints = []
-          for (let i = 0; i < Math.min(timeStamps.length, seriesValues.length); i++) {
-            const value = seriesValues[i]
-            // Skip null/undefined/NaN values
-            if (value !== null && value !== undefined && !isNaN(value)) {
-              dataPoints.push({
-                time: timeStamps[i],
-                value: value
-              })
-            }
-          }
-          
-          if (dataPoints.length === 0) {
-            return
-          }
-          
-          // Create line series
-          const lineSeries = this.chart.addSeries(LineSeries, {
-            color: colors[colorIndex % colors.length],
-            lineWidth: 2,
-            priceScaleId: isPrice ? undefined : `indicator-${key}`,
-            priceFormat: {
-              type: 'price',
-              precision: 4,
-              minMove: 0.0001
-            }
-          })
-          
-          // Set data
-          lineSeries.setData(dataPoints)
-          
-          // Store series reference
-          seriesData.series.push(lineSeries)
-          seriesData.isPrice.push(isPrice)
-          
-          colorIndex++
-        }
-        
-        // Store indicator series data
-        if (seriesData.series.length > 0) {
-          this.indicatorSeries.set(key, seriesData)
-        }
-      })
     }
   }
 }

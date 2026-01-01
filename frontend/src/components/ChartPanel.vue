@@ -86,17 +86,17 @@ export default {
     // Proxy methods for chart control
     goToDate(timestamp) {
       if (this.$refs.chartRef) {
-        this.$refs.chartRef.goToDate(timestamp)
+        this.$refs.chartRef.goToTime(timestamp, true)
       }
     },
     goToStart() {
       if (this.$refs.chartRef) {
-        this.$refs.chartRef.moveChartToStart()
+        this.$refs.chartRef.goToStart()
       }
     },
     goToEnd() {
       if (this.$refs.chartRef) {
-        this.$refs.chartRef.moveChartToEnd()
+        this.$refs.chartRef.goToEnd()
       }
     },
     toggleLogScale() {
@@ -111,12 +111,12 @@ export default {
     },
     pageDown() {
       if (this.$refs.chartRef) {
-        this.$refs.chartRef.scrollChartBackward()
+        this.$refs.chartRef.scrollPageBackward()
       }
     },
     pageUp() {
       if (this.$refs.chartRef) {
-        this.$refs.chartRef.scrollChartForward()
+        this.$refs.chartRef.scrollPageForward()
       }
     },
     getChartCurrentTime() {
