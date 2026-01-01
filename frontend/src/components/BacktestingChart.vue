@@ -10,12 +10,10 @@ import { createChart, ColorType, CandlestickSeries, LineSeries, createSeriesMark
 import { inject } from 'vue'
 import axios from 'axios'
 import { backtestingApi } from '../services/backtestingApi.js'
+import { QuoteSeriesWrapper } from '../lib/quoteSeriesWrapper.js'
+import { unixToISO, isoToUnix } from '../utils/dateUtils.js'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'
-
-const LOAD_THRESHOLD_MULTIPLIER = 1.2  // Multiplier for load threshold (minimum distance from edge to trigger load)
-const LOAD_BARS_MULTIPLIER = 1.8       // Multiplier for number of bars to load
-const CLEANUP_THRESHOLD_MULTIPLIER = 3.0  // Multiplier for cleanup threshold (when to remove old data)
 
 // Trade marker colors
 const TRADE_BUY_COLOR = '#0d5d4a'  // Darker green for buy markers
@@ -90,6 +88,7 @@ export default {
     return {
       chart: null,
       candlestickSeries: null,
+      quotesWrapper: null, // Wrapper for working with quotes series
       seriesMarkers: null, // Markers API for the series (lightweight-charts 5.x)
       dealLines: [], // Array of line series for deals
       dateMarkerTimestamp: null, // Timestamp of the current date marker (for removal)
@@ -130,7 +129,7 @@ export default {
         }
         // Handle date_end from backtesting_completed
         if (newProgress && newProgress.date_end) {
-          const dateEnd = this.isoToUnix(newProgress.date_end)
+          const dateEnd = isoToUnix(newProgress.date_end)
           if (dateEnd) {
             this.backtestingDateEnd = dateEnd
           }
@@ -156,9 +155,9 @@ export default {
     showIndicators() {
       if (this.showIndicators) {
         // Load indicators if we have data
-        if (this.currentData.length > 0 && this.backtestingDateStart && this.backtestingDateEnd) {
-          this.loadIndicators(this.backtestingDateStart, this.backtestingDateEnd)
-        }
+        // if (this.currentData.length > 0 && this.backtestingDateStart && this.backtestingDateEnd) {
+        //   this.loadIndicators(this.backtestingDateStart, this.backtestingDateEnd)
+        // }
       }
     }
   },
@@ -207,8 +206,31 @@ export default {
         }
       })
 
-      // Create candlestick series
-      this.candlestickSeries = this.chart.addSeries(CandlestickSeries, {
+      // Get timeframe in seconds for wrapper
+      const timeframeSeconds = this.getTimeframeSeconds()
+      
+      // Create wrapper for quotes series
+      this.quotesWrapper = new QuoteSeriesWrapper({
+        type: 'candlestick',
+        timeframeSeconds: timeframeSeconds,
+        timeframe: this.timeframe,
+        source: this.source,
+        symbol: this.symbol,
+        onDataUpdated: (data) => {
+          // Synchronize with currentData for compatibility
+          this.currentData = data
+        },
+        onError: (error, context) => {
+          console.error('[BacktestingChart] Quotes wrapper error:', error, context)
+          this.$emit('quotes-load-error', error)
+        }
+      })
+      
+      // Initialize series through wrapper
+      this.candlestickSeries = this.quotesWrapper.init(this.chart, {
+        CandlestickSeries,
+        LineSeries
+      }, {
         upColor: CANDLESTICK_UP_COLOR,
         downColor: CANDLESTICK_DOWN_COLOR,
         borderVisible: false,
@@ -338,8 +360,8 @@ export default {
      */
     handleBacktestingProgress(progress) {
       // Convert ISO strings to Unix timestamps
-      const dateStart = progress.date_start ? this.isoToUnix(progress.date_start) : null
-      const dateCurrent = progress.current_time ? this.isoToUnix(progress.current_time) : null
+      const dateStart = progress.date_start ? isoToUnix(progress.date_start) : null
+      const dateCurrent = progress.current_time ? isoToUnix(progress.current_time) : null
       
       if (!dateStart || !dateCurrent) {
         return
@@ -369,26 +391,23 @@ export default {
         return
       }
       
-      // Limit initial load to maximum 5000 bars
-      const timeframeSeconds = this.getTimeframeSeconds()
-      const maxBars = 1
-      const maxTimeRange = maxBars * timeframeSeconds
-      const maxDateEnd = this.backtestingDateStart + maxTimeRange
-      const limitedDateEnd = Math.min(this.backtestingDateEnd, maxDateEnd)
-      
-      // Load initial data: from date_start to limited date_end (max 5000 bars)
-      const quotes = await this.loadQuotes(this.backtestingDateStart, limitedDateEnd)
-      
-      if (quotes.length > 0) {
-        // Set initial single bar to determine visible range
-        this.candlestickSeries.setData([quotes[0]])
-        
-        
-        // Move to begin
-        this.$nextTick(async () => {
-          await this.moveToBegin()
-        })
+      // Wait for chart initialization if not ready yet
+      // Use a loop with nextTick to wait for initialization
+      while (!this.quotesWrapper || !this.quotesWrapper.isInitialized) {
+        await this.$nextTick()
+        // Safety check: if component is being destroyed, exit
+        if (!this.$refs.chartContainer) {
+          return
+        }
       }
+      
+      // Set initial dummy bar through wrapper (will be replaced by moveToBegin)
+      this.quotesWrapper.setDummyBar(this.backtestingDateStart)
+      
+      // Move to begin (this will load real data)
+      this.$nextTick(async () => {
+        await this.moveToBegin()
+      })
     },
     
     /**
@@ -418,38 +437,23 @@ export default {
       // Calculate visible range (number of bars)
       const visibleRange = logicalRange.to - logicalRange.from
       
-      // Calculate timeframe in seconds
-      const timeframeSeconds = this.getTimeframeSeconds()
-      if (timeframeSeconds === 0) {
+      if (!this.quotesWrapper) {
         return
       }
-      
-      // Calculate time range to load: visibleRange bars
-      const timeRangeToLoad = visibleRange * (1 + LOAD_BARS_MULTIPLIER) * timeframeSeconds
-      const loadFrom = this.backtestingDateStart
-      const loadTo = Math.min(
-        this.backtestingDateEnd,
-        this.backtestingDateStart + timeRangeToLoad
-      )
       
       // Block visible range updates during chart update
       this.isUpdatingChart = true
       try {
-        // Load quotes for visible range
-        const loadedQuotes = await this.loadQuotes(loadFrom, loadTo)
+        // Move to begin through wrapper
+        const adjustedRange = await this.quotesWrapper.moveToBegin(
+          visibleRange,
+          this.backtestingDateStart,
+          this.backtestingDateEnd
+        )
         
-        if (loadedQuotes.length > 0) {
-          // Update current data
-          this.currentData = loadedQuotes
-          
-          // Set data on chart
-          this.candlestickSeries.setData(loadedQuotes)
-          
-          // Set visible logical range from 0 to visibleRange
-          this.chart.timeScale().setVisibleLogicalRange({
-            from: 0,
-            to: visibleRange
-          })
+        if (adjustedRange) {
+          // Set visible logical range
+          this.chart.timeScale().setVisibleLogicalRange(adjustedRange)
         }
       } finally {
         this.isUpdatingChart = false
@@ -487,208 +491,28 @@ export default {
       }
       
       const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-      const timeframeSeconds = this.getTimeframeSeconds()
-      if (timeframeSeconds === 0) {
-        return
-      }
       
-      // Calculate number of bars to load from end
-      // Load from: (visibleLength * LOAD_BARS_MULTIPLIER + visibleLength) bars before end
-      const barsToLoad = visibleLength * LOAD_BARS_MULTIPLIER + visibleLength
-      const timeRangeToLoad = barsToLoad * timeframeSeconds
-      
-      // Load to backtestingDateEnd
-      const loadTo = this.backtestingDateEnd
-      const loadFrom = Math.max(
-        this.backtestingDateStart,
-        this.backtestingDateEnd - timeRangeToLoad
-      )
-      
-      if (loadFrom >= loadTo) {
+      if (!this.quotesWrapper) {
         return
       }
       
       // Block visible range updates during chart update
       this.isUpdatingChart = true
       try {
-        // Load quotes from calculated range
-        const loadedQuotes = await this.loadQuotes(loadFrom, loadTo)
+        // Move to end through wrapper
+        const adjustedRange = await this.quotesWrapper.moveToEnd(
+          visibleLength,
+          this.backtestingDateStart,
+          this.backtestingDateEnd
+        )
         
-        if (loadedQuotes.length === 0) {
-          return
+        if (adjustedRange) {
+          // Set visible logical range
+          this.chart.timeScale().setVisibleLogicalRange(adjustedRange)
         }
-        
-        // Update current data
-        this.currentData = loadedQuotes
-        
-        // Set data on chart
-        this.candlestickSeries.setData(loadedQuotes)
-        
-        // Load indicators in parallel
-        if (this.showIndicators) {
-          this.loadIndicators(loadFrom, loadTo)
-        }
-        
-        // Set visible logical range: from end - visibleLength to end
-        this.chart.timeScale().setVisibleLogicalRange({
-          from: Math.max(0, loadedQuotes.length - visibleLength),
-          to: loadedQuotes.length
-        })
       } finally {
         this.isUpdatingChart = false
       }
-    },
-    
-    /**
-     * Calculate number of bars to load on the left side
-     * @param {number} from - Start index of visible range (logical range from)
-     * @param {number} to - End index of visible range (logical range to)
-     * @returns {number} Number of bars to load (0 if no load needed)
-     */
-    calculateBarsToLoadLeft(from, to) {
-      if (!this.currentData || this.currentData.length === 0) {
-        return 0
-      }
-      
-      const visibleLength = to - from
-      const barsOnLeft = from
-      const loadThreshold = visibleLength * LOAD_THRESHOLD_MULTIPLIER
-      
-      // If we have enough bars on the left, no need to load
-      if (barsOnLeft >= loadThreshold) {
-        return 0
-      }
-      
-      // Calculate how many bars we need to have on the left after loading
-      const targetBarsOnLeft = visibleLength * LOAD_BARS_MULTIPLIER
-      
-      // Calculate how many bars to load
-      const barsToLoad = Math.max(0, targetBarsOnLeft - barsOnLeft)
-      
-      return barsToLoad
-    },
-    
-    /**
-     * Calculate number of bars to load on the right side
-     * @param {number} from - Start index of visible range (logical range from)
-     * @param {number} to - End index of visible range (logical range to)
-     * @returns {number} Number of bars to load (0 if no load needed)
-     */
-    calculateBarsToLoadRight(from, to) {
-      if (!this.currentData || this.currentData.length === 0) {
-        return 0
-      }
-      
-      const visibleLength = to - from
-      const barsOnRight = this.currentData.length - to
-      const loadThreshold = visibleLength * LOAD_THRESHOLD_MULTIPLIER
-      
-      // If we have enough bars on the right, no need to load
-      if (barsOnRight >= loadThreshold) {
-        return 0
-      }
-      
-      // Calculate how many bars we need to have on the right after loading
-      const targetBarsOnRight = visibleLength * LOAD_BARS_MULTIPLIER
-      
-      // Calculate how many bars to load
-      const barsToLoad = Math.max(0, targetBarsOnRight - barsOnRight)
-      
-      return barsToLoad
-    },
-    
-    /**
-     * Load chart data on the left side
-     * @param {number} from - Start index of visible range (logical range from)
-     * @param {number} to - End index of visible range (logical range to)
-     * @returns {Promise<Array>} Loaded quotes array (empty if no load needed)
-     */
-    async loadChartDataLeft(from, to) {
-      // Calculate how many bars to load
-      const barsToLoad = this.calculateBarsToLoadLeft(from, to)
-      
-      if (barsToLoad === 0) {
-        return []
-      }
-      
-      if (!this.currentData || this.currentData.length === 0) {
-        return []
-      }
-      
-      // Calculate timeframe in seconds
-      const timeframeSeconds = this.getTimeframeSeconds()
-      if (timeframeSeconds === 0) {
-        return []
-      }
-      
-      // Calculate time range to load (before current earliest data)
-      const earliestTime = this.currentData[0].time
-      const timeRangeToLoad = barsToLoad * timeframeSeconds
-      const loadTo = earliestTime - timeframeSeconds // Last bar to load (one period before earliest)
-      const loadFrom = earliestTime - timeRangeToLoad // First bar to load
-      
-      // Clamp to backtesting start date if needed
-      let finalFrom = loadFrom
-      if (this.backtestingDateStart && loadFrom < this.backtestingDateStart) {
-        finalFrom = this.backtestingDateStart
-      }
-      
-      // Final check: if loadFrom >= loadTo, we can't load
-      if (finalFrom >= loadTo) {
-        return []
-      }
-      
-      // Load quotes from API
-      const quotes = await this.loadQuotes(finalFrom, loadTo)
-      
-      return quotes || []
-    },
-    
-    /**
-     * Load chart data on the right side
-     * @param {number} from - Start index of visible range (logical range from)
-     * @param {number} to - End index of visible range (logical range to)
-     * @returns {Promise<Array>} Loaded quotes array (empty if no load needed)
-     */
-    async loadChartDataRight(from, to) {
-      // Calculate how many bars to load
-      const barsToLoad = this.calculateBarsToLoadRight(from, to)
-      
-      if (barsToLoad === 0) {
-        return []
-      }
-      
-      if (!this.currentData || this.currentData.length === 0) {
-        return []
-      }
-      
-      // Calculate timeframe in seconds
-      const timeframeSeconds = this.getTimeframeSeconds()
-      if (timeframeSeconds === 0) {
-        return []
-      }
-      
-      // Calculate time range to load (after current latest data)
-      const latestTime = this.currentData[this.currentData.length - 1].time
-      const loadFrom = latestTime + timeframeSeconds // First bar to load (one period after latest)
-      const timeRangeToLoad = barsToLoad * timeframeSeconds
-      const loadTo = latestTime + timeRangeToLoad // Last bar to load
-      
-      // Clamp to backtesting end date if needed
-      let finalTo = loadTo
-      if (this.backtestingDateEnd && loadTo > this.backtestingDateEnd) {
-        finalTo = this.backtestingDateEnd
-      }
-      
-      // Final check: if loadFrom >= finalTo, we can't load
-      if (loadFrom >= finalTo) {
-        return []
-      }
-      
-      // Load quotes from API
-      const quotes = await this.loadQuotes(loadFrom, finalTo)
-      
-      return quotes || []
     },
     
     /**
@@ -696,12 +520,12 @@ export default {
      * Checks if data needs to be loaded on left or right and updates chart
      */
     async updateChartBars() {
-      if (!this.chart || !this.currentData || this.currentData.length === 0) {
+      if (!this.chart || !this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
         return
       }
       
-      // Don't run if chart is busy with any operation
-      if (this.chartIsBusy()) {
+      // Don't run if chart is busy with any operation or wrapper is updating
+      if (this.chartIsBusy() || this.quotesWrapper?.isUpdating) {
         return
       }
       
@@ -713,141 +537,25 @@ export default {
           return
         }
         
-        // Create range object that will be adjusted by addChartBars
-        const range = {
-          from: logicalRange.from,
-          to: logicalRange.to
-        }
-
-        const wasDeleted = await this.deleteOldChartBars(range)
-        const wasAdded = await this.addChartBars(range)
-
-        // Update chart only if data was modified
-        if (wasDeleted || wasAdded) {
-          // Set data on chart (currentData was updated by addChartBars)
-          this.candlestickSeries.setData(this.currentData)
-          
-          // Set visible range using adjusted values
+        // Use wrapper's updateBars method
+        const adjustedRange = await this.quotesWrapper.updateBars(
+          logicalRange,
+          this.backtestingDateStart,
+          this.backtestingDateEnd
+        )
+        
+        // Set visible range if data was modified
+        if (adjustedRange) {
           this.chart.timeScale().setVisibleLogicalRange({
-            from: range.from,
-            to: range.to
+            from: adjustedRange.from,
+            to: adjustedRange.to
           })
-          
-          // Load indicators if enabled (after currentData is updated)
-          if (this.showIndicators && this.currentData.length > 0) {
-            const firstTime = this.currentData[0].time
-            const lastTime = this.currentData[this.currentData.length - 1].time
-            this.loadIndicators(firstTime, lastTime)
-          }
         }
-
       } finally {
         this.isUpdatingChart = false
       }
     },
     
-    /**
-     * Delete old chart bars from both ends
-     * Removes data that is too far from visible range to free memory
-     * @param {Object} range - Range object with from and to properties (will be modified if data removed from left)
-     * @returns {boolean} True if data was modified, false otherwise
-     */
-    async deleteOldChartBars(range) {
-      if (!this.currentData || this.currentData.length === 0) {
-        return false
-      }
-      
-      // Calculate visible range length
-      const visibleLength = range.to - range.from
-      
-      // Calculate thresholds:
-      // cleanupThreshold - when to trigger cleanup (check if we have too much data)
-      // loadBarsBuffer - how much buffer to keep (prevent immediate reload)
-      const cleanupThreshold = visibleLength * CLEANUP_THRESHOLD_MULTIPLIER
-      const loadBarsBuffer = visibleLength * LOAD_BARS_MULTIPLIER
-      
-      let barsRemovedLeft = 0
-      let barsRemovedRight = 0
-      let cleanedData = this.currentData
-      
-      // Check if we need to remove data from the left
-      if (range.from > cleanupThreshold) {
-        // Keep data starting from (range.from - loadBarsBuffer)
-        const keepFromIndex = Math.max(0, Math.floor(range.from - loadBarsBuffer))
-        
-        if (keepFromIndex > 0) {
-          barsRemovedLeft = keepFromIndex
-          cleanedData = cleanedData.slice(keepFromIndex)
-        }
-      }
-      
-      // Check if we need to remove data from the right
-      const barsOnRight = cleanedData.length - (range.to - barsRemovedLeft)
-      if (barsOnRight > cleanupThreshold) {
-        // Keep data up to (range.to + loadBarsBuffer)
-        const keepToIndex = Math.min(
-          cleanedData.length,
-          Math.ceil(range.to - barsRemovedLeft + loadBarsBuffer)
-        )
-        
-        if (keepToIndex < cleanedData.length) {
-          barsRemovedRight = cleanedData.length - keepToIndex
-          cleanedData = cleanedData.slice(0, keepToIndex)
-        }
-      }
-      
-      // Update current data if anything was removed
-      if (barsRemovedLeft > 0 || barsRemovedRight > 0) {
-        this.currentData = cleanedData
-        
-        // Adjust range for bars removed from the left
-        if (barsRemovedLeft > 0) {
-          range.from -= barsRemovedLeft
-          range.to -= barsRemovedLeft
-        }
-        
-        return true
-      }
-      
-      return false
-    },
-
-    /**
-     * Add chart bars based on visible range
-     * Adjusts the range object to account for bars added on the left
-     * @param {Object} range - Range object with from and to properties (will be modified)
-     * @returns {boolean} True if data was modified, false otherwise
-     */
-    async addChartBars(range) {
-      // Load data from left and right
-      const [leftData, rightData] = await Promise.all([
-        this.loadChartDataLeft(range.from, range.to),
-        this.loadChartDataRight(range.from, range.to)
-      ])
-      
-      // Determine exact number of bars added on left and right
-      const barsAddedLeft = leftData.length
-      const barsAddedRight = rightData.length
-      
-      // If no data was added, nothing to do
-      if (barsAddedLeft === 0 && barsAddedRight === 0) {
-        return false
-      }
-      
-      // Merge data: left (new) + current + right (new)
-      const mergedData = [...leftData, ...this.currentData, ...rightData]
-      
-      // Update current data
-      this.currentData = mergedData
-      
-      // Adjust range to account for bars added on the left
-      if (barsAddedLeft > 0) {
-        range.from += barsAddedLeft
-        range.to += barsAddedLeft
-      }
-      
-      return true
-    },
     
     /**
      * Update chart other elements (trades, markers, deal lines, etc.)
@@ -883,7 +591,7 @@ export default {
         return
       }
       
-      if (!this.currentData || this.currentData.length === 0) {
+      if (!this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
         return
       }
       
@@ -989,7 +697,7 @@ export default {
         return
       }
       
-      if (!this.currentData || this.currentData.length === 0) {
+      if (!this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
         return
       }
       
@@ -1106,43 +814,6 @@ export default {
     },
     
     /**
-     * Load quotes from API
-     * @param {number} fromTimestamp - Start timestamp in Unix seconds
-     * @param {number} toTimestamp - End timestamp in Unix seconds
-     * @returns {Promise<Array>} Loaded quotes array
-     */
-    async loadQuotes(fromTimestamp, toTimestamp) {
-      if (!this.source || !this.symbol || !this.timeframe) {
-        return []
-      }
-      
-      try {
-        // Convert Unix timestamps to ISO strings
-        const fromISO = this.unixToISO(fromTimestamp)
-        const toISO = this.unixToISO(toTimestamp)
-        
-        // Build request parameters
-        const params = {
-          source: this.source,
-          symbol: this.symbol,
-          timeframe: this.timeframe,
-          date_start: fromISO,
-          date_end: toISO,
-          fields: 'time,open,high,low,close'
-        }
-        
-        // Make API request
-        const response = await axios.get(`${API_BASE_URL}/api/v1/common/quotes`, { params })
-        
-        return response.data || []
-      } catch (error) {
-        console.error('Failed to load quotes:', error)
-        this.$emit('quotes-load-error', error)
-        return []
-      }
-    },
-    
-    /**
      * Get timeframe in seconds using global timeframes dictionary
      */
     getTimeframeSeconds() {
@@ -1153,23 +824,10 @@ export default {
       return this.timeframesComposable.getTimeframeSeconds(this.timeframe)
     },
     
-    /**
-     * Convert ISO string to Unix timestamp (seconds)
-     */
-    isoToUnix(isoString) {
-      return Math.floor(new Date(isoString).getTime() / 1000)
-    },
-    
-    /**
-     * Convert Unix timestamp (seconds) to ISO string
-     */
-    unixToISO(timestamp) {
-      return new Date(timestamp * 1000).toISOString()
-    },
-    
     clearChartData() {
-      if (this.candlestickSeries) {
-        this.candlestickSeries.setData([])
+      // Clear data through wrapper
+      if (this.quotesWrapper) {
+        this.quotesWrapper.clear()
       }
       
       // Clear trade markers
@@ -1193,6 +851,7 @@ export default {
         }
       }
       
+      // Update currentData for compatibility
       this.currentData = []
       this.backtestingDateStart = null
       this.backtestingDateEnd = null
@@ -1300,7 +959,7 @@ export default {
      * @returns {number|null} Unix timestamp in seconds, or null if chart/data not available
      */
     getChartCurrentTime() {
-      if (!this.chart || !this.currentData || this.currentData.length === 0) {
+      if (!this.chart || !this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
         return null
       }
       
@@ -1319,8 +978,8 @@ export default {
       // Clamp to data bounds
       if (centerIndex < 0) {
         centerIndex = 0
-      } else if (centerIndex >= this.currentData.length) {
-        centerIndex = this.currentData.length - 1
+      } else if (centerIndex >= this.quotesWrapper.dataLength) {
+        centerIndex = this.quotesWrapper.dataLength - 1
       }
       
       // Return timestamp of the bar at center
@@ -1346,7 +1005,7 @@ export default {
       }
       
       // Convert trade time (ISO string) to Unix timestamp (seconds)
-      const timestamp = this.isoToUnix(trade.time)
+      const timestamp = isoToUnix(trade.time)
       
       // Navigate to trade time
       await this.goToTime(timestamp, showMarker)
@@ -1411,100 +1070,35 @@ export default {
       
       const visibleLength = logicalRange.to - logicalRange.from
       
-      // Calculate timeframe in seconds
-      const timeframeSeconds = this.getTimeframeSeconds()
-      if (timeframeSeconds === 0) {
+      if (!this.quotesWrapper) {
         return
-      }
-      
-      // Calculate number of bars to load: visibleLength * (1 + LOAD_BARS_MULTIPLIER * 2)
-      const countLoadingBars = visibleLength * (1 + LOAD_BARS_MULTIPLIER * 2)
-      const timeRangeToLoad = countLoadingBars * timeframeSeconds
-      
-      // Calculate load range: selected time should be in center
-      let loadFrom = timestamp - (timeRangeToLoad / 2)
-      let loadTo = timestamp + (timeRangeToLoad / 2)
-      
-      // Adjust if we're close to boundaries
-      if (loadFrom < this.backtestingDateStart) {
-        // Load from start
-        loadFrom = this.backtestingDateStart
-        loadTo = Math.min(this.backtestingDateEnd, loadFrom + timeRangeToLoad)
-      } else if (loadTo > this.backtestingDateEnd) {
-        // Load to end
-        loadTo = this.backtestingDateEnd
-        loadFrom = Math.max(this.backtestingDateStart, loadTo - timeRangeToLoad)
       }
       
       // Block visible range updates during chart update
       this.isUpdatingChart = true
       try {
-        // Load quotes for the calculated range
-        const loadedQuotes = await this.loadQuotes(loadFrom, loadTo)
+        // Go to time through wrapper
+        const result = await this.quotesWrapper.goToTime(
+          timestamp,
+          visibleLength,
+          this.backtestingDateStart,
+          this.backtestingDateEnd
+        )
         
-        if (loadedQuotes.length === 0) {
+        if (!result) {
           return
-        }
-        
-        // Update current data
-        this.currentData = loadedQuotes
-        
-        // Find the index of the selected timestamp (or closest bar)
-        let selectedIndex = 0
-        for (let i = 0; i < loadedQuotes.length; i++) {
-          if (loadedQuotes[i].time >= timestamp) {
-            selectedIndex = i
-            break
-          }
-        }
-        // If timestamp is after all bars, use last bar
-        if (selectedIndex === 0 && loadedQuotes[loadedQuotes.length - 1].time < timestamp) {
-          selectedIndex = loadedQuotes.length - 1
-        }
-        
-        // Set data on chart
-        this.candlestickSeries.setData(loadedQuotes)
-        
-        // Calculate visible range: try to center selectedIndex, but preserve visibleLength
-        // First, try to center the selected index
-        let rangeFrom = Math.floor(selectedIndex - visibleLength / 2)
-        let rangeTo = rangeFrom + visibleLength
-        
-        // If range goes beyond data bounds, adjust while preserving visibleLength
-        if (rangeFrom < 0) {
-          // Too close to start: align to start
-          rangeFrom = 0
-          rangeTo = Math.min(loadedQuotes.length, visibleLength)
-        } else if (rangeTo > loadedQuotes.length) {
-          // Too close to end: align to end
-          rangeTo = loadedQuotes.length + 5
-          rangeFrom = Math.max(0, rangeTo - visibleLength)
         }
         
         // Set visible logical range
         this.chart.timeScale().setVisibleLogicalRange({
-          from: rangeFrom,
-          to: rangeTo
+          from: result.from,
+          to: result.to
         })
         
         // Handle date marker if requested
         if (showDateMarker) {
-          // Find the bar for the timestamp (or closest bar) to set marker time
-          let markerTime = timestamp
-          let found = false
-          for (let i = 0; i < loadedQuotes.length; i++) {
-            if (loadedQuotes[i].time >= timestamp) {
-              markerTime = loadedQuotes[i].time
-              found = true
-              break
-            }
-          }
-          // If timestamp is after all bars, use last bar
-          if (!found && loadedQuotes.length > 0) {
-            markerTime = loadedQuotes[loadedQuotes.length - 1].time
-          }
           // Set date marker timestamp (will be drawn by updateChartOthers)
-          this.dateMarkerTimestamp = markerTime
+          this.dateMarkerTimestamp = result.markerTime
         } else {
           // Clear date marker if not requested
           this.dateMarkerTimestamp = null
@@ -1517,7 +1111,7 @@ export default {
           const currentRange = this.chart.timeScale().getVisibleLogicalRange()
           if (currentRange) {
             this.updateChartOthers(currentRange)
-        }
+          }
         }, 100)
       } finally {
         this.isUpdatingChart = false
@@ -1529,7 +1123,7 @@ export default {
      * @param {number} timestamp - Unix timestamp in seconds
      */
     drawDateMarker(timestamp) {
-      if (!this.seriesMarkers || !this.currentData || this.currentData.length === 0) {
+      if (!this.seriesMarkers || !this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
         return
       }
       
@@ -1537,7 +1131,7 @@ export default {
       let markerTime = timestamp
       let found = false
       
-      for (let i = 0; i < this.currentData.length; i++) {
+      for (let i = 0; i < this.quotesWrapper.dataLength; i++) {
         if (this.currentData[i].time >= timestamp) {
           markerTime = this.currentData[i].time
           found = true
@@ -1546,8 +1140,8 @@ export default {
       }
       
       // If timestamp is after all bars, use last bar
-      if (!found && this.currentData.length > 0) {
-        markerTime = this.currentData[this.currentData.length - 1].time
+      if (!found && this.quotesWrapper.dataLength > 0) {
+        markerTime = this.quotesWrapper.lastBarTime
       }
       
       // Get current markers (to preserve trade markers)
@@ -1616,7 +1210,7 @@ export default {
      * Scroll chart one page backward (public method for external control)
      */
     scrollPageBackward() {
-      if (!this.chart || !this.currentData || this.currentData.length === 0) {
+      if (!this.chart || !this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
         return
       }
       
@@ -1634,7 +1228,7 @@ export default {
         }
         
         const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-        const dataLength = this.currentData.length
+        const dataLength = this.quotesWrapper.dataLength
         
         // Calculate new range: to = from - 1, from = to - visibleLength
         let newTo = Math.floor(currentLogicalRange.from) - 1
@@ -1661,7 +1255,7 @@ export default {
      * Scroll chart one page forward (public method for external control)
      */
     scrollPageForward() {
-      if (!this.chart || !this.currentData || this.currentData.length === 0) {
+      if (!this.chart || !this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
         return
       }
       
@@ -1679,7 +1273,7 @@ export default {
         }
         
         const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-        const dataLength = this.currentData.length
+        const dataLength = this.quotesWrapper.dataLength
         
         // Calculate new range: from = to + 1, to = from + visibleLength
         let newFrom = Math.floor(currentLogicalRange.to) + 1
@@ -1719,8 +1313,8 @@ export default {
       
       try {
         // Convert timestamps to ISO strings
-        const fromISO = this.unixToISO(fromTimestamp)
-        const toISO = this.unixToISO(toTimestamp)
+        const fromISO = unixToISO(fromTimestamp)
+        const toISO = unixToISO(toTimestamp)
         
         // Load indicators from API
         // backtestingApi.getBacktestingIndicators handles Vue ref conversion internally

@@ -2004,12 +2004,20 @@ async function saveAllSync() {
         parameters: customParameters
       })
 
-      // sendBeacon doesn't support PUT, use sync XHR
+      // Use fetch with keepalive for PUT request (sendBeacon doesn't support PUT)
       try {
-        const xhr = new XMLHttpRequest()
-        xhr.open('PUT', `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/backtesting/tasks/${currentTaskId.value}`, false)
-        xhr.setRequestHeader('Content-Type', 'application/json')
-        xhr.send(taskData)
+        // fetch with keepalive allows request to continue after page unload
+        fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/backtesting/tasks/${currentTaskId.value}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: taskData,
+          keepalive: true // Allows request to continue after page unload
+        }).catch(error => {
+          // Silently handle errors during page unload
+          console.error('Failed to save task on page unload:', error)
+        })
       } catch (error) {
         console.error('Failed to save task on page unload:', error)
       }
