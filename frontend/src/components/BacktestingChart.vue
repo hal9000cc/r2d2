@@ -1319,15 +1319,15 @@ export default {
           if (seriesInfo.is_price === true) {
             const seriesKey = this.getSeriesKey(indicator, seriesIndex)
             try {
-              // Use default options (random color, etc.)
-              // Pass loadIndicatorData function, indicator object and seriesIndex
+              // Pass loadIndicatorData function, indicator object, seriesIndex, and color from backend
               const added = this.seriesManager.addSeries(
                 seriesKey,
                 SeriesType.indicatorPrice,
                 {
                   loadIndicatorData: this.loadIndicatorData.bind(this),
                   indicator: indicator,
-                  seriesIndex: seriesIndex
+                  seriesIndex: seriesIndex,
+                  color: seriesInfo.color || '#808080' // Use color from backend or gray fallback
                 }
               )
               
@@ -1479,12 +1479,6 @@ export default {
       for (let i = 0; i < timeArray.length; i++) {
         const timeISO = timeArray[i]
         const value = seriesValues[i]
-        
-        // Skip null values (lightweight-charts requires numbers)
-        if (value === null || value === undefined) {
-          continue
-        }
-        
         const timeUnix = isoToUnix(timeISO)
         result.push({ time: timeUnix, value })
       }

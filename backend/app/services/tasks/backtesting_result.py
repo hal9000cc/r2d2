@@ -236,7 +236,8 @@ class BackTestingResults:
                     'array': values.tobytes()
                 }
             }
-            return msgpack.packb(response_data, use_bin_type=True)
+            
+        return msgpack.packb(response_data, use_bin_type=True)
     
     
     def _prepare_trades_data(self, broker, result_key_prefix: str, result_id: str):
@@ -1150,7 +1151,7 @@ class BackTestingResults:
         except Exception as e:
             logger.error(f"Failed to get indicators: {str(e)}")
             raise RuntimeError(f"Failed to get indicators: {str(e)}") from e
-    
+
     def get_indicators_key(self, result_id: str) -> list[Dict[str, Any]]:
         """
         Get indicator keys and metadata (without values) from Redis.

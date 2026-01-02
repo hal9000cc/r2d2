@@ -18,6 +18,7 @@ from app.core.logger import get_logger
 from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64, datetime64_to_iso
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
+from app.core.utils import generate_random_color
 
 logger = get_logger(__name__)
 
@@ -37,7 +38,7 @@ class UsedIndicatorDescription(BaseModel):
     
     values: Union[np.ndarray, Tuple[np.ndarray, ...]]  # Cached indicator values (series or tuple of series)
     visible: bool = True  # Visibility flag for frontend display
-    series_info: List[Dict[str, Any]]  # List of series descriptions: [{'name': str, 'is_price': bool}, ...]
+    series_info: List[Dict[str, Any]]  # List of series descriptions: [{'name': str, 'is_price': bool, 'color': str}, ...]
 
 
 class ta_proxy(ABC):
@@ -93,18 +94,18 @@ class ta_proxy(ABC):
             # Calculate indicator for entire dataset
             indicator_values = self.calc_indicator(name, **kwargs)
             
-            # Determine series info (names and is_price flags)
+            # Determine series info (names, is_price flags, and colors)
             is_tuple = isinstance(indicator_values, tuple)
             tuple_length = len(indicator_values) if is_tuple else 1
             series_info = []
             if isinstance(self, ta_proxy_talib):
                 series_info = self._get_series_info(name, is_tuple, tuple_length)
             else:
-                # For non-talib proxies, use generic logic
+                # For non-talib proxies, use generic logic with random colors
                 if is_tuple:
-                    series_info = [{'name': f'series{i}', 'is_price': True} for i in range(tuple_length)]
+                    series_info = [{'name': f'series{i}', 'is_price': True, 'color': generate_random_color()} for i in range(tuple_length)]
                 else:
-                    series_info = [{'name': name, 'is_price': True}]
+                    series_info = [{'name': name, 'is_price': True, 'color': generate_random_color()}]
             
             # Store in cache as UsedIndicatorDescription
             self.cache[cache_key] = UsedIndicatorDescription(
@@ -154,10 +155,12 @@ class ta_proxy_talib(ta_proxy):
     # Valid positional parameter names
     VALID_POSITIONAL_PARAMS = {'open', 'high', 'low', 'close', 'volume', 'real'}
     
-    # Dictionary of indicator descriptions with series names and price chart displayability
-    # Format: {'is_price': bool, 'series': Optional[List[Dict]]}
+    # Dictionary of indicator descriptions with series names, price chart displayability, and colors
+    # Format: {'is_price': bool, 'color': Optional[str], 'series': Optional[List[Dict]]}
     # If 'series' is provided, uses those names. If not, generates generic names (series0, series1, ...)
-    # Each series can override 'is_price' by including it in its dict
+    # Each series can override 'is_price' and 'color' by including them in its dict
+    # Color priority: series.color > indicator.color > random
+    # Color format: hex string (e.g., '#FF5733')
     # Names are taken from TA-Lib documentation (Outputs section)
     INDICATOR_SERIES_NAMES = {
         # Multi-series indicators
@@ -167,7 +170,7 @@ class ta_proxy_talib(ta_proxy):
         },
         'BBANDS': {
             'is_price': True,
-            'series': [{'name': 'upperband'}, {'name': 'middleband'}, {'name': 'lowerband'}],
+            'series': [{'name': 'upperband', 'color': '#006666'}, {'name': 'middleband', 'color': '#B0B0B0'}, {'name': 'lowerband', 'color': '#006666'}],
         },
         'STOCH': {
             'is_price': False,
@@ -246,7 +249,7 @@ class ta_proxy_talib(ta_proxy):
     
     def _get_series_info(self, indicator_name: str, is_tuple: bool, tuple_length: int) -> List[Dict[str, Any]]:
         """
-        Get series info (names and is_price flags) for indicator.
+        Get series info (names, is_price flags, and colors) for indicator.
         
         Args:
             indicator_name: Name of the indicator (e.g., 'MACD', 'BBANDS')
@@ -254,12 +257,14 @@ class ta_proxy_talib(ta_proxy):
             tuple_length: Length of tuple (number of series), or 1 for single array
             
         Returns:
-            List of series info dictionaries: [{'name': str, 'is_price': bool}, ...]
+            List of series info dictionaries: [{'name': str, 'is_price': bool, 'color': str}, ...]
+            Color is always present (from series, indicator, or randomly generated)
         """
         # Check if indicator has description in dictionary
         if indicator_name in self.INDICATOR_SERIES_NAMES:
             indicator_desc = self.INDICATOR_SERIES_NAMES[indicator_name]
             default_is_price = indicator_desc.get('is_price', True)
+            default_color = indicator_desc.get('color')  # Color from indicator level (optional)
             series_list = indicator_desc.get('series')
             
             if series_list:
@@ -269,7 +274,11 @@ class ta_proxy_talib(ta_proxy):
                     series_name = series_desc.get('name', f'series{i}')
                     # Use is_price from series if provided, otherwise use default
                     series_is_price = series_desc.get('is_price', default_is_price)
-                    result.append({'name': series_name, 'is_price': series_is_price})
+                    # Use color from series if provided, otherwise from indicator, otherwise random
+                    series_color = series_desc.get('color', default_color)
+                    if not series_color:
+                        series_color = generate_random_color()
+                    result.append({'name': series_name, 'is_price': series_is_price, 'color': series_color})
                 
                 # Validate length matches
                 if len(result) != tuple_length:
@@ -283,21 +292,24 @@ class ta_proxy_talib(ta_proxy):
                     else:
                         # Add generic names for missing series
                         for i in range(len(result), tuple_length):
-                            result.append({'name': f'series{i}', 'is_price': default_is_price})
+                            series_color = default_color if default_color else generate_random_color()
+                            result.append({'name': f'series{i}', 'is_price': default_is_price, 'color': series_color})
                 
                 return result
             else:
                 # No series list provided, generate generic names with default is_price
+                series_color = default_color if default_color else generate_random_color()
                 if is_tuple:
-                    return [{'name': f'series{i}', 'is_price': default_is_price} for i in range(tuple_length)]
+                    return [{'name': f'series{i}', 'is_price': default_is_price, 'color': series_color} for i in range(tuple_length)]
                 else:
-                    return [{'name': indicator_name, 'is_price': default_is_price}]
+                    return [{'name': indicator_name, 'is_price': default_is_price, 'color': series_color}]
         else:
             # Indicator not in dictionary
+            series_color = generate_random_color()
             if is_tuple:
-                return [{'name': f'series{i}', 'is_price': True} for i in range(tuple_length)]
+                return [{'name': f'series{i}', 'is_price': True, 'color': series_color} for i in range(tuple_length)]
             else:
-                return [{'name': indicator_name, 'is_price': True}]
+                return [{'name': indicator_name, 'is_price': True, 'color': series_color}]
     
     def _analyze_talib_functions(self):
         """
