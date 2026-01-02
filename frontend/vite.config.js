@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import path from 'path'
 
 export default defineConfig({
   plugins: [vue()],
@@ -7,10 +8,24 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:8202',
         changeOrigin: true
       }
     }
+  },
+  resolve: {
+    // Force development mode for lightweight-charts
+    conditions: ['development', 'module', 'import', 'default'],
+    alias: {
+      '@': path.resolve(__dirname, 'src')
+    }
+  },
+  // Source maps for debugging
+  css: {
+    devSourcemap: true
+  },
+  build: {
+    sourcemap: true
   }
 })
 

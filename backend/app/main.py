@@ -7,10 +7,11 @@ if __name__ == "__main__":
     if str(backend_dir) not in sys.path:
         sys.path.insert(0, str(backend_dir))
 
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1 import strategies
+from app.api.v1 import strategy_endpoints, backtesting_endpoints, common
 from app.core.config import CORS_ORIGINS, CORS_ALLOW_METHODS, CORS_ALLOW_HEADERS
 from app.core.startup import startup, shutdown
 
@@ -20,9 +21,14 @@ async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
     # Startup - blocks until complete, no requests processed until finished
     startup()
-    yield
-    # Shutdown
-    shutdown()
+    try:
+        yield
+    except asyncio.CancelledError:
+        # Handle cancellation gracefully (e.g., during uvicorn reload)
+        pass
+    finally:
+        # Shutdown - always called, even on cancellation
+        shutdown()
 
 
 app = FastAPI(
@@ -42,7 +48,9 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(strategies.router)
+app.include_router(strategy_endpoints.router)
+app.include_router(backtesting_endpoints.router)
+app.include_router(common.router)
 
 
 @app.get("/")

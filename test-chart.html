@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lightweight Charts Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        #chart {
+            width: 100%;
+            height: 500px;
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            margin: 5px;
+            cursor: pointer;
+        }
+        #log {
+            background: #f0f0f0;
+            padding: 10px;
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin: 2px 0;
+            padding: 2px 5px;
+        }
+        .log-event {
+            background: #e3f2fd;
+        }
+        .log-action {
+            background: #fff3e0;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>Lightweight Charts - setData Test</h1>
+    <p>This test reproduces the issue with visible range shifting when calling setData with more bars.</p>
+    
+    <div>
+        <button onclick="runTest()">Run Test</button>
+        <button onclick="clearLog()">Clear Log</button>
+    </div>
+    
+    <div id="chart"></div>
+    <div id="log"></div>
+
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+        let chart, series, logDiv;
+        let visibleRangeSubscription;
+        
+        function log(message, isAction = false) {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${isAction ? 'log-action' : 'log-event'}`;
+            entry.textContent = `[${new Date().toISOString().substr(11, 12)}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(message);
+        }
+        
+        function clearLog() {
+            logDiv.innerHTML = '';
+        }
+        
+        function generateBars(count) {
+            const bars = [];
+            const startTime = Math.floor(Date.now() / 1000) - count * 900; // 15 min bars
+            for (let i = 0; i < count; i++) {
+                const time = startTime + i * 900;
+                const open = 100 + Math.random() * 10;
+                const close = open + (Math.random() - 0.5) * 5;
+                const high = Math.max(open, close) + Math.random() * 2;
+                const low = Math.min(open, close) - Math.random() * 2;
+                bars.push({
+                    time: time,
+                    open: open,
+                    high: high,
+                    low: low,
+                    close: close
+                });
+            }
+            return bars;
+        }
+        
+        function initChart() {
+            const chartContainer = document.getElementById('chart');
+            chartContainer.innerHTML = ''; // Clear previous chart
+            
+            // Check if LightweightCharts is available
+            if (typeof LightweightCharts === 'undefined') {
+                log('ERROR: LightweightCharts library not loaded!', true);
+                return;
+            }
+            
+            chart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.clientWidth,
+                height: 500,
+                timeScale: {
+                    timeVisible: true,
+                    secondsVisible: false,
+                    shiftVisibleRangeOnNewBar: false, // CRITICAL: Disable auto-shift
+                    allowShiftVisibleRangeOnWhitespaceReplacement: false
+                }
+            });
+            
+            // Try both API versions
+            try {
+                if (chart.addCandlestickSeries) {
+                    series = chart.addCandlestickSeries({
+                        upColor: '#26a69a',
+                        downColor: '#ef5350',
+                        borderVisible: false,
+                        wickUpColor: '#26a69a',
+                        wickDownColor: '#ef5350'
+                    });
+                    log('Using API: addCandlestickSeries()', true);
+                } else if (chart.addSeries) {
+                    series = chart.addSeries('Candlestick', {
+                        upColor: '#26a69a',
+                        downColor: '#ef5350',
+                        borderVisible: false,
+                        wickUpColor: '#26a69a',
+                        wickDownColor: '#ef5350'
+                    });
+                    log('Using API: addSeries("Candlestick")', true);
+                } else {
+                    log('ERROR: Cannot find method to add candlestick series!', true);
+                    return;
+                }
+            } catch (e) {
+                log(`ERROR creating series: ${e.message}`, true);
+                return;
+            }
+            
+            // Subscribe to visible range changes
+            if (visibleRangeSubscription) {
+                chart.timeScale().unsubscribeVisibleLogicalRangeChange(visibleRangeSubscription);
+            }
+            visibleRangeSubscription = (logicalRange) => {
+                if (logicalRange) {
+                    log(`📊 Visible range changed: from=${logicalRange.from.toFixed(2)}, to=${logicalRange.to.toFixed(2)}`);
+                }
+            };
+            chart.timeScale().subscribeVisibleLogicalRangeChange(visibleRangeSubscription);
+            
+            log('Chart initialized', true);
+        }
+        
+        async function runTest() {
+            clearLog();
+            initChart();
+            
+            if (!chart || !series) {
+                log('ERROR: Chart not initialized properly', true);
+                return;
+            }
+            
+            // Step 1: Set 500 bars
+            log('Step 1: Setting 500 bars...', true);
+            const bars500 = generateBars(500);
+            series.setData(bars500);
+            
+            const range500 = chart.timeScale().getVisibleLogicalRange();
+            log(`✅ After 500 bars: range from=${range500?.from.toFixed(2)}, to=${range500?.to.toFixed(2)}`);
+            
+            // Wait 1 second
+            log('⏳ Waiting 1 second...', true);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Step 2: Set 700 bars (same + 200 new)
+            log('Step 2: Setting 700 bars (adding 200 more)...', true);
+            const bars700 = generateBars(700);
+            
+            const rangeBefore = chart.timeScale().getVisibleLogicalRange();
+            log(`📍 Before setData(700): from=${rangeBefore?.from.toFixed(2)}, to=${rangeBefore?.to.toFixed(2)}`);
+            
+            series.setData(bars700);
+            
+            const rangeAfter = chart.timeScale().getVisibleLogicalRange();
+            log(`📍 After setData(700): from=${rangeAfter?.from.toFixed(2)}, to=${rangeAfter?.to.toFixed(2)}`);
+            
+            // Calculate shift
+            const shiftFrom = rangeAfter.from - rangeBefore.from;
+            const shiftTo = rangeAfter.to - rangeBefore.to;
+            
+            if (Math.abs(shiftFrom) > 1 || Math.abs(shiftTo) > 1) {
+                log(`❌ BUG REPRODUCED! Range shifted by ${shiftFrom.toFixed(2)} bars (expected ~0)`, true);
+                log(`   Expected: Range should stay same (200 bars added to right)`, true);
+                log(`   Actual shift: from +${shiftFrom.toFixed(2)}, to +${shiftTo.toFixed(2)}`, true);
+            } else {
+                log(`✅ OK! Range stayed stable (shift: ${shiftFrom.toFixed(2)})`, true);
+            }
+        }
+        
+        // Initialize on page load
+        window.onload = () => {
+            logDiv = document.getElementById('log');
+            log('Page loaded. Click "Run Test" to start.', true);
+        };
+        
+        // Handle resize
+        window.addEventListener('resize', () => {
+            if (chart) {
+                chart.applyOptions({
+                    width: document.getElementById('chart').clientWidth
+                });
+            }
+        });
+    </script>
+</body>
+</html>

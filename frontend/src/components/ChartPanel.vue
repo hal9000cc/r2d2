@@ -1,15 +1,146 @@
 <template>
   <div class="chart-panel">
-    <h3>Chart</h3>
-    <div class="chart-content">
-      <p>Chart panel placeholder</p>
-    </div>
+    <BacktestingChart 
+      ref="chartRef"
+      :source="source"
+      :symbol="symbol"
+      :timeframe="timeframe"
+      :backtesting-progress="backtestingProgress"
+      :clear-chart="clearChart"
+      :task-id="taskId"
+      :show-trade-markers="showTradeMarkers"
+      :show-deal-lines="showDealLines"
+      :show-indicators="showIndicators"
+      @chart-cleared="handleChartCleared"
+      @quotes-load-error="handleQuotesLoadError"
+      @chart-message="handleChartMessage"
+      @log-scale-changed="handleLogScaleChanged"
+      @chart-error="handleChartError"
+    />
   </div>
 </template>
 
 <script>
+import BacktestingChart from './BacktestingChart.vue'
+
 export default {
-  name: 'ChartPanel'
+  name: 'ChartPanel',
+  components: {
+    BacktestingChart
+  },
+  props: {
+    source: {
+      type: String,
+      default: null
+    },
+    symbol: {
+      type: String,
+      default: null
+    },
+    timeframe: {
+      type: Object,
+      default: null
+    },
+    backtestingProgress: {
+      type: Object,
+      default: null
+    },
+    clearChart: {
+      type: Boolean,
+      default: false
+    },
+    taskId: {
+      type: Number,
+      default: null
+    },
+    showTradeMarkers: {
+      type: Boolean,
+      default: true
+    },
+    showDealLines: {
+      type: Boolean,
+      default: true
+    },
+    showIndicators: {
+      type: Boolean,
+      default: true
+    }
+  },
+  emits: ['chart-cleared', 'quotes-load-error', 'chart-message', 'log-scale-changed', 'chart-error'],
+  methods: {
+    handleChartCleared() {
+      this.$emit('chart-cleared')
+    },
+    handleQuotesLoadError(error) {
+      this.$emit('quotes-load-error', error)
+    },
+    handleChartMessage(message) {
+      this.$emit('chart-message', message)
+    },
+    handleLogScaleChanged(isLogScale) {
+      this.$emit('log-scale-changed', isLogScale)
+    },
+    handleChartError(errorMessage) {
+      this.$emit('chart-error', errorMessage)
+    },
+    // Proxy methods for chart control
+    goToDate(timestamp) {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.goToTime(timestamp, true)
+      }
+    },
+    goToStart() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.goToStart()
+      }
+    },
+    goToEnd() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.goToEnd()
+      }
+    },
+    toggleLogScale() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.toggleLogScale()
+      }
+    },
+    autoScale() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.autoScale()
+      }
+    },
+    pageDown() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.scrollPageBackward()
+      }
+    },
+    pageUp() {
+      if (this.$refs.chartRef) {
+        this.$refs.chartRef.scrollPageForward()
+      }
+    },
+    getChartCurrentTime() {
+      if (this.$refs.chartRef) {
+        return this.$refs.chartRef.getChartCurrentTime()
+      }
+      return null
+    },
+    goToTrade(tradeId, showMarker = true) {
+      if (this.$refs.chartRef) {
+        return this.$refs.chartRef.goToTrade(tradeId, showMarker)
+      }
+    },
+    goToDeal(dealId, showMarker = true) {
+      if (this.$refs.chartRef) {
+        return this.$refs.chartRef.goToDeal(dealId, showMarker)
+      }
+    },
+    updateIndicatorSeries() {
+      if (this.$refs.chartRef) {
+        return this.$refs.chartRef.updateIndicatorSeries()
+      }
+    }
+  }
 }
 </script>
 
@@ -17,28 +148,8 @@ export default {
 .chart-panel {
   width: 100%;
   height: 100%;
-  padding: 10px;
-  border-bottom: 1px solid #ddd;
-  background-color: #ffffff;
-  overflow: auto;
   min-height: 150px;
-}
-
-.chart-panel h3 {
-  margin: 0 0 10px 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: #333;
-}
-
-.chart-content {
-  width: 100%;
-  height: calc(100% - 30px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #999;
-  font-size: 14px;
+  overflow: hidden;
 }
 </style>
 

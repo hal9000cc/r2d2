@@ -60,8 +60,8 @@ def setup_logging():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
-    # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
+    # Console handler: use original stdout to avoid pytest/capture closing it
+    console_handler = logging.StreamHandler(sys.__stdout__)
     console_handler.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
@@ -77,6 +77,10 @@ def setup_logging():
     file_handler.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+    
+    # Set logging level for ccxt library to INFO (to avoid debug messages)
+    ccxt_logger = logging.getLogger('ccxt')
+    ccxt_logger.setLevel(logging.INFO)
     
     # Log initialization
     logger.info(f"Log level: {LOG_LEVEL}")

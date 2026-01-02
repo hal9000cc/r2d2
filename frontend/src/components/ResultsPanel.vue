@@ -18,22 +18,22 @@ export default {
   flex: 0 0 10vh;
   min-height: 80px;
   max-height: 120px;
-  padding: 10px;
-  border-bottom: 1px solid #ddd;
-  background-color: #f8f9fa;
+  padding: var(--spacing-sm);
+  border-bottom: 1px solid var(--border-color-dark);
+  background-color: var(--bg-secondary);
   overflow-y: auto;
 }
 
 .results-panel h3 {
-  margin: 0 0 10px 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: #333;
+  margin: 0 0 var(--spacing-sm) 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
 .results-content {
-  font-size: 12px;
-  color: #666;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
 }
 </style>
 

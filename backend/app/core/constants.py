@@ -1,15 +1,4 @@
-import numpy as np
+"""Core constants for backend configuration and behavior."""
 
-PRICE_TYPE = float
-VOLUME_TYPE = float
-VOLUME_TYPE_PRECISION = 15
-
-UNKNOWN_PRICE = np.nan
-
-TIME_TYPE = 'datetime64[ms]'
-TIME_TYPE_UNIT = 'ms'
-TIME_UNITS_IN_ONE_SECOND = 1000
-TIME_UNITS_NAME_FOR_TIMEDELTA = 'milliseconds'
-TIME_UNITS_IN_ONE_DAY = 24 * 60 * 60 * 1000
-
-
+# Period between periodic backtest results saves (in seconds)
+TRADE_RESULTS_SAVE_PERIOD: float = 1.0
