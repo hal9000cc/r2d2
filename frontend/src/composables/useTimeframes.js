@@ -1,10 +1,11 @@
 import { reactive, toRef } from 'vue'
 import { strategiesApi } from '@/services/strategiesApi'
+import { Timeframe } from '@/lib/Timeframe'
 
 // Global state for timeframes
 const state = reactive({
-  timeframes: {}, // { '1s': 1000, '1m': 60000, ... } in milliseconds
-  timeframesList: [], // ['1s', '1m', ...] sorted by value
+  timeframes: {}, // { '1s': Timeframe, '1m': Timeframe, ... }
+  timeframesList: [], // [Timeframe, ...] sorted by valueMilliseconds
   isLoading: false,
   hasError: false,
   errorMessage: ''
@@ -23,13 +24,21 @@ export function useTimeframes() {
     try {
       const timeframesDict = await strategiesApi.getTimeframes()
       
-      // Store the dictionary
-      state.timeframes = timeframesDict
+      // Create Timeframe objects and store in dictionary
+      const timeframesObj = {}
+      const timeframesArray = []
       
-      // Create sorted list for UI (sort by value in milliseconds)
-      state.timeframesList = Object.entries(timeframesDict)
-        .sort((a, b) => a[1] - b[1])
-        .map(([key]) => key)
+      for (const [key, milliseconds] of Object.entries(timeframesDict)) {
+        const timeframe = new Timeframe(key, milliseconds)
+        timeframesObj[key] = timeframe
+        timeframesArray.push(timeframe)
+      }
+      
+      // Sort by value in milliseconds
+      timeframesArray.sort((a, b) => a.valueMilliseconds - b.valueMilliseconds)
+      
+      state.timeframes = timeframesObj
+      state.timeframesList = timeframesArray
       
       state.isLoading = false
       return true
@@ -43,22 +52,12 @@ export function useTimeframes() {
   }
 
   /**
-   * Get timeframe duration in seconds
-   * @param {string} timeframe - Timeframe string (e.g., '1m', '1h')
-   * @returns {number} Duration in seconds, or 0 if not found
+   * Get Timeframe object by string value
+   * @param {string} timeframeValue - Timeframe string (e.g., '1m', '1h')
+   * @returns {Timeframe|null} Timeframe object or null if not found
    */
-  const getTimeframeSeconds = (timeframe) => {
-    const milliseconds = state.timeframes[timeframe]
-    return milliseconds ? milliseconds / 1000 : 0
-  }
-
-  /**
-   * Get timeframe duration in milliseconds
-   * @param {string} timeframe - Timeframe string (e.g., '1m', '1h')
-   * @returns {number} Duration in milliseconds, or 0 if not found
-   */
-  const getTimeframeMilliseconds = (timeframe) => {
-    return state.timeframes[timeframe] || 0
+  const getTimeframe = (timeframeValue) => {
+    return state.timeframes[timeframeValue] || null
   }
 
   /**
@@ -79,8 +78,7 @@ export function useTimeframes() {
     
     // Methods
     loadTimeframes,
-    getTimeframeSeconds,
-    getTimeframeMilliseconds,
+    getTimeframe,
     isReady
   }
 }

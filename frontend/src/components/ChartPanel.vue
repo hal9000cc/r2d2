@@ -38,7 +38,7 @@ export default {
       default: null
     },
     timeframe: {
-      type: String,
+      type: Object,
       default: null
     },
     backtestingProgress: {

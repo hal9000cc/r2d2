@@ -42,7 +42,7 @@ export default {
       default: null
     },
     timeframe: {
-      type: String,
+      type: Object,
       default: null
     },
     // Task ID for loading indicators
@@ -206,13 +206,9 @@ export default {
         }
       })
 
-      // Get timeframe in seconds for wrapper
-      const timeframeSeconds = this.getTimeframeSeconds()
-      
       // Create wrapper for quotes series
       this.quotesWrapper = new QuoteSeriesWrapper({
         type: 'candlestick',
-        timeframeSeconds: timeframeSeconds,
         timeframe: this.timeframe,
         source: this.source,
         symbol: this.symbol,
@@ -811,17 +807,6 @@ export default {
       } finally {
         this.isUpdatingDealLines = false
       }
-    },
-    
-    /**
-     * Get timeframe in seconds using global timeframes dictionary
-     */
-    getTimeframeSeconds() {
-      if (!this.timeframe || !this.timeframesComposable) {
-        return 0
-      }
-      
-      return this.timeframesComposable.getTimeframeSeconds(this.timeframe)
     },
     
     clearChartData() {

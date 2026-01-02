@@ -385,7 +385,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, provide } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, provide, inject } from 'vue'
 import ResizablePanel from '../components/ResizablePanel.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import MessagesPanel from '../components/MessagesPanel.vue'
@@ -401,6 +401,10 @@ import { backtestingApi } from '../services/backtestingApi'
 import { useBacktesting } from '../composables/useBacktesting'
 import { useBacktestingResults } from '../composables/useBacktestingResults'
 import { useAlert } from '../composables/useAlert'
+
+// Inject timeframes composable
+const timeframesComposable = inject('timeframes')
+
 // Layout state
 const chartHeight = ref(null)
 const chartMaxHeight = ref(null)
@@ -1703,7 +1707,13 @@ async function handleTaskSelected(task) {
 
   // 5. Store current task info
   currentTaskId.value = freshTask.id
-  currentTask.value = freshTask
+  // Convert timeframe string to Timeframe object
+  const timeframeStr = freshTask.timeframe || ''
+  const timeframeObj = timeframesComposable?.getTimeframe(timeframeStr) || null
+  currentTask.value = {
+    ...freshTask,
+    timeframe: timeframeObj
+  }
   
   // Clear chart when switching to a different task (new task may have different parameters)
   clearChartFlag.value = false
@@ -1718,7 +1728,9 @@ async function handleTaskSelected(task) {
     // Set symbol after source watcher has processed (SymbolInput clears symbol on source change)
     nextTick(() => {
       navFormRef.value.formData.symbol = freshTask.symbol || ''
-      navFormRef.value.formData.timeframe = freshTask.timeframe || ''
+      // Convert string timeframe from API to Timeframe object
+      const timeframeStr = freshTask.timeframe || ''
+      navFormRef.value.formData.timeframe = timeframesComposable?.getTimeframe(timeframeStr) || null
     })
 
     // Convert ISO dates to YYYY-MM-DD format for date inputs
@@ -1916,7 +1928,7 @@ async function saveCurrentTask() {
       name: currentTask.value?.name || '',
       source: formData.source || '',
       symbol: formData.symbol || '',
-      timeframe: formData.timeframe || '',
+      timeframe: formData.timeframe ? formData.timeframe.toString() : '',
       dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
       dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
       parameters: customParameters
@@ -1998,7 +2010,7 @@ async function saveAllSync() {
         name: currentTask.value?.name || '',
         source: formData.source || '',
         symbol: formData.symbol || '',
-        timeframe: formData.timeframe || '',
+        timeframe: formData.timeframe ? formData.timeframe.toString() : '',
         dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
         dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
         parameters: customParameters

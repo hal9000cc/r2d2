@@ -22,7 +22,7 @@
       </label>
       <input
         id="timeframe"
-        v-model="formData.timeframe"
+        v-model="timeframeString"
         type="text"
         class="form-input"
         :class="{ 'invalid': formData.timeframe && timeframes.length > 0 && !isTimeframeValid }"
@@ -33,7 +33,7 @@
         autocomplete="off"
       />
       <datalist :id="timeframeDatalistId">
-        <option v-for="tf in timeframes" :key="tf" :value="tf"></option>
+        <option v-for="tf in timeframes" :key="tf.name" :value="tf.name"></option>
       </datalist>
     </div>
     <div class="form-group">
@@ -117,7 +117,7 @@ export default {
       formData: {
         source: '',
         symbol: '',
-        timeframe: '',
+        timeframe: null, // Timeframe object
         dateFrom: '',
         dateTo: ''
       },
@@ -132,11 +132,22 @@ export default {
       // Use the reactive ref from setup
       return this.timeframesList
     },
+    // Computed property for v-model binding with getter/setter
+    timeframeString: {
+      get() {
+        return this.formData.timeframe ? this.formData.timeframe.name : ''
+      },
+      set(value) {
+        // Find Timeframe object by string value
+        const timeframe = this.timeframesComposable?.getTimeframe(value)
+        this.formData.timeframe = timeframe || null
+      }
+    },
     isTimeframeValid() {
       if (!this.formData.timeframe || !this.timeframes.length) {
         return false
       }
-      return this.timeframes.includes(this.formData.timeframe)
+      return this.timeframes.some(tf => tf.equals(this.formData.timeframe))
     }
   },
   watch: {

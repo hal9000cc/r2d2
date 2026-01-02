@@ -48,7 +48,7 @@
         </div>
         <div class="task-details">
           <span class="task-symbol">{{ task.symbol }}</span>
-          <span class="task-timeframe">{{ task.timeframe }}</span>
+          <span class="task-timeframe">{{ task.timeframe?.toString ? task.timeframe.toString() : task.timeframe }}</span>
         </div>
       </div>
       
