@@ -101,6 +101,22 @@ export const backtestingApi = {
     
     const response = await axios.get(url, { params })
     return response.data
+  },
+
+  /**
+   * Get backtesting indicator keys (without values)
+   * @param {number} taskId - Task ID
+   * @param {string} resultId - Result ID (UUID)
+   * @returns {Promise<Object>} Indicator keys data with list of indicator objects (keys and metadata only)
+   */
+  async getBacktestingIndicatorKeys(taskId, resultId) {
+    // Ensure resultId is a string (handle Vue ref objects)
+    const resultIdStr = String((resultId?.value ?? resultId) || '')
+    
+    const url = `${API_BASE_URL}/api/v1/backtesting/tasks/${taskId}/results/${resultIdStr}/indicators/keys`
+    
+    const response = await axios.get(url)
+    return response.data
   }
 
 }

@@ -28,7 +28,8 @@ export function useInitialData() {
       
       if (!timeframesSuccess) {
         hasError.value = true
-        errorMessage.value = timeframesComposable.errorMessage || 'Failed to load timeframes'
+        // timeframesComposable.errorMessage is a ref, need to use .value
+        errorMessage.value = timeframesComposable.errorMessage.value || 'Failed to load timeframes'
         isLoading.value = false
         return false
       }
@@ -48,7 +49,8 @@ export function useInitialData() {
     } catch (error) {
       console.error('Failed to load initial data:', error)
       hasError.value = true
-      errorMessage.value = error.message || 'Failed to load initial data'
+      // Ensure errorMessage is always a string
+      errorMessage.value = error?.message || String(error) || 'Failed to load initial data'
       isLoading.value = false
       return false
     }

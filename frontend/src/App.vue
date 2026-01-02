@@ -48,7 +48,9 @@ export default {
       
       if (!success) {
         showErrorOverlay.value = true
-        errorMessage.value = initialData.errorMessage.value || 'Failed to load initial data'
+        // Ensure errorMessage is always a string
+        const errorMsg = initialData.errorMessage.value
+        errorMessage.value = typeof errorMsg === 'string' ? errorMsg : (errorMsg?.message || String(errorMsg) || 'Failed to load initial data')
         showErrorAlert('Failed to load application data. Please check your connection.')
       } else {
         showErrorOverlay.value = false

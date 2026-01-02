@@ -12,7 +12,7 @@ import axios from 'axios'
 import { backtestingApi } from '../services/backtestingApi.js'
 import { DataSeriesManager } from '../lib/dataSeriesManager.js'
 import { SeriesType } from '../lib/dataSeriesWrapper.js'
-import { unixToISO, isoToUnix } from '../utils/dateUtils.js'
+import { isoToUnix, unixToISO } from '../utils/dateUtils.js'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'
 
@@ -77,7 +77,7 @@ export default {
       default: true
     }
   },
-  emits: ['chart-cleared', 'log-scale-changed', 'quotes-load-error', 'chart-error'],
+  emits: ['chart-cleared', 'log-scale-changed', 'quotes-load-error', 'chart-error', 'chart-message'],
   setup() {
     // Inject backtesting results from parent
     const backtestingResults = inject('backtestingResults', null)
@@ -100,10 +100,16 @@ export default {
       backtestingDateStart: null, // Unix timestamp in seconds
       backtestingDateEnd: null, // Unix timestamp in seconds (current_time from progress)
       
+      // Indicator data cache
+      _indicatorCacheData: null,
+      _indicatorCacheFrom: null,
+      _indicatorCacheTo: null,
+      _indicatorCacheTaskId: null,
+      _indicatorCacheResultId: null,
+      
       currentData: [], // Array of {time, open, high, low, close}
       
       // Flags to block concurrent updates
-      isUpdatingChart: false,      // Flag for chart bars update
       isUpdatingTradeMarkers: false, // Flag for trade markers update
       isUpdatingDealLines: false,   // Flag for deal lines update
       
@@ -152,12 +158,7 @@ export default {
       this.updateDealLines()
     },
     showIndicators() {
-      if (this.showIndicators) {
-        // Load indicators if we have data
-        // if (this.currentData.length > 0 && this.backtestingDateStart && this.backtestingDateEnd) {
-        //   this.loadIndicators(this.backtestingDateStart, this.backtestingDateEnd)
-        // }
-      }
+      // TODO: Handle indicators visibility change
     }
   },
   mounted() {
@@ -174,7 +175,7 @@ export default {
      * @returns {boolean} True if any update is in progress
      */
     chartIsBusy() {
-      return this.isUpdatingChart || this.isUpdatingTradeMarkers || this.isUpdatingDealLines
+      return (this.seriesManager?.isUpdating) || this.isUpdatingTradeMarkers || this.isUpdatingDealLines
     },
     
     initChart() {
@@ -223,6 +224,8 @@ export default {
         source: this.source,
         symbol: this.symbol,
         timeframe: this.timeframe,
+        taskId: this.taskId,
+        resultId: this.backtestingResults?.resultId,
         onDataUpdated: (data) => {
           // Synchronize with currentData for compatibility
           this.currentData = data
@@ -378,6 +381,9 @@ export default {
         // Update backtestingDateEnd on each progress message
         this.backtestingDateEnd = dateCurrent
       }
+      
+      // Update indicator series on each progress
+      this.updateIndicatorSeries()
     },
     
     /**
@@ -438,22 +444,16 @@ export default {
       // Calculate visible range (number of bars)
       const visibleRange = logicalRange.to - logicalRange.from
       
-      // Block visible range updates during chart update
-      this.isUpdatingChart = true
-      try {
-        // Move to begin through manager
-        const adjustedRange = await this.seriesManager.moveToBegin(
-          visibleRange,
-          this.backtestingDateStart,
-          this.backtestingDateEnd
-        )
-        
-        if (adjustedRange) {
-          // Set visible logical range
-          this.chart.timeScale().setVisibleLogicalRange(adjustedRange)
-        }
-      } finally {
-        this.isUpdatingChart = false
+      // Move to begin through manager (isUpdating is managed by manager)
+      const adjustedRange = await this.seriesManager.moveToBegin(
+        visibleRange,
+        this.backtestingDateStart,
+        this.backtestingDateEnd
+      )
+      
+      if (adjustedRange) {
+        // Set visible logical range
+        this.chart.timeScale().setVisibleLogicalRange(adjustedRange)
       }
     },
     
@@ -489,22 +489,16 @@ export default {
       
       const visibleLength = currentLogicalRange.to - currentLogicalRange.from
       
-      // Block visible range updates during chart update
-      this.isUpdatingChart = true
-      try {
-        // Move to end through manager
-        const adjustedRange = await this.seriesManager.moveToEnd(
-          visibleLength,
-          this.backtestingDateStart,
-          this.backtestingDateEnd
-        )
-        
-        if (adjustedRange) {
-          // Set visible logical range
-          this.chart.timeScale().setVisibleLogicalRange(adjustedRange)
-        }
-      } finally {
-        this.isUpdatingChart = false
+      // Move to end through manager (isUpdating is managed by manager)
+      const adjustedRange = await this.seriesManager.moveToEnd(
+        visibleLength,
+        this.backtestingDateStart,
+        this.backtestingDateEnd
+      )
+      
+      if (adjustedRange) {
+        // Set visible logical range
+        this.chart.timeScale().setVisibleLogicalRange(adjustedRange)
       }
     },
     
@@ -522,30 +516,24 @@ export default {
         return
       }
       
-      // Block visible range updates during chart update
-      this.isUpdatingChart = true
-      try {
-        const logicalRange = this.chart.timeScale().getVisibleLogicalRange()
-        if (!logicalRange) {
-          return
-        }
-        
-        // Use manager's updateBars method
-        const adjustedRange = await this.seriesManager.updateBars(
-          logicalRange,
-          this.backtestingDateStart,
-          this.backtestingDateEnd
-        )
-        
-        // Set visible range if data was modified
-        if (adjustedRange) {
-          this.chart.timeScale().setVisibleLogicalRange({
-            from: adjustedRange.from,
-            to: adjustedRange.to
-          })
-        }
-      } finally {
-        this.isUpdatingChart = false
+      const logicalRange = this.chart.timeScale().getVisibleLogicalRange()
+      if (!logicalRange) {
+        return
+      }
+      
+      // Use manager's updateBars method (isUpdating is managed by manager)
+      const adjustedRange = await this.seriesManager.updateBars(
+        logicalRange,
+        this.backtestingDateStart,
+        this.backtestingDateEnd
+      )
+      
+      // Set visible range if data was modified
+      if (adjustedRange) {
+        this.chart.timeScale().setVisibleLogicalRange({
+          from: adjustedRange.from,
+          to: adjustedRange.to
+        })
       }
     },
     
@@ -1024,48 +1012,42 @@ export default {
       
       const visibleLength = logicalRange.to - logicalRange.from
       
-      // Block visible range updates during chart update
-      this.isUpdatingChart = true
-      try {
-        // Go to time through manager
-        const result = await this.seriesManager.goToTime(
-          timestamp,
-          visibleLength,
-          this.backtestingDateStart,
-          this.backtestingDateEnd
-        )
-        
-        if (!result) {
-          return
-        }
-        
-        // Set visible logical range
-        this.chart.timeScale().setVisibleLogicalRange({
-          from: result.from,
-          to: result.to
-        })
-        
-        // Handle date marker if requested
-        if (showDateMarker) {
-          // Set date marker timestamp (will be drawn by updateChartOthers)
-          this.dateMarkerTimestamp = result.markerTime
-        } else {
-          // Clear date marker if not requested
-          this.dateMarkerTimestamp = null
-        }
-        
-        // Update trade markers and deal lines after a short delay
-        // This ensures the chart has finished adjusting the range
-        // updateChartOthers will also restore the date marker if dateMarkerTimestamp is set
-        setTimeout(() => {
-          const currentRange = this.chart.timeScale().getVisibleLogicalRange()
-          if (currentRange) {
-            this.updateChartOthers(currentRange)
-          }
-        }, 100)
-      } finally {
-        this.isUpdatingChart = false
+      // Go to time through manager (isUpdating is managed by manager)
+      const result = await this.seriesManager.goToTime(
+        timestamp,
+        visibleLength,
+        this.backtestingDateStart,
+        this.backtestingDateEnd
+      )
+      
+      if (!result) {
+        return
       }
+      
+      // Set visible logical range
+      this.chart.timeScale().setVisibleLogicalRange({
+        from: result.from,
+        to: result.to
+      })
+      
+      // Handle date marker if requested
+      if (showDateMarker) {
+        // Set date marker timestamp (will be drawn by updateChartOthers)
+        this.dateMarkerTimestamp = result.markerTime
+      } else {
+        // Clear date marker if not requested
+        this.dateMarkerTimestamp = null
+      }
+      
+      // Update trade markers and deal lines after a short delay
+      // This ensures the chart has finished adjusting the range
+      // updateChartOthers will also restore the date marker if dateMarkerTimestamp is set
+      setTimeout(() => {
+        const currentRange = this.chart.timeScale().getVisibleLogicalRange()
+        if (currentRange) {
+          this.updateChartOthers(currentRange)
+        }
+      }, 100)
     },
     
     /**
@@ -1170,36 +1152,30 @@ export default {
         return
       }
       
-      // Block visible range updates during chart update
-      this.isUpdatingChart = true
-      try {
-        const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-        if (!currentLogicalRange) {
-          return
-        }
-        
-        const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-        const dataLength = this.seriesManager.dataLength
-        
-        // Calculate new range: to = from - 1, from = to - visibleLength
-        let newTo = Math.floor(currentLogicalRange.from) - 1
-        let newFrom = newTo - visibleLength
-        
-        // Check if we're going before the start of data
-        if (newFrom < 0) {
-          // Set range to the beginning: from = 0, to = visibleLength
-          newFrom = 0
-          newTo = Math.min(dataLength, visibleLength)
-        }
-        
-        // Set new visible range
-        this.chart.timeScale().setVisibleLogicalRange({
-          from: newFrom,
-          to: newTo
-        })
-      } finally {
-        this.isUpdatingChart = false
+      const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
+      if (!currentLogicalRange) {
+        return
       }
+      
+      const visibleLength = currentLogicalRange.to - currentLogicalRange.from
+      const dataLength = this.seriesManager.dataLength
+      
+      // Calculate new range: to = from - 1, from = to - visibleLength
+      let newTo = Math.floor(currentLogicalRange.from) - 1
+      let newFrom = newTo - visibleLength
+      
+      // Check if we're going before the start of data
+      if (newFrom < 0) {
+        // Set range to the beginning: from = 0, to = visibleLength
+        newFrom = 0
+        newTo = Math.min(dataLength, visibleLength)
+      }
+      
+      // Set new visible range
+      this.chart.timeScale().setVisibleLogicalRange({
+        from: newFrom,
+        to: newTo
+      })
     },
     
     /**
@@ -1215,78 +1191,305 @@ export default {
         return
       }
       
-      // Block visible range updates during chart update
-      this.isUpdatingChart = true
+      const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
+      if (!currentLogicalRange) {
+        return
+      }
+      
+      const visibleLength = currentLogicalRange.to - currentLogicalRange.from
+      const dataLength = this.seriesManager.dataLength
+      
+      // Calculate new range: from = to + 1, to = from + visibleLength
+      let newFrom = Math.floor(currentLogicalRange.to) + 1
+      let newTo = newFrom + visibleLength
+      
+      // Check if we're going beyond the end of data
+      if (newTo > dataLength) {
+        // Set range to the end: to = dataLength, from = dataLength - visibleLength
+        newTo = dataLength
+        newFrom = Math.max(0, dataLength - visibleLength)
+      }
+      
+      // Set new visible range
+      this.chart.timeScale().setVisibleLogicalRange({
+        from: newFrom,
+        to: newTo
+      })
+    },
+    
+    /**
+     * Update indicator series based on loaded results
+     * Loads list of indicators from API and creates/updates series
+     */
+    async updateIndicatorSeries() {
+      if (!this.showIndicators) {
+        return
+      }
+      
+      if (!this.taskId || !this.backtestingResults?.resultId) {
+        return
+      }
+      
+      if (!this.seriesManager) {
+        return
+      }
+      
       try {
-        const currentLogicalRange = this.chart.timeScale().getVisibleLogicalRange()
-        if (!currentLogicalRange) {
+        // Load indicator keys from API
+        const response = await backtestingApi.getBacktestingIndicatorKeys(
+          this.taskId,
+          this.backtestingResults.resultId
+        )
+        
+        if (!response.success || !response.data) {
+          console.error('Failed to load indicator keys:', response.error_message)
           return
         }
         
-        const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-        const dataLength = this.seriesManager.dataLength
+        // Get current series keys from manager
+        const currentSeriesKeys = this.seriesManager.getIndicatorSeriesKeys()
         
-        // Calculate new range: from = to + 1, to = from + visibleLength
-        let newFrom = Math.floor(currentLogicalRange.to) + 1
-        let newTo = newFrom + visibleLength
+        // Get indicator keys from API response
+        const apiKeys = new Set(response.data.map(indicator => indicator.key))
         
-        // Check if we're going beyond the end of data
-        if (newTo > dataLength) {
-          // Set range to the end: to = dataLength, from = dataLength - visibleLength
-          newTo = dataLength
-          newFrom = Math.max(0, dataLength - visibleLength)
+        // Initialize set of indicator keys to add (start with all API keys)
+        const indicatorKeysToAdd = new Set(apiKeys)
+        
+        // Remove series for indicators that are no longer in API
+        // Extract indicator key from each series key and check if it's still in API
+        for (const seriesKey of currentSeriesKeys) {
+          const pipeIndex = seriesKey.indexOf('|')
+          const indicatorKey = pipeIndex >= 0 ? seriesKey.substring(0, pipeIndex) : seriesKey
+          
+          // Remove this indicator key from set of keys to add (it's already present)
+          indicatorKeysToAdd.delete(indicatorKey)
+          
+          if (!apiKeys.has(indicatorKey)) {
+            // This indicator is no longer in API, remove the series
+            try {
+              this.seriesManager.removeSeries(seriesKey)
+            } catch (error) {
+              console.error(`Failed to remove indicator series "${seriesKey}":`, error)
+              this.$emit('chart-message', {
+                level: 'error',
+                message: `Failed to remove indicator series "${seriesKey}": ${error.message || error}`
+              })
+            }
+          }
         }
         
-        // Set new visible range
-        this.chart.timeScale().setVisibleLogicalRange({
-          from: newFrom,
-          to: newTo
+        // Add new series for new indicators
+        if (indicatorKeysToAdd.size > 0) {
+          this.addIndicatorSeries(response.data, indicatorKeysToAdd)
+        }
+      } catch (error) {
+        console.error('Error loading indicator keys:', error)
+        this.$emit('chart-message', {
+          level: 'error',
+          message: `Error loading indicator keys: ${error.message || error}`
         })
-      } finally {
-        this.isUpdatingChart = false
       }
     },
     
     /**
-     * Load indicators from API
+     * Get series key for indicator and series index
+     * @param {Object} indicator - Indicator object
+     * @param {number} seriesIndex - Index in series_info array
+     * @returns {string} Series key in format "indicator.key|seriesIndex"
+     */
+    getSeriesKey(indicator, seriesIndex) {
+      return `${indicator.key}|${seriesIndex}`
+    },
+    
+    /**
+     * Add all series for new indicators
+     * @param {Array<Object>} indicators - Array of all indicator objects from API
+     * @param {Set<string>} indicatorKeysToAdd - Set of indicator keys to add
+     */
+    addIndicatorSeries(indicators, indicatorKeysToAdd) {
+      for (const indicator of indicators) {
+        if (!indicatorKeysToAdd.has(indicator.key)) {
+          continue
+        }
+        
+        // Add series for each element in series_info with is_price === true
+        for (let seriesIndex = 0; seriesIndex < indicator.series_info.length; seriesIndex++) {
+          const seriesInfo = indicator.series_info[seriesIndex]
+          // Only add series with is_price === true
+          if (seriesInfo.is_price === true) {
+            const seriesKey = this.getSeriesKey(indicator, seriesIndex)
+            try {
+              // Use default options (random color, etc.)
+              // Pass loadIndicatorData function, indicator object and seriesIndex
+              const added = this.seriesManager.addSeries(
+                seriesKey,
+                SeriesType.indicatorPrice,
+                {
+                  loadIndicatorData: this.loadIndicatorData.bind(this),
+                  indicator: indicator,
+                  seriesIndex: seriesIndex
+                }
+              )
+              
+              if (!added) {
+                this.$emit('chart-message', {
+                  level: 'error',
+                  message: `Failed to add indicator series "${seriesKey}"`
+                })
+              }
+            } catch (error) {
+              console.error(`Failed to add indicator series "${seriesKey}":`, error)
+              this.$emit('chart-message', {
+                level: 'error',
+                message: `Failed to add indicator series "${seriesKey}": ${error.message || error}`
+              })
+            }
+          }
+        }
+      }
+    },
+    
+    /**
+     * Load indicators data from cache or API
      * @param {number} fromTimestamp - Start timestamp in Unix seconds
      * @param {number} toTimestamp - End timestamp in Unix seconds
-     * @returns {Promise<Array>} Loaded indicators array
+     * @returns {Promise<Array|null>} Indicators data array or null on error
      */
-    async loadIndicators(fromTimestamp, toTimestamp) {
-      if (!this.showIndicators) {
-        return []
-      }
-      
+    async _loadIndicatorsData(fromTimestamp, toTimestamp) {
       if (!this.taskId || !this.backtestingResults?.resultId) {
-        return []
+        return null
       }
       
+      const currentTaskId = this.taskId
+      // Ensure resultId is a string (handle Vue ref objects)
+      const currentResultId = String((this.backtestingResults.resultId?.value ?? this.backtestingResults.resultId) || '')
+      
+      // Clear cache if taskId or resultId changed
+      if (this._indicatorCacheTaskId !== currentTaskId || this._indicatorCacheResultId !== currentResultId) {
+        this._indicatorCacheData = null
+        this._indicatorCacheFrom = null
+        this._indicatorCacheTo = null
+        this._indicatorCacheTaskId = currentTaskId
+        this._indicatorCacheResultId = currentResultId
+      }
+      
+      // Check if we can use cached data
+      if (this._indicatorCacheData && this._indicatorCacheFrom === fromTimestamp && this._indicatorCacheTo === toTimestamp) {
+        return this._indicatorCacheData
+      }
+      
+      // Need to fetch new data
       try {
-        // Convert timestamps to ISO strings
-        const fromISO = unixToISO(fromTimestamp)
-        const toISO = unixToISO(toTimestamp)
+        const dateStartISO = unixToISO(fromTimestamp)
+        const dateEndISO = unixToISO(toTimestamp)
         
-        // Load indicators from API
-        // backtestingApi.getBacktestingIndicators handles Vue ref conversion internally
         const response = await backtestingApi.getBacktestingIndicators(
-          this.taskId,
-          this.backtestingResults?.resultId,
-          fromISO,
-          toISO
+          currentTaskId,
+          currentResultId, // Already converted to string above
+          dateStartISO,
+          dateEndISO
         )
         
-        // Return indicators array from response
-        if (response.success && response.data) {
-          return response.data
-        } else {
-          console.error('Failed to load indicators:', response.error_message)
-          return []
+        if (!response.success || !response.data) {
+          const errorMsg = response.error_message || 'Failed to load indicator data'
+          console.error('Failed to load indicator data:', errorMsg)
+          this.$emit('chart-message', {
+            level: 'error',
+            message: errorMsg
+          })
+          return null
         }
+        
+        // Cache the data
+        this._indicatorCacheData = response.data
+        this._indicatorCacheFrom = fromTimestamp
+        this._indicatorCacheTo = toTimestamp
+        
+        return this._indicatorCacheData
       } catch (error) {
-        console.error('Error loading indicators:', error)
+        console.error('Error loading indicator data:', error)
+        this.$emit('chart-message', {
+          level: 'error',
+          message: `Error loading indicator data: ${error.message || error}`
+        })
+        return null
+      }
+    },
+    
+    /**
+     * Load indicator data for specific indicator and series
+     * @param {Object} indicator - Indicator object
+     * @param {number} seriesIndex - Index in series_info array
+     * @param {number} fromTimestamp - Start timestamp in Unix seconds
+     * @param {number} toTimestamp - End timestamp in Unix seconds
+     * @returns {Promise<Array>} Loaded indicator data in format [{time, value}, ...]
+     */
+    async loadIndicatorData(indicator, seriesIndex, fromTimestamp, toTimestamp) {
+      // Load indicators data from cache or API
+      const indicatorsData = await this._loadIndicatorsData(fromTimestamp, toTimestamp)
+      if (!indicatorsData) {
         return []
       }
+      
+      // Find indicator by key
+      const indicatorData = indicatorsData.find(ind => ind.key === indicator.key)
+      if (!indicatorData) {
+        return []
+      }
+      
+      // Extract series values
+      let seriesValues = null
+      if (indicatorData.is_tuple) {
+        // Multiple series - values is an object with series names as keys
+        const seriesName = indicatorData.series_info[seriesIndex]?.name
+        if (!seriesName) {
+          return []
+        }
+        seriesValues = indicatorData.values[seriesName]
+        if (!Array.isArray(seriesValues)) {
+          return []
+        }
+      } else {
+        // Single series - values is an array
+        seriesValues = indicatorData.values
+        if (!Array.isArray(seriesValues)) {
+          return []
+        }
+      }
+      
+      // Get time array
+      const timeArray = indicatorData.time
+      if (!Array.isArray(timeArray)) {
+        return []
+      }
+      
+      // Check array lengths match
+      if (timeArray.length !== seriesValues.length) {
+        console.error(`Time and values array lengths don't match for indicator "${indicator.key}", series ${seriesIndex}: time=${timeArray.length}, values=${seriesValues.length}`)
+        this.$emit('chart-message', {
+          level: 'error',
+          message: `Data inconsistency for indicator "${indicator.key}": time and values arrays have different lengths`
+        })
+        return []
+      }
+      
+      // Convert to [{time, value}, ...] format
+      // Filter out null values as lightweight-charts requires numbers
+      const result = []
+      for (let i = 0; i < timeArray.length; i++) {
+        const timeISO = timeArray[i]
+        const value = seriesValues[i]
+        
+        // Skip null values (lightweight-charts requires numbers)
+        if (value === null || value === undefined) {
+          continue
+        }
+        
+        const timeUnix = isoToUnix(timeISO)
+        result.push({ time: timeUnix, value })
+      }
+      
+      return result
     }
   }
 }

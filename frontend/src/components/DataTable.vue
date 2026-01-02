@@ -29,7 +29,7 @@
           @click.stop="handleRowClick(row, index)"
         >
           <td v-for="column in columns" :key="column.key" :class="getCellClass(column, row)">
-            {{ formatCell(row[column.key], column) }}
+            {{ formatCell(row[column.key], column, row) }}
           </td>
         </tr>
       </tbody>
@@ -97,9 +97,10 @@ export default {
     getRowKey(row, index) {
       return row[this.rowKey] || index
     },
-    formatCell(value, column) {
+    formatCell(value, column, row) {
       if (column.format && typeof column.format === 'function') {
-        return column.format(value)
+        // Pass row as second parameter for computed columns
+        return column.format(value, row)
       }
       
       // Default formatting

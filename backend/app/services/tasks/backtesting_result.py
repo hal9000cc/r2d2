@@ -1150,4 +1150,99 @@ class BackTestingResults:
         except Exception as e:
             logger.error(f"Failed to get indicators: {str(e)}")
             raise RuntimeError(f"Failed to get indicators: {str(e)}") from e
+    
+    def get_indicators_key(self, result_id: str) -> list[Dict[str, Any]]:
+        """
+        Get indicator keys and metadata (without values) from Redis.
+        This is a lightweight method that returns only keys and metadata,
+        without loading and processing indicator values.
+        
+        Args:
+            result_id: Result ID
+            
+        Returns:
+            List of indicator objects with key and metadata:
+            [
+                {
+                    "key": "talib:[\"SMA\",{\"timeperiod\":50}]",
+                    "proxy_name": "talib",
+                    "indicator_name": "SMA",
+                    "parameters": {"timeperiod": 50},
+                    "is_tuple": false,
+                    "series_info": [{"name": "SMA", "is_price": true}]
+                },
+                ...
+            ]
+            
+        Raises:
+            RuntimeError: If operation fails
+        """
+        try:
+            result_key_prefix = self.task.get_result_key()
+            
+            # Get indicator keys from Redis
+            indicator_keys, redis_keys_to_fetch = self._get_indicator_keys_from_redis(result_key_prefix, result_id)
+            
+            if not indicator_keys:
+                return []
+            
+            # Fetch indicator data from Redis (we need metadata, but won't process values)
+            indicator_data_list = self._fetch_indicator_data_from_redis(redis_keys_to_fetch)
+            
+            # Process indicators to extract metadata only
+            result = []
+            
+            for indicator_key, indicator_bytes in zip(indicator_keys, indicator_data_list):
+                if indicator_bytes is None:
+                    logger.warning(f"Indicator key {indicator_key} not found in Redis")
+                    continue
+                
+                try:
+                    # Deserialize only metadata (not values)
+                    # We unpack msgpack but only use metadata part
+                    response_data = msgpack.unpackb(indicator_bytes, raw=False)
+                    metadata = response_data.get('metadata', {})
+                    
+                    # Parse indicator key
+                    try:
+                        proxy_name, indicator_name, parameters = self._parse_indicator_key(indicator_key)
+                        # Convert numpy types in parameters to Python types
+                        parameters = self._convert_dict_numpy_types(parameters)
+                    except (ValueError, json.JSONDecodeError) as e:
+                        logger.warning(f"Failed to parse indicator key {indicator_key}: {e}")
+                        continue
+                    
+                    # Extract metadata fields
+                    is_tuple = bool(metadata.get('is_tuple', False))
+                    series_info = metadata.get('series_info', [])
+                    # Convert series_info numpy types to Python types
+                    series_info = self._convert_dict_numpy_types(series_info)
+                    
+                    # Build result entry
+                    entry = {
+                        'key': indicator_key,
+                        'proxy_name': proxy_name,
+                        'indicator_name': indicator_name,
+                        'parameters': parameters,
+                        'is_tuple': is_tuple,
+                        'series_info': series_info
+                    }
+                    
+                    # Convert all numpy types in entry
+                    entry = self._convert_dict_numpy_types(entry)
+                    
+                    result.append(entry)
+                except Exception as e:
+                    logger.error(f"Failed to extract metadata from indicator {indicator_key}: {e}", exc_info=True)
+                    # Continue with other indicators instead of failing completely
+                    continue
+            
+            # Convert all numpy types in the entire result structure before returning
+            converted_result = self._convert_dict_numpy_types(result)
+            
+            return converted_result
+            
+        except Exception as e:
+            logger.error(f"Failed to get indicator keys: {str(e)}")
+            raise RuntimeError(f"Failed to get indicator keys: {str(e)}") from e
 

@@ -45,7 +45,17 @@ export function useTimeframes() {
     } catch (error) {
       console.error('Failed to load timeframes:', error)
       state.hasError = true
-      state.errorMessage = error.message || 'Failed to load timeframes'
+      // Ensure errorMessage is always a string
+      // Handle different error types: Error objects, TypeError, network errors, etc.
+      let errorMsg = 'Failed to load timeframes'
+      if (error instanceof Error) {
+        errorMsg = error.message || error.toString() || errorMsg
+      } else if (typeof error === 'string') {
+        errorMsg = error
+      } else if (error) {
+        errorMsg = String(error)
+      }
+      state.errorMessage = errorMsg
       state.isLoading = false
       return false
     }

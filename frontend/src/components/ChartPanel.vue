@@ -134,6 +134,11 @@ export default {
       if (this.$refs.chartRef) {
         return this.$refs.chartRef.goToDeal(dealId, showMarker)
       }
+    },
+    updateIndicatorSeries() {
+      if (this.$refs.chartRef) {
+        return this.$refs.chartRef.updateIndicatorSeries()
+      }
     }
   }
 }

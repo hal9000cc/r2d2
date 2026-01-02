@@ -3,7 +3,7 @@
     <div class="error-content">
       <div class="error-icon">⚠️</div>
       <h2>Failed to Load Application Data</h2>
-      <p class="error-message">{{ message }}</p>
+      <p class="error-message">{{ message || 'Failed to load timeframes' }}</p>
       <p class="error-description">
         The application cannot start without loading required configuration data.
         Please check your internet connection and try again.

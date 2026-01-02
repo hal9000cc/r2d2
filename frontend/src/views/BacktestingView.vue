@@ -609,6 +609,17 @@ const dealsColumns = [
     format: (value) => value ? parseFloat(value).toFixed(8) : '—'
   },
   { 
+    key: 'profit_net', 
+    label: 'Profit gross',
+    class: 'align-right',
+    format: (value, row) => {
+      const profit = row.profit ? parseFloat(row.profit) : 0
+      const fee = row.fee ? parseFloat(row.fee) : 0
+      const profitNet = profit + fee
+      return profitNet.toFixed(8)
+    }
+  },
+  { 
     key: 'fee', 
     label: 'Fee',
     class: 'align-right',
@@ -784,6 +795,9 @@ async function loadBacktestingResults(fromTime = null) {
         setRelevanceTime(backtestProgressCurrentTime.value)
       }
       
+      // Update indicator series after loading results
+      chartPanelRef.value?.updateIndicatorSeries()
+      
       return true
     } else if (!response.success) {
       console.error('Failed to load backtesting results:', response.error_message)
@@ -909,6 +923,8 @@ watch(backtestProgressState, async (newState) => {
   if (loaded) {
     // Validate completeness after loading
     validateResultsCompleteness()
+    // Update indicator series after loading final results
+    chartPanelRef.value?.updateIndicatorSeries()
   } else {
     // Loading failed, but try to validate what we have (if any)
     if (stats.value) {
