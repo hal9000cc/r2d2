@@ -462,7 +462,6 @@ const saveTimeout = ref(null)
 const taskSaveTimeout = ref(null)
 
 // Chart state
-const chartData = ref([]) // Array of {time, open, high, low, close} for chart (deprecated, kept for compatibility)
 const clearChartFlag = ref(false) // Flag to trigger chart clearing
 
 // Computed: backtesting progress data for chart

@@ -6,11 +6,12 @@
 </template>
 
 <script>
-import { createChart, ColorType, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts'
+import { createChart, ColorType, LineSeries } from 'lightweight-charts'
 import { inject } from 'vue'
 import axios from 'axios'
 import { backtestingApi } from '../services/backtestingApi.js'
-import { QuoteSeriesWrapper } from '../lib/quoteSeriesWrapper.js'
+import { DataSeriesManager } from '../lib/dataSeriesManager.js'
+import { SeriesType } from '../lib/dataSeriesWrapper.js'
 import { unixToISO, isoToUnix } from '../utils/dateUtils.js'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'
@@ -87,9 +88,7 @@ export default {
   data() {
     return {
       chart: null,
-      candlestickSeries: null,
-      quotesWrapper: null, // Wrapper for working with quotes series
-      seriesMarkers: null, // Markers API for the series (lightweight-charts 5.x)
+      seriesManager: null, // Manager for working with data series
       dealLines: [], // Array of line series for deals
       dateMarkerTimestamp: null, // Timestamp of the current date marker (for removal)
       
@@ -206,36 +205,42 @@ export default {
         }
       })
 
-      // Create wrapper for quotes series
-      this.quotesWrapper = new QuoteSeriesWrapper({
-        type: 'candlestick',
-        timeframe: this.timeframe,
+      // Create manager for data series
+      this.createSeriesManager()
+    },
+    
+    /**
+     * Create series manager with current props
+     * Can be called multiple times to recreate manager with updated parameters
+     */
+    createSeriesManager() {
+      if (!this.chart) {
+        return
+      }
+      
+      // Create manager for data series
+      this.seriesManager = new DataSeriesManager(this.chart, {
         source: this.source,
         symbol: this.symbol,
+        timeframe: this.timeframe,
         onDataUpdated: (data) => {
           // Synchronize with currentData for compatibility
           this.currentData = data
         },
         onError: (error, context) => {
-          console.error('[BacktestingChart] Quotes wrapper error:', error, context)
+          console.error('[BacktestingChart] Series manager error:', error, context)
           this.$emit('quotes-load-error', error)
         }
       })
       
-      // Initialize series through wrapper
-      this.candlestickSeries = this.quotesWrapper.init(this.chart, {
-        CandlestickSeries,
-        LineSeries
-      }, {
+      // Add quotes series (main series)
+      this.seriesManager.addSeries('quotes', SeriesType.quotes, {
         upColor: CANDLESTICK_UP_COLOR,
         downColor: CANDLESTICK_DOWN_COLOR,
         borderVisible: false,
         wickUpColor: CANDLESTICK_UP_COLOR,
         wickDownColor: CANDLESTICK_DOWN_COLOR
       })
-      
-      // Create markers API for the series (lightweight-charts 5.x)
-      this.seriesMarkers = createSeriesMarkers(this.candlestickSeries, [])
     },
     
     /**
@@ -389,7 +394,7 @@ export default {
       
       // Wait for chart initialization if not ready yet
       // Use a loop with nextTick to wait for initialization
-      while (!this.quotesWrapper || !this.quotesWrapper.isInitialized) {
+      while (!this.seriesManager || !this.seriesManager.isInitialized) {
         await this.$nextTick()
         // Safety check: if component is being destroyed, exit
         if (!this.$refs.chartContainer) {
@@ -397,8 +402,8 @@ export default {
         }
       }
       
-      // Set initial dummy bar through wrapper (will be replaced by moveToBegin)
-      this.quotesWrapper.setDummyBar(this.backtestingDateStart)
+      // Set initial dummy bar through manager (will be replaced by moveToBegin)
+      this.seriesManager.setDummyBar(this.backtestingDateStart)
       
       // Move to begin (this will load real data)
       this.$nextTick(async () => {
@@ -411,7 +416,7 @@ export default {
      * Loads initial data and sets visible range
      */
     async moveToBegin() {
-      if (!this.chart || !this.candlestickSeries) {
+      if (!this.chart || !this.seriesManager || !this.seriesManager.isInitialized) {
         return
       }
       
@@ -433,15 +438,11 @@ export default {
       // Calculate visible range (number of bars)
       const visibleRange = logicalRange.to - logicalRange.from
       
-      if (!this.quotesWrapper) {
-        return
-      }
-      
       // Block visible range updates during chart update
       this.isUpdatingChart = true
       try {
-        // Move to begin through wrapper
-        const adjustedRange = await this.quotesWrapper.moveToBegin(
+        // Move to begin through manager
+        const adjustedRange = await this.seriesManager.moveToBegin(
           visibleRange,
           this.backtestingDateStart,
           this.backtestingDateEnd
@@ -461,7 +462,7 @@ export default {
      * Loads data from end and sets visible range
      */
     async moveToEnd() {
-      if (!this.chart || !this.candlestickSeries) {
+      if (!this.chart || !this.seriesManager || !this.seriesManager.isInitialized) {
         return
       }
       
@@ -488,15 +489,11 @@ export default {
       
       const visibleLength = currentLogicalRange.to - currentLogicalRange.from
       
-      if (!this.quotesWrapper) {
-        return
-      }
-      
       // Block visible range updates during chart update
       this.isUpdatingChart = true
       try {
-        // Move to end through wrapper
-        const adjustedRange = await this.quotesWrapper.moveToEnd(
+        // Move to end through manager
+        const adjustedRange = await this.seriesManager.moveToEnd(
           visibleLength,
           this.backtestingDateStart,
           this.backtestingDateEnd
@@ -516,12 +513,12 @@ export default {
      * Checks if data needs to be loaded on left or right and updates chart
      */
     async updateChartBars() {
-      if (!this.chart || !this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
+      if (!this.chart || !this.seriesManager || !this.seriesManager.dataLength || this.seriesManager.dataLength === 0) {
         return
       }
       
-      // Don't run if chart is busy with any operation or wrapper is updating
-      if (this.chartIsBusy() || this.quotesWrapper?.isUpdating) {
+      // Don't run if chart is busy with any operation or manager is updating
+      if (this.chartIsBusy() || this.seriesManager?.isUpdating) {
         return
       }
       
@@ -533,8 +530,8 @@ export default {
           return
         }
         
-        // Use wrapper's updateBars method
-        const adjustedRange = await this.quotesWrapper.updateBars(
+        // Use manager's updateBars method
+        const adjustedRange = await this.seriesManager.updateBars(
           logicalRange,
           this.backtestingDateStart,
           this.backtestingDateEnd
@@ -583,11 +580,11 @@ export default {
         return
       }
       
-      if (!this.seriesMarkers) {
+      if (!this.seriesManager || !this.seriesManager.seriesMarkers) {
         return
       }
       
-      if (!this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
+      if (!this.seriesManager.dataLength || this.seriesManager.dataLength === 0) {
         return
       }
       
@@ -595,7 +592,8 @@ export default {
         return
       }
       
-      if (!this.candlestickSeries) {
+      const seriesMarkers = this.seriesManager?.seriesMarkers
+      if (!seriesMarkers) {
         return
       }
 
@@ -606,7 +604,7 @@ export default {
         if (!this.showTradeMarkers) {
           try {
             const dateMarker = this.getDateMarker()
-            this.seriesMarkers.setMarkers(dateMarker ? [dateMarker] : [])
+            seriesMarkers.setMarkers(dateMarker ? [dateMarker] : [])
           } catch (error) {
             // Silently ignore errors when clearing
           }
@@ -619,7 +617,7 @@ export default {
           // If visible range is not available, clear markers (but preserve date marker)
           try {
             const dateMarker = this.getDateMarker()
-            this.seriesMarkers.setMarkers(dateMarker ? [dateMarker] : [])
+            seriesMarkers.setMarkers(dateMarker ? [dateMarker] : [])
           } catch (error) {
             // Silently ignore errors when clearing
           }
@@ -637,7 +635,7 @@ export default {
         if (!tradesInRange || tradesInRange.length === 0) {
           try {
             const dateMarker = this.getDateMarker()
-            this.seriesMarkers.setMarkers(dateMarker ? [dateMarker] : [])
+            seriesMarkers.setMarkers(dateMarker ? [dateMarker] : [])
           } catch (error) {
             // Silently ignore errors when clearing
           }
@@ -669,7 +667,7 @@ export default {
         
         // Set markers using seriesMarkers API (lightweight-charts 5.x)
         try {
-          this.seriesMarkers.setMarkers(allMarkers)
+          seriesMarkers.setMarkers(allMarkers)
         } catch (error) {
           // Silently ignore errors
         }
@@ -693,7 +691,7 @@ export default {
         return
       }
       
-      if (!this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
+      if (!this.seriesManager || !this.seriesManager.dataLength || this.seriesManager.dataLength === 0) {
         return
       }
       
@@ -810,18 +808,10 @@ export default {
     },
     
     clearChartData() {
-      // Clear data through wrapper
-      if (this.quotesWrapper) {
-        this.quotesWrapper.clear()
-      }
-      
-      // Clear trade markers
-      if (this.seriesMarkers) {
-        try {
-          this.seriesMarkers.setMarkers([])
-        } catch (error) {
-          // Silently ignore errors
-        }
+      // Destroy existing manager (removes all series from chart)
+      if (this.seriesManager) {
+        this.seriesManager.destroy()
+        this.seriesManager = null
       }
       
       // Remove deal lines
@@ -835,6 +825,9 @@ export default {
           // Silently ignore errors
         }
       }
+      
+      // Recreate manager with current props (source, symbol, timeframe)
+      this.createSeriesManager()
       
       // Update currentData for compatibility
       this.currentData = []
@@ -898,34 +891,10 @@ export default {
     
     /**
      * Toggle logarithmic price scale
+     * TODO: Implement log scale functionality
      */
     toggleLogScale() {
-      if (!this.chart || !this.candlestickSeries) {
-        return
-      }
-      
-      this.isLogScale = !this.isLogScale
-      
-      // Apply log scale through series options
-      this.candlestickSeries.applyOptions({
-        priceScaleId: '',
-        priceFormat: {
-          type: 'price',
-          precision: 2,
-          minMove: 0.01
-        }
-      })
-      
-      // Apply log scale to the price scale
-      const priceScale = this.chart.priceScale('')
-      if (priceScale) {
-        priceScale.applyOptions({
-          logScale: this.isLogScale
-        })
-      }
-      
-      // Emit event to update parent component state
-      this.$emit('log-scale-changed', this.isLogScale)
+      // Placeholder - functionality not yet implemented
     },
     
     /**
@@ -944,7 +913,7 @@ export default {
      * @returns {number|null} Unix timestamp in seconds, or null if chart/data not available
      */
     getChartCurrentTime() {
-      if (!this.chart || !this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
+      if (!this.chart || !this.seriesManager || !this.seriesManager.dataLength || this.seriesManager.dataLength === 0) {
         return null
       }
       
@@ -963,8 +932,8 @@ export default {
       // Clamp to data bounds
       if (centerIndex < 0) {
         centerIndex = 0
-      } else if (centerIndex >= this.quotesWrapper.dataLength) {
-        centerIndex = this.quotesWrapper.dataLength - 1
+      } else if (centerIndex >= this.seriesManager.dataLength) {
+        centerIndex = this.seriesManager.dataLength - 1
       }
       
       // Return timestamp of the bar at center
@@ -1028,7 +997,7 @@ export default {
      * @param {boolean} showDateMarker - Whether to show a marker at the selected date
      */
     async goToTime(timestamp, showDateMarker = false) {
-      if (!this.chart || !this.candlestickSeries) {
+      if (!this.chart || !this.seriesManager || !this.seriesManager.isInitialized) {
         return
       }
       
@@ -1055,15 +1024,11 @@ export default {
       
       const visibleLength = logicalRange.to - logicalRange.from
       
-      if (!this.quotesWrapper) {
-        return
-      }
-      
       // Block visible range updates during chart update
       this.isUpdatingChart = true
       try {
-        // Go to time through wrapper
-        const result = await this.quotesWrapper.goToTime(
+        // Go to time through manager
+        const result = await this.seriesManager.goToTime(
           timestamp,
           visibleLength,
           this.backtestingDateStart,
@@ -1108,7 +1073,8 @@ export default {
      * @param {number} timestamp - Unix timestamp in seconds
      */
     drawDateMarker(timestamp) {
-      if (!this.seriesMarkers || !this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
+      const seriesMarkers = this.seriesManager?.seriesMarkers
+      if (!seriesMarkers || !this.seriesManager || !this.seriesManager.dataLength || this.seriesManager.dataLength === 0) {
         return
       }
       
@@ -1116,7 +1082,7 @@ export default {
       let markerTime = timestamp
       let found = false
       
-      for (let i = 0; i < this.quotesWrapper.dataLength; i++) {
+      for (let i = 0; i < this.seriesManager.dataLength; i++) {
         if (this.currentData[i].time >= timestamp) {
           markerTime = this.currentData[i].time
           found = true
@@ -1125,12 +1091,12 @@ export default {
       }
       
       // If timestamp is after all bars, use last bar
-      if (!found && this.quotesWrapper.dataLength > 0) {
-        markerTime = this.quotesWrapper.lastBarTime
+      if (!found && this.seriesManager.dataLength > 0) {
+        markerTime = this.seriesManager.lastBarTime
       }
       
       // Get current markers (to preserve trade markers)
-      const currentMarkers = this.seriesMarkers.markers() || []
+      const currentMarkers = seriesMarkers.markers() || []
       
       // Create date marker
       const dateMarker = {
@@ -1147,7 +1113,7 @@ export default {
       
       // Set all markers
       try {
-        this.seriesMarkers.setMarkers(allMarkers)
+        seriesMarkers.setMarkers(allMarkers)
         // Store timestamp for future removal
         this.dateMarkerTimestamp = markerTime
       } catch (error) {
@@ -1195,7 +1161,7 @@ export default {
      * Scroll chart one page backward (public method for external control)
      */
     scrollPageBackward() {
-      if (!this.chart || !this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
+      if (!this.chart || !this.seriesManager || !this.seriesManager.dataLength || this.seriesManager.dataLength === 0) {
         return
       }
       
@@ -1213,7 +1179,7 @@ export default {
         }
         
         const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-        const dataLength = this.quotesWrapper.dataLength
+        const dataLength = this.seriesManager.dataLength
         
         // Calculate new range: to = from - 1, from = to - visibleLength
         let newTo = Math.floor(currentLogicalRange.from) - 1
@@ -1240,7 +1206,7 @@ export default {
      * Scroll chart one page forward (public method for external control)
      */
     scrollPageForward() {
-      if (!this.chart || !this.quotesWrapper || this.quotesWrapper.dataLength === 0) {
+      if (!this.chart || !this.seriesManager || !this.seriesManager.dataLength || this.seriesManager.dataLength === 0) {
         return
       }
       
@@ -1258,7 +1224,7 @@ export default {
         }
         
         const visibleLength = currentLogicalRange.to - currentLogicalRange.from
-        const dataLength = this.quotesWrapper.dataLength
+        const dataLength = this.seriesManager.dataLength
         
         // Calculate new range: from = to + 1, to = from + visibleLength
         let newFrom = Math.floor(currentLogicalRange.to) + 1
