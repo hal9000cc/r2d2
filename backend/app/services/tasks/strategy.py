@@ -99,14 +99,14 @@ class Strategy(ABC):
             None (currently, Order object will be returned in future)
         """
         # Check if limit order or stop loss/take profit are specified
-        if price is not None or stop_loss is not None or take_profit is not None:
+        if stop_loss is not None or take_profit is not None:
             raise NotImplementedError("not realized")
         
         # Market order: execute immediately through broker
         if side == OrderSide.BUY:
-            self.broker.buy(quantity)
+            self.broker.buy(quantity, price=price)
         elif side == OrderSide.SELL:
-            self.broker.sell(quantity)
+            self.broker.sell(quantity, price=price)
         else:
             raise ValueError(f"Unknown order side: {side}")
     

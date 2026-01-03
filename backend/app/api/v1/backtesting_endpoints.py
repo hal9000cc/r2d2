@@ -680,7 +680,7 @@ def process_backtesting_task(task: Task, result_id: str) -> None:
     )
     # Set broker reference in strategy
     strategy.broker = broker
-    broker.run(task)
+    broker.run()
     
     # Send completion message with date_end
     task.send_message(MessageType.EVENT, {

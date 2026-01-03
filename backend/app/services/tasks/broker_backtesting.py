@@ -89,7 +89,7 @@ class BrokerBacktesting(Broker):
         self.equity_usd = 0.0
         self.equity_symbol = 0.0
     
-    def buy(self, quantity: VOLUME_TYPE):
+    def buy(self, quantity: VOLUME_TYPE, price: Optional[PRICE_TYPE] = None):
         """
         Execute buy operation.
         Increases equity_symbol and decreases equity_usd.
@@ -110,7 +110,7 @@ class BrokerBacktesting(Broker):
         
         self.reg_buy(quantity, trade_fee, self.price, self.current_time)
     
-    def sell(self, quantity: VOLUME_TYPE):
+    def sell(self, quantity: VOLUME_TYPE, price: Optional[PRICE_TYPE] = None):
         """
         Execute sell operation.
         Decreases equity_symbol and increases equity_usd.
@@ -141,7 +141,7 @@ class BrokerBacktesting(Broker):
         elif self.equity_symbol < 0:
             self.buy(abs(self.equity_symbol))
     
-    def update_state(self, results: BackTestingResults, is_finish: bool = False) -> None:
+    def update_state(self, results: Optional[BackTestingResults], is_finish: bool = False) -> None:
         """
         Update task state and progress.
         Checks if task is still running by reading isRunning flag from Redis.
@@ -149,7 +149,7 @@ class BrokerBacktesting(Broker):
         If isRunning is False, sends error notification and raises exception to stop backtesting.
         
         Args:
-            results: BackTestingResults instance to save results to Redis
+            results: BackTestingResults instance to save results to Redis, or None if results should not be saved
             is_finish: If True, marks the backtesting result as completed. Default: False.
         
         Raises:
@@ -170,8 +170,9 @@ class BrokerBacktesting(Broker):
         date_start_iso = datetime64_to_iso(self.date_start) if self.date_start is not None else None
         current_time_iso = datetime64_to_iso(self.current_time) if self.current_time is not None else None
         
-        # Save results to Redis
-        results.put_result(is_finish=is_finish)
+        # Save results to Redis if results instance is provided
+        if results is not None:
+            results.put_result(is_finish=is_finish)
         
         self.task.send_message(
             MessageType.EVENT, 
@@ -225,35 +226,37 @@ class BrokerBacktesting(Broker):
         """
         self.task.send_message(MessageType.MESSAGE, {"level": level, "message": message})
     
-    def run(self, task: Task):
+    def run(self, save_results: bool = True):
         """
         Run backtest strategy.
         Loads market data and iterates through bars, calling on_bar for each bar.
         Periodically updates state and progress based on results_save_period.
+        Uses self.task to get symbol, timeframe, dateStart, dateEnd, source.
         
         Args:
-            task: Task instance (used to get symbol, timeframe, dateStart, dateEnd, source)
+            save_results: If True, creates BackTestingResults and saves results to Redis.
+                         If False, results are not saved. Default: True.
         """
         # Reset broker state
         self.reset()
         
         # Convert timeframe string to Timeframe object
         try:
-            timeframe = Timeframe.cast(task.timeframe)
+            timeframe = Timeframe.cast(self.task.timeframe)
         except Exception as e:
-            raise RuntimeError(f"Failed to parse timeframe '{task.timeframe}': {e}") from e
+            raise RuntimeError(f"Failed to parse timeframe '{self.task.timeframe}': {e}") from e
         
         # Convert date strings to datetime objects using datetime_utils
         try:
-            history_start = parse_utc_datetime(task.dateStart)
-            history_end = parse_utc_datetime(task.dateEnd)
+            history_start = parse_utc_datetime(self.task.dateStart)
+            history_end = parse_utc_datetime(self.task.dateEnd)
         except Exception as e:
             raise RuntimeError(f"Failed to parse dateStart/dateEnd: {e}") from e
         
         # Get quotes data directly from Client
         client = QuotesClient()
-        logger.debug(f"Getting quotes for {task.source}:{task.symbol}:{task.timeframe} from {history_start} to {history_end}")
-        quotes_data = client.get_quotes(task.source, task.symbol, timeframe, history_start, history_end)
+        logger.debug(f"Getting quotes for {self.task.source}:{self.task.symbol}:{self.task.timeframe} from {history_start} to {history_end}")
+        quotes_data = client.get_quotes(self.task.source, self.task.symbol, timeframe, history_start, history_end)
         logger.debug(f"Quotes received: {len(quotes_data['time'])} bars")
         
         # Extract numpy arrays directly
@@ -275,15 +278,17 @@ class BrokerBacktesting(Broker):
             'talib': ta_proxy_talib(broker=self, quotes_data=quotes_data)
         }
         
-        # Create BackTestingResults instance (after ta_proxies are created)
-        results = BackTestingResults(self.task, self, ta_proxies)
+        # Create BackTestingResults instance (after ta_proxies are created) if save_results is True
+        results = None
+        if save_results:
+            results = BackTestingResults(self.task, self, ta_proxies)
         
         state_update_period = 1.0
         last_update_time = time.time()
         
         # Call on_start callback with task parameters and TA proxies
         if 'on_start' in self.callbacks:
-            self.callbacks['on_start'](task.parameters, ta_proxies)
+            self.callbacks['on_start'](self.task.parameters, ta_proxies)
         
         for i_time in range(len(all_close)):
             # Update current bar index

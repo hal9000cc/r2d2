@@ -7,7 +7,6 @@ from typing import Dict, Tuple, Any
 from app.services.tasks.tasks import Task
 from app.services.tasks.strategy import Strategy
 from app.services.tasks.broker import OrderSide
-import talib
 
 
 @pytest.fixture(scope='module')
@@ -68,8 +67,8 @@ class MovingAverageCrossoverStrategy(Strategy):
         if len(close_prices) < self.ma_slow_period + 1:
             return
         
-        self.ma_fast = talib.SMA(close_prices, timeperiod=self.ma_fast_period)
-        self.ma_slow = talib.SMA(close_prices, timeperiod=self.ma_slow_period)
+        self.ma_fast = self.talib.SMA(value='close', timeperiod=self.ma_fast_period)
+        self.ma_slow = self.talib.SMA(value='close', timeperiod=self.ma_slow_period)
         
         valid_slow_indices = ~np.isnan(self.ma_slow)
         if not np.any(valid_slow_indices) or np.sum(valid_slow_indices) < 2:
@@ -141,7 +140,7 @@ def test_moving_average_crossover_strategy(app_startup):
         results_save_period=TRADE_RESULTS_SAVE_PERIOD
     )
     strategy.broker = broker
-    broker.run(task)
+    broker.run(save_results=False)
     
     # Basic assertions - strategy should have processed data
     assert strategy.close is not None, "Close prices should be loaded"
@@ -152,3 +151,28 @@ def test_moving_average_crossover_strategy(app_startup):
     
     # Check that all positions are closed (equity_symbol == 0)
     assert strategy.broker.equity_symbol == 0, "All positions should be closed (equity_symbol == 0)"
+    
+    # Check that indicators were calculated
+    assert strategy.ma_fast is not None, "Fast MA should be calculated"
+    assert strategy.ma_slow is not None, "Slow MA should be calculated"
+    
+    # Check that indicators have correct length (should match close prices length)
+    assert len(strategy.ma_fast) == len(strategy.close), "Fast MA length should match close prices length"
+    assert len(strategy.ma_slow) == len(strategy.close), "Slow MA length should match close prices length"
+    
+    # Check that indicators contain valid values (not all NaN)
+    assert np.any(~np.isnan(strategy.ma_fast)), "Fast MA should have at least some valid values"
+    assert np.any(~np.isnan(strategy.ma_slow)), "Slow MA should have at least some valid values"
+    
+    # Check that position was closed (strategy should close position at the end)
+    assert strategy.position is None, "Position should be closed at the end"
+    
+    # Check that trades were executed (should have at least some trades if strategy worked)
+    assert len(strategy.broker.trades) > 0, "Strategy should have executed at least some trades"
+    
+    # Check that deals were created and closed
+    assert strategy.broker.deals is not None, "Deals list should be initialized"
+    assert len(strategy.broker.deals) > 0, "Should have at least one deal"
+    # All deals should be closed
+    for deal in strategy.broker.deals:
+        assert deal.is_closed, f"Deal {deal.deal_id} should be closed"

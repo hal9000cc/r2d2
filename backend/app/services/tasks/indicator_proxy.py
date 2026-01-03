@@ -268,7 +268,7 @@ class ta_proxy_talib(ta_proxy):
     """
     
     # Valid positional parameter names
-    VALID_POSITIONAL_PARAMS = {'open', 'high', 'low', 'close', 'volume', 'real'}
+    VALID_POSITIONAL_PARAMS = {'open', 'high', 'low', 'close', 'volume', 'real', 'real0', 'real1', 'periods'}
     
     # Dictionary of indicator descriptions with series names, price chart displayability, and line settings
     # Format: {'is_price': bool, 'lines': Optional[str], 'series': Optional[List[Dict]]}
@@ -597,6 +597,55 @@ class ta_proxy_talib(ta_proxy):
                         f"from 'value' parameter, but it's not available in quotes_data"
                     )
                 args.append(self.quotes_data[series_name])
+            elif param_name == 'real0':
+                # For 'real0' parameter, get series name from kwargs['value0']
+                if 'value0' not in kwargs:
+                    raise ValueError(
+                        f"TA-Lib indicator '{name}' requires parameter 'real0' (series name), "
+                        f"but 'value0' parameter is not provided in kwargs"
+                    )
+                # Get series name from value0 parameter
+                series_name = kwargs['value0']
+                # Remove 'value0' from kwargs as it's not a talib parameter
+                call_kwargs.pop('value0', None)
+                # Get data from quotes_data using series name
+                if series_name not in self.quotes_data:
+                    raise ValueError(
+                        f"TA-Lib indicator '{name}' requires series '{series_name}' "
+                        f"from 'value0' parameter, but it's not available in quotes_data"
+                    )
+                args.append(self.quotes_data[series_name])
+            elif param_name == 'real1':
+                # For 'real1' parameter, get series name from kwargs['value1']
+                if 'value1' not in kwargs:
+                    raise ValueError(
+                        f"TA-Lib indicator '{name}' requires parameter 'real1' (series name), "
+                        f"but 'value1' parameter is not provided in kwargs"
+                    )
+                # Get series name from value1 parameter
+                series_name = kwargs['value1']
+                # Remove 'value1' from kwargs as it's not a talib parameter
+                call_kwargs.pop('value1', None)
+                # Get data from quotes_data using series name
+                if series_name not in self.quotes_data:
+                    raise ValueError(
+                        f"TA-Lib indicator '{name}' requires series '{series_name}' "
+                        f"from 'value1' parameter, but it's not available in quotes_data"
+                    )
+                args.append(self.quotes_data[series_name])
+            elif param_name == 'periods':
+                # For 'periods' parameter, get value from kwargs['periods']
+                if 'periods' not in kwargs:
+                    raise ValueError(
+                        f"TA-Lib indicator '{name}' requires parameter 'periods', "
+                        f"but 'periods' parameter is not provided in kwargs"
+                    )
+                # Get periods value from kwargs
+                periods_value = kwargs['periods']
+                # Remove 'periods' from kwargs as it's passed as positional argument
+                call_kwargs.pop('periods', None)
+                # Add periods value as positional argument
+                args.append(periods_value)
             else:
                 # Regular parameter - get directly from quotes_data
                 args.append(self.quotes_data[param_name])
