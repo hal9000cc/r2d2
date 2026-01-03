@@ -159,12 +159,33 @@ export default {
     },
     showIndicators() {
       // TODO: Handle indicators visibility change
+    },
+    // Watch for resultId changes to update indicator series when results become available
+    'backtestingResults.resultId': {
+      handler(newResultId, oldResultId) {
+        // Only update if resultId actually changed and is not null/undefined
+        if (newResultId && newResultId !== oldResultId) {
+          // Use nextTick to ensure component is fully ready
+          this.$nextTick(() => {
+            this.updateIndicatorSeries()
+          })
+        }
+      },
+      immediate: false,
+      deep: true
     }
   },
   mounted() {
     this.initChart()
     this.setupLogicalRangeTracking()
     this.setupResizeObserver()
+    
+    // If results are already available when component mounts, update indicator series
+    this.$nextTick(() => {
+      if (this.backtestingResults?.resultId && this.showIndicators) {
+        this.updateIndicatorSeries()
+      }
+    })
   },
   beforeUnmount() {
     this.cleanup()
@@ -1319,7 +1340,7 @@ export default {
           if (seriesInfo.is_price === true) {
             const seriesKey = this.getSeriesKey(indicator, seriesIndex)
             try {
-              // Pass loadIndicatorData function, indicator object, seriesIndex, and color from backend
+              // Pass loadIndicatorData function, indicator object, seriesIndex, and line settings from backend
               const added = this.seriesManager.addSeries(
                 seriesKey,
                 SeriesType.indicatorPrice,
@@ -1327,7 +1348,9 @@ export default {
                   loadIndicatorData: this.loadIndicatorData.bind(this),
                   indicator: indicator,
                   seriesIndex: seriesIndex,
-                  color: seriesInfo.color || '#808080' // Use color from backend or gray fallback
+                  color: seriesInfo.color || '#808080', // Use color from backend or gray fallback
+                  lineWidth: seriesInfo.lineWidth ?? 2, // Use lineWidth from backend or default 2
+                  lineStyle: seriesInfo.lineStyle ?? 0 // Use lineStyle from backend or default 0 (solid)
                 }
               )
               

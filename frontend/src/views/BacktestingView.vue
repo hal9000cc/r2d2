@@ -1090,6 +1090,13 @@ function handleChartTabChange(tabId) {
     return
   }
   activeChartTab.value = tabId
+  
+  // When switching to chart tab, update indicator series if results are available
+  if (tabId === 'chart') {
+    nextTick(() => {
+      chartPanelRef.value?.updateIndicatorSeries()
+    })
+  }
 }
 
 // Chart controls state
