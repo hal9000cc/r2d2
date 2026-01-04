@@ -93,14 +93,14 @@ class MovingAverageCrossoverStrategy(Strategy):
         if prev_fast <= prev_slow and current_fast > current_slow:
             if self.position != 'long':
                 # Buy signal
-                self.order(OrderSide.BUY, quantity=0.001)  # Small quantity for testing
+                self.buy(quantity=0.001)  # Small quantity for testing
                 self.position = 'long'
         
         # Bearish crossover: fast MA crosses below slow MA
         elif prev_fast >= prev_slow and current_fast < current_slow:
             if self.position == 'long':
                 # Sell signal
-                self.order(OrderSide.SELL, quantity=0.001)
+                self.sell(quantity=0.001)
                 self.position = None
 
 

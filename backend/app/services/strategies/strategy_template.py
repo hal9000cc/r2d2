@@ -1,5 +1,4 @@
 from app.services.tasks.strategy import Strategy
-from app.services.tasks.broker import OrderSide
 from typing import Dict, Tuple, Any
 
 
@@ -42,7 +41,8 @@ class MyStrategy(Strategy):
         Called when a new bar is received.
         Implement your strategy logic here.
         """
-        # Example: self.order(OrderSide.BUY, quantity=0.001)
+        # Example: self.buy(quantity=0.001)  # Market order
+        # Example: self.sell(quantity=0.001, price=50000.0)  # Limit order
         pass
     
     def on_finish(self):

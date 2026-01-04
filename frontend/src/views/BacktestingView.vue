@@ -343,6 +343,18 @@
               :on-row-selected="handleDealSelected"
             />
           </template>
+          <template #orders>
+            <DataTable 
+              ref="ordersTableRef"
+              :columns="ordersColumns"
+              :data="allOrders"
+              row-key="order_id"
+              :row-class="getOrdersRowClass"
+              empty-message="No orders yet"
+              :enabled="activeTab === 'orders'"
+              :on-row-selected="handleOrderSelected"
+            />
+          </template>
         </Tabs>
       </div>
       
@@ -427,6 +439,7 @@ const chartTabs = computed(() => {
 const tabs = [
   { id: 'deals', label: 'Deals' },
   { id: 'trades', label: 'Trades' },
+  { id: 'orders', label: 'Orders' },
   { id: 'messages', label: 'Messages' }
 ]
 const activeTab = ref('deals')
@@ -525,9 +538,11 @@ const {
   setRelevanceTime,
   addTrades,
   updateDeals,
+  updateOrders,
   updateStats,
   getAllDeals,
-  getAllTrades
+  getAllTrades,
+  getAllOrders
 } = backtestingResults
 
 // Provide backtesting results to child components
@@ -640,8 +655,70 @@ const dealsColumns = [
   }
 ]
 
+const ordersColumns = [
+  { key: 'order_id', label: 'Order ID', width: '80px' },
+  { key: 'deal_id', label: 'Deal ID', width: '80px' },
+  { 
+    key: 'create_time', 
+    label: 'Create Time',
+    format: (value) => {
+      if (!value) return '—'
+      const date = new Date(value)
+      return date.toISOString().replace('T', ' ').substring(0, 19)
+    }
+  },
+  { 
+    key: 'modify_time', 
+    label: 'Modify Time',
+    format: (value) => {
+      if (!value) return '—'
+      const date = new Date(value)
+      return date.toISOString().replace('T', ' ').substring(0, 19)
+    }
+  },
+  { 
+    key: 'side', 
+    label: 'Side',
+    width: '60px',
+    format: (value) => value ? value.toUpperCase() : '—'
+  },
+  { 
+    key: 'price', 
+    label: 'Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'volume', 
+    label: 'Volume',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'execute_volume', 
+    label: 'Execute Volume',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'active', 
+    label: 'Status',
+    width: '80px',
+    format: (value) => value ? 'Active' : 'Inactive'
+  },
+  { 
+    key: 'trigger_price', 
+    label: 'Trigger Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  }
+]
+
 // Computed: deals as array for table
 const dealsArray = computed(() => getAllDeals())
+
+// Computed: orders as array for table
+const allOrders = computed(() => getAllOrders())
 
 // Row class functions for table row coloring
 function getTradesRowClass(row) {
@@ -654,11 +731,37 @@ function getTradesRowClass(row) {
 }
 
 function getDealsRowClass(row) {
-  if (row.type) {
-    // Convert type to lowercase and use as class (e.g., 'long' -> 'row-type-long')
-    return `row-type-${row.type.toLowerCase()}`
+  // Color by profit: profitable (green) vs unprofitable (red)
+  if (row.profit !== null && row.profit !== undefined) {
+    const profit = parseFloat(row.profit)
+    if (profit > 0) {
+      return 'row-buy'  // Green for profitable
+    } else if (profit < 0) {
+      return 'row-sell'  // Red for unprofitable
+    }
   }
   return ''
+}
+
+function getOrdersRowClass(row) {
+  // Check for cancelled orders (inactive and not executed)
+  const executeVolume = parseFloat(row.execute_volume) || 0
+  if (!row.active && executeVolume === 0) {
+    return 'row-inactive'
+  }
+  
+  // Color by side for active or partially executed orders
+  if (row.side === 'buy') {
+    return 'row-buy'
+  } else if (row.side === 'sell') {
+    return 'row-sell'
+  }
+  return ''
+}
+
+function handleOrderSelected(order) {
+  // Optional: handle order selection
+  // Similar to handleTradeSelected or handleDealSelected
 }
 
 // Computed properties
@@ -782,6 +885,11 @@ async function loadBacktestingResults(fromTime = null) {
       // Update deals (add or update)
       if (response.data.deals && response.data.deals.length > 0) {
         updateDeals(response.data.deals)
+      }
+      
+      // Update orders (add or update)
+      if (response.data.orders && response.data.orders.length > 0) {
+        updateOrders(response.data.orders)
       }
       
       // Update statistics

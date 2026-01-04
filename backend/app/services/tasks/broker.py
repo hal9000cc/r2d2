@@ -3,7 +3,7 @@ Generic broker classes for handling trading operations.
 """
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict
@@ -22,6 +22,29 @@ class OrderSide(Enum):
 class DealType(Enum):
     LONG = "long"
     SHORT = "short"
+
+
+class OrderResult(BaseModel):
+    """
+    Result of order execution (buy/sell).
+    
+    Contains lists of IDs for trades, deals, and orders created/modified by the operation,
+    as well as any errors that occurred.
+    """
+    trades: List[int] = Field(default_factory=list, description="List of trade IDs created by this operation")
+    deals: List[int] = Field(default_factory=list, description="List of deal IDs created/modified by this operation")
+    orders: List[int] = Field(default_factory=list, description="List of order IDs created by this operation")
+    errors: List[str] = Field(default_factory=list, description="List of error messages (if any)")
+
+
+class CancelOrderResult(BaseModel):
+    """
+    Result of order cancellation.
+    
+    Contains list of order IDs that could not be cancelled and any errors that occurred.
+    """
+    failed_orders: List[int] = Field(default_factory=list, description="List of order IDs that could not be cancelled")
+    errors: List[str] = Field(default_factory=list, description="List of error messages (if any)")
 
 
 class TradingStats(BaseModel):
@@ -297,6 +320,7 @@ class Broker(ABC):
         self.deals: Optional[List['Broker.Deal']] = None
         self.trades: List['Broker.Trade'] = []
         self.result_id = result_id
+        self.last_auto_deal_id: Optional[int] = None
 
     @abstractmethod
     def buy(self, quantity: VOLUME_TYPE, deal_id: Optional[int] = None):
@@ -330,6 +354,7 @@ class Broker(ABC):
         self.deals = []
         self.trades = []
         self.stats = TradingStats(initial_equity_usd=initial_equity_usd)
+        self.last_auto_deal_id = None
 
     def check_trading_results(self) -> List[str]:
         """
@@ -399,18 +424,19 @@ class Broker(ABC):
             recalc_fee = sum(t.fee for t in deal.trades)
             recalc_profit = (recalc_sell_proceeds - recalc_buy_cost - recalc_fee) if deal.is_closed else None
             
-            # Compare with stored values using generator expressions
-            errors.extend([
-                f"Deal {deal.deal_id}: {field} mismatch (stored={stored}, recalc={recalc})"
-                for field, stored, recalc in [
-                    ('buy_quantity', deal.buy_quantity, recalc_buy_quantity),
-                    ('buy_cost', deal.buy_cost, recalc_buy_cost),
-                    ('sell_quantity', deal.sell_quantity, recalc_sell_quantity),
-                    ('sell_proceeds', deal.sell_proceeds, recalc_sell_proceeds),
-                    ('fee', deal.fee, recalc_fee),
-                ]
-                if stored != recalc
-            ])
+            # Compare with stored values using tolerance for floating point
+            tolerance = 1e-10
+            comparisons = [
+                ('buy_quantity', deal.buy_quantity, recalc_buy_quantity),
+                ('buy_cost', deal.buy_cost, recalc_buy_cost),
+                ('sell_quantity', deal.sell_quantity, recalc_sell_quantity),
+                ('sell_proceeds', deal.sell_proceeds, recalc_sell_proceeds),
+                ('fee', deal.fee, recalc_fee),
+            ]
+            
+            for field, stored, recalc in comparisons:
+                if abs(stored - recalc) > tolerance:
+                    errors.append(f"Deal {deal.deal_id}: {field} mismatch (stored={stored}, recalc={recalc})")
             
             # Compare prices with tolerance for floating point
             if recalc_avg_buy_price is not None and deal.avg_buy_price is not None:
@@ -435,7 +461,7 @@ class Broker(ABC):
         return errors
 
 
-    def get_or_create_deal_by_id(self, deal_id: int) -> 'Broker.Deal':
+    def get_deal_by_id(self, deal_id: int) -> 'Broker.Deal':
         """
         Get deal by deal_id (deal_id = index + 1).
         Raises IndexError if deal with such deal_id does not exist.
@@ -448,14 +474,34 @@ class Broker(ABC):
 
         return self.deals[index]
 
-    def get_last_open_deal(self) -> Optional['Broker.Deal']:
+    def create_deal(self) -> int:
         """
-        Return last not-closed deal or None.
+        Create a new empty deal for special grouping of trades.
+        Returns deal_id of the created deal.
+        
+        Returns:
+            deal_id: Unique deal identifier
         """
-        if self.deals is None or not self.deals:
+        new_deal_id = len(self.deals) + 1
+        new_deal = Broker.Deal(deal_id=new_deal_id)
+        self.deals.append(new_deal)
+        return new_deal_id
+    
+    def get_last_open_auto_deal(self) -> Optional['Broker.Deal']:
+        """
+        Return last not-closed automatic deal or None.
+        Automatic deals are tracked via last_auto_deal_id.
+        """
+        if self.last_auto_deal_id is None:
             return None
-        last = self.deals[-1]
-        return None if last.is_closed else last
+        
+        try:
+            deal = self.get_deal_by_id(self.last_auto_deal_id)
+            return None if deal.is_closed else deal
+        except IndexError:
+            # Deal was removed or doesn't exist
+            self.last_auto_deal_id = None
+            return None
     
     def _add_trade_to_deal(self, deal: 'Broker.Deal', trade: 'Broker.Trade') -> None:
         """
@@ -466,6 +512,7 @@ class Broker(ABC):
         - Adding trade to deal
         - Updating trade statistics
         - Registering deal in statistics if it becomes closed
+        - Updating last_auto_deal_id if automatic deal is closed
         
         Args:
             deal: Deal to add trade to
@@ -480,6 +527,9 @@ class Broker(ABC):
         # If deal is now closed, register it in statistics
         if deal.is_closed:
             self.stats.add_deal(deal)
+            # If this was the last automatic deal, clear the reference
+            if deal.deal_id == self.last_auto_deal_id:
+                self.last_auto_deal_id = None
 
     def reg_buy(
         self,
@@ -488,7 +538,7 @@ class Broker(ABC):
         price: PRICE_TYPE,
         time: np.datetime64,
         deal_id: Optional[int] = None,
-    ) -> None:
+    ) -> OrderResult:
         """
         Register buy trade in deals structure.
 
@@ -505,9 +555,13 @@ class Broker(ABC):
             fee: Fee for this trade
             price: Price for this trade
             deal_id: Optional deal index to register trade in
+        
+        Returns:
+            OrderResult with 'trades' and 'deals' lists containing IDs
         """
         trade = self.create_trade(OrderSide.BUY, quantity, price=price, fee=fee, time=time)
-        self.register_trade(trade, deal_id)
+        result = self.register_trade(trade, deal_id)
+        return OrderResult(trades=result['trades'], deals=result['deals'])
 
     def reg_sell(
         self,
@@ -516,7 +570,7 @@ class Broker(ABC):
         price: PRICE_TYPE,
         time: np.datetime64,
         deal_id: Optional[int] = None,
-    ) -> None:
+    ) -> OrderResult:
         """
         Register sell trade in deals structure.
 
@@ -527,9 +581,13 @@ class Broker(ABC):
             fee: Fee for this trade
             price: Price for this trade
             deal_id: Optional deal index to register trade in
+        
+        Returns:
+            OrderResult with 'trades' and 'deals' lists containing IDs
         """
         trade = self.create_trade(OrderSide.SELL, quantity, price=price, fee=fee, time=time)
-        self.register_trade(trade, deal_id)
+        result = self.register_trade(trade, deal_id)
+        return OrderResult(trades=result['trades'], deals=result['deals'])
 
     def create_trade(
         self,
@@ -561,35 +619,56 @@ class Broker(ABC):
         self.trades.append(trade)
         return trade
 
-    def register_trade(self, trade: 'Broker.Trade', deal_id: Optional[int]) -> None:
+    def _create_auto_deal(self) -> 'Broker.Deal':
+        """
+        Create a new automatic deal and update last_auto_deal_id.
+        
+        Returns:
+            Newly created Deal instance
+        """
+        new_deal_id = len(self.deals) + 1
+        new_deal = Broker.Deal(deal_id=new_deal_id)
+        self.deals.append(new_deal)
+        self.last_auto_deal_id = new_deal_id
+        return new_deal
+
+    def register_trade(self, trade: 'Broker.Trade', deal_id: Optional[int]) -> Dict[str, List[int]]:
         """
         Core logic for registering trade in deals with flip handling.
+        
+        Returns:
+            Dictionary with 'trades' and 'deals' lists containing IDs of created/affected trades and deals
         """
         # Explicit deal_id: just add to that deal, no flip-logic
         if deal_id is not None:
-            deal = self.get_or_create_deal_by_id(deal_id)
+            deal = self.get_deal_by_id(deal_id)
             self._add_trade_to_deal(deal, trade)
-            return
+            return {
+                'trades': [trade.trade_id],
+                'deals': [deal.deal_id]
+            }
 
         # If there are no deals at all – create first one and put whole trade there
         if not self.deals:
-            new_deal_id = len(self.deals) + 1
-            new_deal = Broker.Deal(deal_id=new_deal_id)
-            self.deals.append(new_deal)
+            new_deal = self._create_auto_deal()
             self._add_trade_to_deal(new_deal, trade)
-            return
+            return {
+                'trades': [trade.trade_id],
+                'deals': [new_deal.deal_id]
+            }
 
-        last_deal = self.get_last_open_deal()
+        last_deal = self.get_last_open_auto_deal()
 
-        # If last deal is closed – create a new one and put whole trade there
+        # If last automatic deal is closed – create a new one and put whole trade there
         if last_deal is None:
-            new_deal_id = len(self.deals) + 1
-            new_deal = Broker.Deal(deal_id=new_deal_id)
-            self.deals.append(new_deal)
+            new_deal = self._create_auto_deal()
             self._add_trade_to_deal(new_deal, trade)
-            return
+            return {
+                'trades': [trade.trade_id],
+                'deals': [new_deal.deal_id]
+            }
 
-        # There is an open deal; check if trade will flip position or not
+        # There is an open automatic deal; check if trade will flip position or not
         current_qty = last_deal.quantity
         trade_qty = trade.quantity
 
@@ -601,9 +680,19 @@ class Broker(ABC):
         # If no flip (including full close to 0) – just add trade
         if current_qty == 0 or new_qty == 0 or (current_qty > 0 and new_qty > 0) or (current_qty < 0 and new_qty < 0):
             self._add_trade_to_deal(last_deal, trade)
-            return
+            return {
+                'trades': [trade.trade_id],
+                'deals': [last_deal.deal_id]
+            }
 
         # Flip: split trade into closing part and opening part of new deal
+        # Remove original trade from list (it will be replaced by two split trades)
+        # Find and remove original trade by trade_id
+        for i, t in enumerate(self.trades):
+            if t.trade_id == trade.trade_id:
+                self.trades.pop(i)
+                break
+        
         # Determine volume needed to fully close current position
         close_volume = abs(current_qty)
         total_volume = trade_qty
@@ -613,26 +702,36 @@ class Broker(ABC):
 
         # Trade for closing current deal
         close_ratio = close_volume / trade.quantity
+        closing_trade_id = len(self.trades) + 1
         closing_trade = trade.model_copy(
             update={
+                "trade_id": closing_trade_id,
                 "quantity": close_volume,
                 "fee": trade.fee * close_ratio,
                 "sum": trade.price * close_volume,
             }
         )
+        self.trades.append(closing_trade)
         self._add_trade_to_deal(last_deal, closing_trade)
 
-        # Remaining volume opens new deal with same side
-        new_deal_id = len(self.deals) + 1
-        new_deal = Broker.Deal(deal_id=new_deal_id)
-        self.deals.append(new_deal)
+        # Remaining volume opens new automatic deal with same side
+        new_deal = self._create_auto_deal()
 
         remainder_ratio = remainder_quantity / trade.quantity
+        opening_trade_id = len(self.trades) + 1
         opening_trade = trade.model_copy(
             update={
+                "trade_id": opening_trade_id,
                 "quantity": remainder_quantity,
                 "fee": trade.fee * remainder_ratio,
                 "sum": trade.price * remainder_quantity,
             }
         )
+        self.trades.append(opening_trade)
         self._add_trade_to_deal(new_deal, opening_trade)
+        
+        # Return both trades and both deals
+        return {
+            'trades': [closing_trade.trade_id, opening_trade.trade_id],
+            'deals': [last_deal.deal_id, new_deal.deal_id]
+        }

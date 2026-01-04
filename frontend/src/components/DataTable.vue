@@ -477,6 +477,11 @@ export default {
   background-color: var(--color-danger-lighter);
 }
 
+.data-table tbody tr.row-inactive {
+  background-color: var(--bg-tertiary);
+  opacity: 0.6;
+}
+
 /* Override hover for colored rows to maintain visibility */
 .data-table tbody tr.row-buy:hover,
 .data-table tbody tr.row-sell:hover,
@@ -484,6 +489,11 @@ export default {
 .data-table tbody tr.row-type-short:hover {
   background-color: var(--bg-hover);
   opacity: 0.8;
+}
+
+.data-table tbody tr.row-inactive:hover {
+  background-color: var(--bg-hover);
+  opacity: 0.7;
 }
 
 /* Selected row styling */
@@ -500,7 +510,8 @@ export default {
 .data-table tbody tr.row-selected.row-buy,
 .data-table tbody tr.row-selected.row-sell,
 .data-table tbody tr.row-selected.row-type-long,
-.data-table tbody tr.row-selected.row-type-short {
+.data-table tbody tr.row-selected.row-type-short,
+.data-table tbody tr.row-selected.row-inactive {
   background-color: var(--color-primary, #007bff) !important;
   color: var(--color-on-primary, #ffffff) !important;
 }

@@ -5,7 +5,7 @@ import traceback
 import numpy as np
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
-from app.services.tasks.broker import OrderSide
+from app.services.tasks.broker import OrderSide, OrderResult, CancelOrderResult
 from app.core.logger import get_logger
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
@@ -26,6 +26,10 @@ class Strategy(ABC):
         self.low: Optional[np.ndarray] = None  # dtype: PRICE_TYPE
         self.close: Optional[np.ndarray] = None  # dtype: PRICE_TYPE
         self.volume: Optional[np.ndarray] = None  # dtype: VOLUME_TYPE
+        
+        # Equity tracking (updated on each bar)
+        self.equity_usd: PRICE_TYPE = 0.0
+        self.equity_symbol: VOLUME_TYPE = 0.0
         
         # Parameters will be set in on_start callback
         self.parameters: Optional[Dict[str, Any]] = None
@@ -76,39 +80,67 @@ class Strategy(ABC):
         """
         return {}
 
-    def order(
+    def buy(
         self,
-        side: OrderSide,
         quantity: VOLUME_TYPE,
         price: Optional[PRICE_TYPE] = None,
         stop_loss: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None,
         take_profit: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None
-    ) -> None:
+    ) -> OrderResult:
         """
-        Place an order. Currently only market orders are supported.
+        Place a buy order. Currently only market and limit orders are supported.
         
         Args:
-            side: Order side (BUY or SELL)
             quantity: Order quantity (volume)
             price: Limit price. If None, order is placed as market order.
-                  If specified, raises NotImplementedError (not realized).
             stop_loss: Stop loss price. Raises NotImplementedError (not realized).
             take_profit: Take profit price. Raises NotImplementedError (not realized).
         
         Returns:
-            None (currently, Order object will be returned in future)
+            Dictionary with 'trades', 'deals', 'orders', and 'errors' lists
         """
-        # Check if limit order or stop loss/take profit are specified
+        # Check if stop loss/take profit are specified
         if stop_loss is not None or take_profit is not None:
             raise NotImplementedError("not realized")
         
-        # Market order: execute immediately through broker
-        if side == OrderSide.BUY:
-            self.broker.buy(quantity, price=price)
-        elif side == OrderSide.SELL:
-            self.broker.sell(quantity, price=price)
-        else:
-            raise ValueError(f"Unknown order side: {side}")
+        # Execute through broker
+        result = self.broker.buy(quantity, price=price)
+        
+        # Log errors if any
+        self._log_result_errors(result.errors, "buy")
+        
+        return result
+    
+    def sell(
+        self,
+        quantity: VOLUME_TYPE,
+        price: Optional[PRICE_TYPE] = None,
+        stop_loss: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None,
+        take_profit: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None
+    ) -> OrderResult:
+        """
+        Place a sell order. Currently only market and limit orders are supported.
+        
+        Args:
+            quantity: Order quantity (volume)
+            price: Limit price. If None, order is placed as market order.
+            stop_loss: Stop loss price. Raises NotImplementedError (not realized).
+            take_profit: Take profit price. Raises NotImplementedError (not realized).
+        
+        Returns:
+            Dictionary with 'trades', 'deals', 'orders', and 'errors' lists
+        """
+        # Check if stop loss/take profit are specified
+        if stop_loss is not None or take_profit is not None:
+            raise NotImplementedError("not realized")
+        
+        # Execute through broker
+        result = self.broker.sell(quantity, price=price)
+        
+        # Log errors if any
+        self._log_result_errors(result.errors, "sell")
+        
+        return result
     
     def logging(self, message: str, level: str = "info") -> None:
         """
@@ -123,6 +155,36 @@ class Strategy(ABC):
         if self.broker is None:
             raise RuntimeError("Broker not initialized. Cannot send log message.")
         self.broker.logging(message, level)
+    
+    def _log_result_errors(self, errors: List[str], method_name: str) -> None:
+        """
+        Log errors from result objects (OrderResult, CancelOrderResult).
+        Logs to both frontend messages and logger.
+        
+        Args:
+            errors: List of error messages
+            method_name: Name of the method that produced the errors (for prefix)
+        """
+        for error in errors:
+            self.logging(f"{method_name}(): {error}", level="error")
+            logger.info(f"{method_name}(): {error}")
+    
+    def cancel_orders(self, order_ids: List[int]) -> CancelOrderResult:
+        """
+        Cancel orders by their IDs.
+        
+        Args:
+            order_ids: List of order IDs to cancel
+        
+        Returns:
+            CancelOrderResult with failed_orders and errors lists
+        """
+        result = self.broker.cancel_orders(order_ids)
+        
+        # Log errors if any
+        self._log_result_errors(result.errors, "cancel_orders")
+        
+        return result
     
     @staticmethod
     def is_strategy_error(exception: Exception) -> Tuple[bool, Optional[str]]:
@@ -197,7 +259,9 @@ class Strategy(ABC):
             high: np.ndarray,
             low: np.ndarray,
             close: np.ndarray,
-            volume: np.ndarray
+            volume: np.ndarray,
+            equity_usd: PRICE_TYPE,
+            equity_symbol: VOLUME_TYPE
         ):
             strategy.time = time
             strategy.open = open
@@ -205,6 +269,8 @@ class Strategy(ABC):
             strategy.low = low
             strategy.close = close
             strategy.volume = volume
+            strategy.equity_usd = equity_usd
+            strategy.equity_symbol = equity_symbol
             strategy.on_bar()
         
         def __on_finish():

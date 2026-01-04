@@ -43,6 +43,7 @@ class BackTestingResults:
         self._redis_client = None
         self._broker_ref: Optional[weakref.ReferenceType[Broker]] = None
         self._trades_start_index: int = 0
+        self._last_orders_save_time: Optional[np.datetime64] = None
         self.ta_proxies: Optional[Dict[str, Any]] = ta_proxies  # Store TA proxies for access to indicator cache
         self._sent_indicator_keys: set = set()  # Track which indicator keys have been sent to Redis
         
@@ -318,6 +319,76 @@ class BackTestingResults:
         
         return (deals_key, deals_to_save)
     
+    def _prepare_orders_data(self, broker, result_key_prefix: str, result_id: str):
+        """
+        Prepare orders data for saving to Redis.
+        Filters orders by modify_time >= _last_orders_save_time.
+        
+        Args:
+            broker: Broker instance (must be BrokerBacktesting with orders attribute)
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            
+        Returns:
+            tuple: (orders_hash_key, orders_index_key, orders_hash_data, orders_index_data)
+                  Returns None if no orders to save
+        """
+        # Check if broker has orders attribute (BrokerBacktesting)
+        if not hasattr(broker, 'orders'):
+            return None
+        
+        # Get all orders
+        all_orders = broker.orders
+        
+        # Filter orders by modify_time
+        if self._last_orders_save_time is None:
+            # First save: include all orders
+            orders_to_save = all_orders
+        else:
+            # Subsequent saves: only orders modified since last save
+            orders_to_save = [
+                order for order in all_orders
+                if order.modify_time >= self._last_orders_save_time
+            ]
+        
+        if not orders_to_save:
+            return None
+        
+        # Prepare orders data for Redis
+        orders_hash_key = f"{result_key_prefix}:{result_id}:orders"
+        orders_index_key = f"{result_key_prefix}:{result_id}:orders_index"
+        orders_hash_data = {}
+        orders_index_data = {}
+        
+        for order in orders_to_save:
+            order_id_str = str(order.order_id)
+            create_time_iso = datetime64_to_iso(order.create_time)
+            modify_time_iso = datetime64_to_iso(order.modify_time)
+            side_str = order.side.value  # "buy" or "sell"
+            trigger_price_str = self._format_value(order.trigger_price)
+            
+            # Format member: order_id|deal_id|create_time_iso|modify_time_iso|side|price|volume|execute_volume|active|trigger_price
+            member = (
+                f"{order.order_id}|"
+                f"{self._format_value(order.deal_id)}|"
+                f"{create_time_iso}|"
+                f"{modify_time_iso}|"
+                f"{side_str}|"
+                f"{order.price}|"
+                f"{order.volume}|"
+                f"{order.execute_volume}|"
+                f"{1 if order.active else 0}|"
+                f"{trigger_price_str}"
+            )
+            
+            orders_hash_data[order_id_str] = member
+            
+            # Use modify_time as score (numeric representation in milliseconds)
+            score = int(order.modify_time.astype('datetime64[ms]').astype(int))
+            orders_index_data[order_id_str] = score
+        
+        return (orders_hash_key, orders_index_key, orders_hash_data, orders_index_data)
+    
     def _prepare_stats_data(self, broker, result_key_prefix: str, result_id: str, is_finish: bool):
         """
         Prepare statistics data for saving to Redis.
@@ -499,13 +570,27 @@ class BackTestingResults:
             
             # Prepare trades data
             trades_data = self._prepare_trades_data(broker, result_key_prefix, result_id)
-            if trades_data is None:
-                return  # No new trades
+            trades_key = None
+            trades_to_save = {}
+            new_trades = []
+            deal_ids = set()
+            current_trades_size = self._trades_start_index
             
-            trades_key, trades_to_save, new_trades, deal_ids, current_trades_size = trades_data
+            if trades_data is not None:
+                trades_key, trades_to_save, new_trades, deal_ids, current_trades_size = trades_data
             
             # Prepare deals data
             deals_key, deals_to_save = self._prepare_deals_data(broker, result_key_prefix, result_id, deal_ids)
+            
+            # Prepare orders data
+            orders_data = self._prepare_orders_data(broker, result_key_prefix, result_id)
+            orders_hash_key = None
+            orders_index_key = None
+            orders_hash_data = {}
+            orders_index_data = {}
+            
+            if orders_data is not None:
+                orders_hash_key, orders_index_key, orders_hash_data, orders_index_data = orders_data
             
             # Prepare statistics data
             stats_key, stats_json = self._prepare_stats_data(broker, result_key_prefix, result_id, is_finish)
@@ -521,15 +606,26 @@ class BackTestingResults:
             if deals_to_save:
                 pipeline.zadd(deals_key, deals_to_save)
             
+            # Add orders to pipeline
+            if orders_hash_data:
+                pipeline.hset(orders_hash_key, mapping=orders_hash_data)
+            if orders_index_data:
+                pipeline.zadd(orders_index_key, orders_index_data)
+            
             # Add statistics to pipeline
             if stats_json:
                 pipeline.set(stats_key, stats_json)
             
-            # Execute main pipeline (trades, deals, stats)
+            # Execute main pipeline (trades, deals, orders, stats)
             pipeline.execute()
             
-            # Update trades start index only after successful save
-            self._trades_start_index = current_trades_size
+            # Update indices only after successful save
+            if trades_data is not None:
+                self._trades_start_index = current_trades_size
+            
+            # Update last orders save time if orders were saved
+            if orders_data is not None and hasattr(broker, 'current_time') and broker.current_time is not None:
+                self._last_orders_save_time = broker.current_time
             
             # Save quotes time series (only on first call)
             self._save_quotes_time(result_key_prefix, result_id)
@@ -546,6 +642,8 @@ class BackTestingResults:
                 logger.debug(f"Saved {len(new_trades)} new trades")
             if deals_to_save:
                 logger.debug(f"Saved {len(deals_to_save)} deals to {deals_key}")
+            if orders_hash_data:
+                logger.debug(f"Saved {len(orders_hash_data)} orders to {orders_hash_key}")
             if stats_json:
                 logger.debug(f"Saved statistics to {stats_key}")
             if saved_indicator_keys:
@@ -554,6 +652,165 @@ class BackTestingResults:
             logger.error(f"Failed to save results: {str(e)}")
             raise RuntimeError(f"Failed to save results: {str(e)}") from e
     
+    def _load_trades(self, client, result_key_prefix: str, result_id: str, time_begin_score: int) -> Tuple[List[Dict], set]:
+        """
+        Load trades from Redis with time >= time_begin.
+        
+        Args:
+            client: Redis client
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            time_begin_score: Time begin as numeric score (milliseconds)
+            
+        Returns:
+            Tuple of (trades list, set of deal_ids)
+        """
+        trades_key = f"{result_key_prefix}:{result_id}:trades"
+        trades_data = client.zrangebyscore(trades_key, time_begin_score, '+inf', withscores=False)
+        
+        trades = []
+        deal_ids = set()
+        
+        for member in trades_data:
+            parts = member.split('|')
+            
+            if len(parts) >= 9:
+                trade_dict = {
+                    'trade_id': parts[0],
+                    'deal_id': parts[1],
+                    'order_id': parts[2],
+                    'time': parts[3],
+                    'side': parts[4],
+                    'price': parts[5],
+                    'quantity': parts[6],
+                    'fee': parts[7],
+                    'sum': parts[8]
+                }
+                trades.append(trade_dict)
+                deal_ids.add(int(parts[1]))
+        
+        return trades, deal_ids
+    
+    def _load_deals(self, client, result_key_prefix: str, result_id: str, deal_ids: set) -> List[Dict]:
+        """
+        Load deals from Redis by deal_ids.
+        
+        Args:
+            client: Redis client
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            deal_ids: Set of deal IDs to load
+            
+        Returns:
+            List of deal dictionaries
+        """
+        deals = []
+        if not deal_ids:
+            return deals
+        
+        deals_key = f"{result_key_prefix}:{result_id}:deals"
+        pipeline = client.pipeline()
+        
+        # Add ZRANGEBYSCORE commands for each deal_id
+        for deal_id in deal_ids:
+            deal_id_int = int(deal_id)
+            pipeline.zrangebyscore(deals_key, deal_id_int, deal_id_int, withscores=False)
+        
+        # Execute pipeline
+        deals_data_list = pipeline.execute()
+        
+        # Parse deals
+        for deals_data in deals_data_list:
+            if deals_data:
+                member = deals_data[0]
+                parts = member.split('|')
+                
+                if len(parts) >= 8:
+                    deal_dict = {
+                        'deal_id': parts[0],
+                        'type': parts[1] if parts[1] else None,
+                        'avg_buy_price': parts[2] if parts[2] else None,
+                        'avg_sell_price': parts[3] if parts[3] else None,
+                        'quantity': parts[4],
+                        'fee': parts[5],
+                        'profit': parts[6] if parts[6] else None,
+                        'is_closed': parts[7] == '1' if parts[7] else False
+                    }
+                    deals.append(deal_dict)
+        
+        return deals
+    
+    def _load_orders(self, client, result_key_prefix: str, result_id: str, time_begin_score: int) -> List[Dict]:
+        """
+        Load orders from Redis with modify_time >= time_begin.
+        
+        Args:
+            client: Redis client
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            time_begin_score: Time begin as numeric score (milliseconds)
+            
+        Returns:
+            List of order dictionaries
+        """
+        orders = []
+        orders_index_key = f"{result_key_prefix}:{result_id}:orders_index"
+        orders_hash_key = f"{result_key_prefix}:{result_id}:orders"
+        
+        try:
+            # Get order_ids from index with modify_time >= time_begin
+            order_ids = client.zrangebyscore(orders_index_key, time_begin_score, '+inf', withscores=False)
+            
+            if order_ids:
+                # Get full order data from hash
+                orders_data = client.hmget(orders_hash_key, order_ids)
+                
+                # Parse orders
+                for order_member in orders_data:
+                    if order_member:
+                        parts = order_member.split('|')
+                        
+                        if len(parts) >= 10:
+                            order_dict = {
+                                'order_id': parts[0],
+                                'deal_id': parts[1] if parts[1] else None,
+                                'create_time': parts[2],
+                                'modify_time': parts[3],
+                                'side': parts[4],
+                                'price': parts[5],
+                                'volume': parts[6],
+                                'execute_volume': parts[7],
+                                'active': parts[8] == '1' if parts[8] else False,
+                                'trigger_price': parts[9] if parts[9] else None
+                            }
+                            orders.append(order_dict)
+        except Exception as e:
+            logger.warning(f"Failed to load orders from {orders_index_key}: {e}")
+        
+        return orders
+    
+    def _load_stats(self, client, result_key_prefix: str, result_id: str) -> Optional[Dict]:
+        """
+        Load statistics from Redis.
+        
+        Args:
+            client: Redis client
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            
+        Returns:
+            Statistics dictionary or None
+        """
+        stats_key = f"{result_key_prefix}:{result_id}:stats"
+        try:
+            stats_data = client.get(stats_key)
+            if stats_data:
+                return json.loads(stats_data)
+        except Exception as e:
+            logger.warning(f"Failed to load statistics from {stats_key}: {e}")
+        
+        return None
+    
     def get_results(
         self, 
         result_id: str,
@@ -561,14 +818,14 @@ class BackTestingResults:
     ) -> Dict:
         """
         Get results for the specified time interval.
-        Returns all trades with time >= time_begin and corresponding deals.
+        Returns all trades with time >= time_begin, corresponding deals, and orders with modify_time >= time_begin.
         
         Args:
             result_id: Result ID
             time_begin: Interval start (default: 1900-01-01)
             
         Returns:
-            Dictionary with "trades" and "deals" lists
+            Dictionary with "trades", "deals", and "orders" lists
         """
         if time_begin is None:
             time_begin = np.datetime64('1900-01-01T00:00:00', 'ns')
@@ -578,82 +835,25 @@ class BackTestingResults:
             result_key_prefix = self.task.get_result_key()
             
             # Convert time_begin to numeric score (milliseconds)
-            # Convert numpy int64 to Python int for Redis compatibility
             time_begin_score = int(time_begin.astype('datetime64[ms]').astype(int))
             
-            # Get trades with time >= time_begin
-            trades_key = f"{result_key_prefix}:{result_id}:trades"
-            trades_data = client.zrangebyscore(trades_key, time_begin_score, '+inf', withscores=False)
+            # Load trades and collect deal_ids
+            trades, deal_ids = self._load_trades(client, result_key_prefix, result_id, time_begin_score)
             
-            # Parse trades and collect deal_id
-            trades = []
-            deal_ids = set()
+            # Load deals by deal_ids
+            deals = self._load_deals(client, result_key_prefix, result_id, deal_ids)
             
-            for member in trades_data:
-                parts = member.split('|')
-                
-                if len(parts) >= 9:
-                    trade_dict = {
-                        'trade_id': parts[0],
-                        'deal_id': parts[1],
-                        'order_id': parts[2],
-                        'time': parts[3],
-                        'side': parts[4],
-                        'price': parts[5],
-                        'quantity': parts[6],
-                        'fee': parts[7],
-                        'sum': parts[8]
-                    }
-                    trades.append(trade_dict)
-                    deal_ids.add(int(parts[1]))
+            # Load orders
+            orders = self._load_orders(client, result_key_prefix, result_id, time_begin_score)
             
-            # Get deals using PIPELINE
-            deals = []
-            if deal_ids:
-                deals_key = f"{result_key_prefix}:{result_id}:deals"
-                pipeline = client.pipeline()
-                
-                # Add ZRANGEBYSCORE commands for each deal_id
-                # Convert deal_id to int if needed (deal_ids come from parsed strings)
-                for deal_id in deal_ids:
-                    deal_id_int = int(deal_id)
-                    pipeline.zrangebyscore(deals_key, deal_id_int, deal_id_int, withscores=False)
-                
-                # Execute pipeline
-                deals_data_list = pipeline.execute()
-                
-                # Parse deals
-                for deals_data in deals_data_list:
-                    if deals_data:
-                        member = deals_data[0]
-                        parts = member.split('|')
-                        
-                        if len(parts) >= 8:
-                            deal_dict = {
-                                'deal_id': parts[0],
-                                'type': parts[1] if parts[1] else None,
-                                'avg_buy_price': parts[2] if parts[2] else None,
-                                'avg_sell_price': parts[3] if parts[3] else None,
-                                'quantity': parts[4],
-                                'fee': parts[5],
-                                'profit': parts[6] if parts[6] else None,
-                                'is_closed': parts[7] == '1' if parts[7] else False
-                            }
-                            deals.append(deal_dict)
+            # Load statistics
+            stats = self._load_stats(client, result_key_prefix, result_id)
             
-            # Get statistics
-            stats_key = f"{result_key_prefix}:{result_id}:stats"
-            stats = None
-            try:
-                stats_data = client.get(stats_key)
-                if stats_data:
-                    stats = json.loads(stats_data)
-            except Exception as e:
-                logger.warning(f"Failed to load statistics from {stats_key}: {e}")
-            
+            # Build result dictionary
             result = {
                 'trades': trades,
-                'deals': deals
+                'deals': deals,
+                'orders': orders
             }
             
             if stats is not None:

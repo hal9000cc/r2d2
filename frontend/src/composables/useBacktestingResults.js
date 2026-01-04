@@ -1,7 +1,7 @@
 import { ref, computed } from 'vue'
 
 /**
- * Composable for managing backtesting results (trades and deals)
+ * Composable for managing backtesting results (trades, deals, and orders)
  * 
  * @returns {Object} Results state and methods
  */
@@ -18,6 +18,9 @@ export function useBacktestingResults() {
   // Deals Map (deals can be updated)
   const deals = ref(new Map())
   
+  // Orders Map (orders can be updated)
+  const orders = ref(new Map())
+  
   // Index: trades by deal_id for fast lookup
   const tradesByDealId = ref(new Map())
   
@@ -32,6 +35,7 @@ export function useBacktestingResults() {
     resultsRelevanceTime.value = null
     trades.value = new Map()
     deals.value = new Map()
+    orders.value = new Map()
     tradesByDealId.value = new Map()
     stats.value = null
   }
@@ -206,9 +210,72 @@ export function useBacktestingResults() {
     return Array.from(trades.value.values())
   }
   
+  /**
+   * Update orders (add new or update existing by order_id)
+   * @param {Array} newOrders - Array of order objects
+   */
+  function updateOrders(newOrders) {
+    if (!newOrders || newOrders.length === 0) {
+      return
+    }
+    
+    // Update or add each order in the Map
+    newOrders.forEach(order => {
+      const orderIdStr = String(order.order_id)
+      orders.value.set(orderIdStr, order)
+    })
+    
+    // Trigger reactivity by creating a new Map
+    orders.value = new Map(orders.value)
+  }
+  
+  /**
+   * Get all orders as array
+   * @returns {Array} All orders
+   */
+  function getAllOrders() {
+    return Array.from(orders.value.values())
+  }
+  
+  /**
+   * Get orders within a date range (by modify_time)
+   * @param {string} fromISO - Start date (ISO string)
+   * @param {string} toISO - End date (ISO string)
+   * @returns {Array} Filtered orders
+   */
+  function getOrdersByDateRange(fromISO, toISO) {
+    const allOrders = Array.from(orders.value.values())
+    
+    if (!fromISO || !toISO) {
+      return allOrders
+    }
+    
+    const fromTime = new Date(fromISO).getTime()
+    const toTime = new Date(toISO).getTime()
+    
+    return allOrders.filter(order => {
+      const modifyTime = new Date(order.modify_time).getTime()
+      return modifyTime >= fromTime && modifyTime <= toTime
+    })
+  }
+  
+  /**
+   * Get order by ID
+   * @param {string|number} orderId - Order ID
+   * @returns {Object|null} Order object or null if not found
+   */
+  function getOrderById(orderId) {
+    if (!orderId) {
+      return null
+    }
+    const orderIdStr = String(orderId)
+    return orders.value.get(orderIdStr) || null
+  }
+  
   // Computed properties
   const tradesCount = computed(() => trades.value.size)
   const dealsCount = computed(() => deals.value.size)
+  const ordersCount = computed(() => orders.value.size)
   const allTrades = computed(() => Array.from(trades.value.values()))
   
   return {
@@ -217,12 +284,14 @@ export function useBacktestingResults() {
     resultsRelevanceTime,
     trades,
     deals,
+    orders,
     tradesByDealId,
     stats,
     
     // Computed
     tradesCount,
     dealsCount,
+    ordersCount,
     allTrades,
     
     // Methods
@@ -231,13 +300,17 @@ export function useBacktestingResults() {
     setRelevanceTime,
     addTrades,
     updateDeals,
+    updateOrders,
     updateStats,
     getTradesByDateRange,
     getDealsByIds,
     getAllDeals,
     getTradesForDeal,
     getTradeById,
-    getAllTrades
+    getAllTrades,
+    getAllOrders,
+    getOrdersByDateRange,
+    getOrderById
   }
 }
 
