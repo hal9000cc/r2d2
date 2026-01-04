@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Dict, Union, Optional
+from pydantic import BaseModel, Field
 import ccxt
 import numpy as np
 from app.services.quotes.timeframe import Timeframe
@@ -9,8 +10,152 @@ from app.core.datetime_utils import parse_utc_datetime, datetime64_to_iso
 
 router = APIRouter(prefix="/api/v1/common", tags=["common"])
 
-# Cache for symbols by source
-source_symbols: Dict[str, List[str]] = {}
+
+class SymbolInfo(BaseModel):
+    """Information about a trading symbol including fees and precision."""
+    symbol: str = Field(..., description="Symbol name (e.g., 'BTC/USDT')")
+    fee_maker: float = Field(..., description="Maker fee rate (as fraction, e.g., 0.001 for 0.1%)")
+    fee_taker: float = Field(..., description="Taker fee rate (as fraction, e.g., 0.001 for 0.1%)")
+    precision_amount: Optional[int] = Field(None, description="Number of decimal places for amount/base currency")
+    precision_price: Optional[int] = Field(None, description="Number of decimal places for price/quote currency")
+
+
+# Cache for symbols by source (stores SymbolInfo objects)
+source_symbols: Dict[str, List[SymbolInfo]] = {}
+
+
+def _is_source_cached(source: str) -> bool:
+    """
+    Check if symbols for a source are already cached.
+    
+    Args:
+        source: Exchange name
+        
+    Returns:
+        True if source is cached, False otherwise
+    """
+    return source in source_symbols
+
+
+def _create_symbol_info_from_market(symbol: str, market: dict) -> SymbolInfo:
+    """
+    Create SymbolInfo object from ccxt market data.
+    
+    Args:
+        symbol: Symbol name
+        market: Market data from ccxt
+        
+    Returns:
+        SymbolInfo object with symbol information
+    """
+    # Get maker and taker fees, default to 0.0 if not available
+    maker_fee = market.get('maker', 0.0)
+    taker_fee = market.get('taker', 0.0)
+    
+    # Get precision information
+    precision = market.get('precision', {})
+    # precision can be a dict with 'amount' and 'price' keys, or None
+    precision_amount = None
+    precision_price = None
+    if isinstance(precision, dict):
+        precision_amount = precision.get('amount')
+        precision_price = precision.get('price')
+        # Convert to int if they are numbers
+        if precision_amount is not None:
+            precision_amount = int(precision_amount) if isinstance(precision_amount, (int, float)) else None
+        if precision_price is not None:
+            precision_price = int(precision_price) if isinstance(precision_price, (int, float)) else None
+    
+    # If fees are in percentage format, they're already decimals
+    # If not percentage, we might need to handle differently, but for now assume they're decimals
+    return SymbolInfo(
+        symbol=symbol,
+        fee_maker=float(maker_fee) if maker_fee is not None else 0.0,
+        fee_taker=float(taker_fee) if taker_fee is not None else 0.0,
+        precision_amount=precision_amount,
+        precision_price=precision_price
+    )
+
+
+def _load_source_symbols(source: str) -> List[SymbolInfo]:
+    """
+    Load symbols for a source from ccxt and cache them.
+    
+    Args:
+        source: Exchange name
+        
+    Returns:
+        List of SymbolInfo objects for all symbols on the exchange
+        
+    Raises:
+        AttributeError: If source is not found in ccxt
+        Exception: If failed to load markets
+    """
+    # Create exchange instance
+    exchange_class = getattr(ccxt, source)
+    exchange = exchange_class({
+        'enableRateLimit': True,
+    })
+    
+    # Load markets to get symbols and fee information
+    markets = exchange.load_markets()
+    
+    # Build list of SymbolInfo objects with fee information
+    symbol_infos = []
+    for symbol in sorted(set(markets.keys())):
+        market = markets[symbol]
+        symbol_info = _create_symbol_info_from_market(symbol, market)
+        symbol_infos.append(symbol_info)
+    
+    # Cache the result
+    source_symbols[source] = symbol_infos
+    
+    return symbol_infos
+
+
+def _ensure_source_loaded(source: str) -> List[SymbolInfo]:
+    """
+    Ensure symbols for a source are loaded (from cache or by fetching).
+    
+    Args:
+        source: Exchange name
+        
+    Returns:
+        List of SymbolInfo objects for all symbols on the exchange
+        
+    Raises:
+        AttributeError: If source is not found in ccxt
+        Exception: If failed to load markets
+    """
+    if _is_source_cached(source):
+        return source_symbols[source]
+    
+    return _load_source_symbols(source)
+
+
+def _get_symbol_info(source: str, symbol: str) -> Optional[SymbolInfo]:
+    """
+    Get SymbolInfo for a specific symbol from a source.
+    
+    Args:
+        source: Exchange name
+        symbol: Symbol name
+        
+    Returns:
+        SymbolInfo object if found, None otherwise
+        
+    Raises:
+        AttributeError: If source is not found in ccxt
+        Exception: If failed to load markets
+    """
+    symbol_infos = _ensure_source_loaded(source)
+    
+    # Find the symbol in cached data
+    for symbol_info in symbol_infos:
+        if symbol_info.symbol == symbol:
+            return symbol_info
+    
+    return None
 
 
 def get_timeframes_dict() -> Dict[str, int]:
@@ -53,31 +198,45 @@ async def get_source_symbols(source: str):
     Get list of symbols for a specific source (exchange)
     Symbols are cached per source to avoid repeated API calls
     """
-    # Check cache first
-    if source in source_symbols:
-        return source_symbols[source]
-    
     try:
-        # Create exchange instance
-        exchange_class = getattr(ccxt, source)
-        exchange = exchange_class({
-            'enableRateLimit': True,
-        })
-        
-        # Load markets to get symbols
-        markets = exchange.load_markets()
-        
-        # Extract unique symbols
-        symbols = sorted(list(set(markets.keys())))
-        
-        # Cache the result
-        source_symbols[source] = symbols
-        
-        return symbols
+        symbol_infos = _ensure_source_loaded(source)
+        # Return only symbol names for backward compatibility
+        return [symbol_info.symbol for symbol_info in symbol_infos]
     except AttributeError:
         raise HTTPException(status_code=404, detail=f"Source '{source}' not found in ccxt")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load symbols for source '{source}': {str(e)}")
+
+
+@router.get("/sources/{source}/symbols/{symbol}", response_model=SymbolInfo)
+async def get_symbol_info(source: str, symbol: str):
+    """
+    Get detailed information about a specific symbol from a source (exchange).
+    
+    Returns SymbolInfo containing:
+    - symbol: Symbol name
+    - fee_maker: Maker fee rate
+    - fee_taker: Taker fee rate
+    - precision_amount: Number of decimal places for amount
+    - precision_price: Number of decimal places for price
+    """
+    try:
+        symbol_info = _get_symbol_info(source, symbol)
+        if symbol_info is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Symbol '{symbol}' not found for source '{source}'"
+            )
+        return symbol_info
+    except HTTPException:
+        raise
+    except AttributeError:
+        raise HTTPException(status_code=404, detail=f"Source '{source}' not found in ccxt")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load symbol info for '{source}/{symbol}': {str(e)}"
+        )
 
 
 @router.get("/quotes", response_model=List[Dict[str, Union[float, str]]])
