@@ -84,27 +84,40 @@ class Strategy(ABC):
         self,
         quantity: VOLUME_TYPE,
         price: Optional[PRICE_TYPE] = None,
+        trigger_price: Optional[PRICE_TYPE] = None,
         stop_loss: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None,
         take_profit: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None
     ) -> OrderResult:
         """
-        Place a buy order. Currently only market and limit orders are supported.
+        Place a buy order. Supports market, limit, and stop orders.
         
         Args:
             quantity: Order quantity (volume)
-            price: Limit price. If None, order is placed as market order.
+            price: Limit price. If None and trigger_price is None, order is placed as market order.
+            trigger_price: Trigger price for stop order (breakout order).
             stop_loss: Stop loss price. Raises NotImplementedError (not realized).
             take_profit: Take profit price. Raises NotImplementedError (not realized).
         
         Returns:
-            Dictionary with 'trades', 'deals', 'orders', and 'errors' lists
+            OrderResult with 'trades', 'deals', 'orders', and 'errors' lists
         """
         # Check if stop loss/take profit are specified
         if stop_loss is not None or take_profit is not None:
             raise NotImplementedError("not realized")
         
+        # Validate: either price or trigger_price, but not both
+        if price is not None and trigger_price is not None:
+            error_result = OrderResult(
+                trades=[],
+                deals=[],
+                orders=[],
+                errors=["Cannot specify both price and trigger_price"]
+            )
+            self._log_result_errors(error_result.errors, "buy")
+            return error_result
+        
         # Execute through broker
-        result = self.broker.buy(quantity, price=price)
+        result = self.broker.buy(quantity, price=price, trigger_price=trigger_price)
         
         # Log errors if any
         self._log_result_errors(result.errors, "buy")
@@ -115,27 +128,40 @@ class Strategy(ABC):
         self,
         quantity: VOLUME_TYPE,
         price: Optional[PRICE_TYPE] = None,
+        trigger_price: Optional[PRICE_TYPE] = None,
         stop_loss: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None,
         take_profit: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None
     ) -> OrderResult:
         """
-        Place a sell order. Currently only market and limit orders are supported.
+        Place a sell order. Supports market, limit, and stop orders.
         
         Args:
             quantity: Order quantity (volume)
-            price: Limit price. If None, order is placed as market order.
+            price: Limit price. If None and trigger_price is None, order is placed as market order.
+            trigger_price: Trigger price for stop order (breakout order).
             stop_loss: Stop loss price. Raises NotImplementedError (not realized).
             take_profit: Take profit price. Raises NotImplementedError (not realized).
         
         Returns:
-            Dictionary with 'trades', 'deals', 'orders', and 'errors' lists
+            OrderResult with 'trades', 'deals', 'orders', and 'errors' lists
         """
         # Check if stop loss/take profit are specified
         if stop_loss is not None or take_profit is not None:
             raise NotImplementedError("not realized")
         
+        # Validate: either price or trigger_price, but not both
+        if price is not None and trigger_price is not None:
+            error_result = OrderResult(
+                trades=[],
+                deals=[],
+                orders=[],
+                errors=["Cannot specify both price and trigger_price"]
+            )
+            self._log_result_errors(error_result.errors, "sell")
+            return error_result
+        
         # Execute through broker
-        result = self.broker.sell(quantity, price=price)
+        result = self.broker.sell(quantity, price=price, trigger_price=trigger_price)
         
         # Log errors if any
         self._log_result_errors(result.errors, "sell")
