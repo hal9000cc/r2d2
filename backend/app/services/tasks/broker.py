@@ -538,6 +538,7 @@ class Broker(ABC):
         price: PRICE_TYPE,
         time: np.datetime64,
         deal_id: Optional[int] = None,
+        order_id: Optional[int] = None,
     ) -> OrderResult:
         """
         Register buy trade in deals structure.
@@ -555,11 +556,12 @@ class Broker(ABC):
             fee: Fee for this trade
             price: Price for this trade
             deal_id: Optional deal index to register trade in
+            order_id: Optional order ID that triggered this trade
         
         Returns:
             OrderResult with 'trades' and 'deals' lists containing IDs
         """
-        trade = self.create_trade(OrderSide.BUY, quantity, price=price, fee=fee, time=time)
+        trade = self.create_trade(OrderSide.BUY, quantity, price=price, fee=fee, time=time, order_id=order_id)
         result = self.register_trade(trade, deal_id)
         return OrderResult(trades=result['trades'], deals=result['deals'])
 
@@ -570,6 +572,7 @@ class Broker(ABC):
         price: PRICE_TYPE,
         time: np.datetime64,
         deal_id: Optional[int] = None,
+        order_id: Optional[int] = None,
     ) -> OrderResult:
         """
         Register sell trade in deals structure.
@@ -581,11 +584,12 @@ class Broker(ABC):
             fee: Fee for this trade
             price: Price for this trade
             deal_id: Optional deal index to register trade in
+            order_id: Optional order ID that triggered this trade
         
         Returns:
             OrderResult with 'trades' and 'deals' lists containing IDs
         """
-        trade = self.create_trade(OrderSide.SELL, quantity, price=price, fee=fee, time=time)
+        trade = self.create_trade(OrderSide.SELL, quantity, price=price, fee=fee, time=time, order_id=order_id)
         result = self.register_trade(trade, deal_id)
         return OrderResult(trades=result['trades'], deals=result['deals'])
 
@@ -596,10 +600,19 @@ class Broker(ABC):
         price: PRICE_TYPE,
         fee: PRICE_TYPE,
         time: np.datetime64,
+        order_id: Optional[int] = None,
     ) -> 'Broker.Trade':
         """
         Create Trade object from quantity, price, fee and time.
         Assigns trade_id based on trades list size and adds trade to the list.
+        
+        Args:
+            side: Order side (BUY or SELL)
+            quantity: Trade quantity
+            price: Trade price
+            fee: Trade fee
+            time: Trade time
+            order_id: Optional order ID that triggered this trade. If None, defaults to 0 (market order).
         """
         trade_id = len(self.trades) + 1
         trade_amount = quantity * price
@@ -607,7 +620,7 @@ class Broker(ABC):
         trade = Broker.Trade(
             trade_id=trade_id,
             deal_id=0,  # Will be set by deal
-            order_id=0,  # Not used in this context
+            order_id=order_id if order_id is not None else 0,
             time=time,
             side=side,
             price=price,

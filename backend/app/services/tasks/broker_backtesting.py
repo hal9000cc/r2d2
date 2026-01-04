@@ -100,6 +100,11 @@ class BrokerBacktesting(Broker):
         self.long_order_prices: np.ndarray
         self.short_order_ids: np.ndarray
         self.short_order_prices: np.ndarray
+        # Stop orders tracking
+        self.long_stop_order_ids: np.ndarray
+        self.long_stop_trigger_prices: np.ndarray
+        self.short_stop_order_ids: np.ndarray
+        self.short_stop_trigger_prices: np.ndarray
         self._init_order_arrays()
     
     def _init_order_arrays(self) -> None:
@@ -108,12 +113,18 @@ class BrokerBacktesting(Broker):
         Called from __init__ and reset() to avoid code duplication.
         """
         self.orders = []
-        # Numpy arrays for fast order lookup (long orders)
+        # Numpy arrays for fast order lookup (long limit orders)
         self.long_order_ids = np.array([], dtype=np.int64)
         self.long_order_prices = np.array([], dtype=PRICE_TYPE)
-        # Numpy arrays for fast order lookup (short orders)
+        # Numpy arrays for fast order lookup (short limit orders)
         self.short_order_ids = np.array([], dtype=np.int64)
         self.short_order_prices = np.array([], dtype=PRICE_TYPE)
+        # Numpy arrays for fast order lookup (long stop orders)
+        self.long_stop_order_ids = np.array([], dtype=np.int64)
+        self.long_stop_trigger_prices = np.array([], dtype=PRICE_TYPE)
+        # Numpy arrays for fast order lookup (short stop orders)
+        self.short_stop_order_ids = np.array([], dtype=np.int64)
+        self.short_stop_trigger_prices = np.array([], dtype=PRICE_TYPE)
     
     def reset(self) -> None:
         """
@@ -146,7 +157,8 @@ class BrokerBacktesting(Broker):
         side: OrderSide,
         quantity: VOLUME_TYPE,
         price: PRICE_TYPE,
-        deal_id: Optional[int] = None
+        deal_id: Optional[int] = None,
+        order_id: Optional[int] = None
     ) -> OrderResult:
         """
         Execute a trade (buy or sell) at specified price.
@@ -157,6 +169,7 @@ class BrokerBacktesting(Broker):
             quantity: Quantity to trade
             price: Execution price
             deal_id: Optional deal ID to associate with this trade
+            order_id: Optional order ID that triggered this trade
         
         Returns:
             OrderResult with 'trades', 'deals', 'orders', and 'errors' lists
@@ -169,11 +182,11 @@ class BrokerBacktesting(Broker):
         if side == OrderSide.BUY:
             self.equity_symbol += quantity
             self.equity_usd -= trade_amount + trade_fee
-            result = self.reg_buy(quantity, trade_fee, price, self.current_time, deal_id=deal_id)
+            result = self.reg_buy(quantity, trade_fee, price, self.current_time, deal_id=deal_id, order_id=order_id)
         else:  # SELL
             self.equity_symbol -= quantity
             self.equity_usd += trade_amount - trade_fee
-            result = self.reg_sell(quantity, trade_fee, price, self.current_time, deal_id=deal_id)
+            result = self.reg_sell(quantity, trade_fee, price, self.current_time, deal_id=deal_id, order_id=order_id)
         
         # Add empty orders and errors lists
         return OrderResult(
@@ -404,28 +417,39 @@ class BrokerBacktesting(Broker):
                 self.short_order_ids = np.append(self.short_order_ids, order.order_id)
                 self.short_order_prices = np.append(self.short_order_prices, order.price)
     
-    def _remove_order_from_arrays(self, order_id: int, side: OrderSide) -> None:
+    def _remove_order_from_arrays(self, order_id: int, side: OrderSide, is_stop_order: bool = False) -> None:
         """
         Remove order from numpy arrays.
         
         Args:
             order_id: Order ID to remove
             side: Order side (BUY or SELL)
+            is_stop_order: True if this is a stop order, False if limit order
         """
-        if side == OrderSide.BUY:
-            # Remove from long arrays
-            mask = self.long_order_ids != order_id
-            self.long_order_ids = self.long_order_ids[mask]
-            self.long_order_prices = self.long_order_prices[mask]
-        else:  # SELL
-            # Remove from short arrays
-            mask = self.short_order_ids != order_id
-            self.short_order_ids = self.short_order_ids[mask]
-            self.short_order_prices = self.short_order_prices[mask]
+        if is_stop_order:
+            # Remove from stop arrays
+            if side == OrderSide.BUY:
+                mask = self.long_stop_order_ids != order_id
+                self.long_stop_order_ids = self.long_stop_order_ids[mask]
+                self.long_stop_trigger_prices = self.long_stop_trigger_prices[mask]
+            else:  # SELL
+                mask = self.short_stop_order_ids != order_id
+                self.short_stop_order_ids = self.short_stop_order_ids[mask]
+                self.short_stop_trigger_prices = self.short_stop_trigger_prices[mask]
+        else:
+            # Remove from limit arrays
+            if side == OrderSide.BUY:
+                mask = self.long_order_ids != order_id
+                self.long_order_ids = self.long_order_ids[mask]
+                self.long_order_prices = self.long_order_prices[mask]
+            else:  # SELL
+                mask = self.short_order_ids != order_id
+                self.short_order_ids = self.short_order_ids[mask]
+                self.short_order_prices = self.short_order_prices[mask]
     
     def _execute_triggered_order(self, order: Order, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
         """
-        Execute a triggered limit order.
+        Execute a triggered order (limit or stop).
         
         Args:
             order: Order to execute
@@ -435,23 +459,44 @@ class BrokerBacktesting(Broker):
         if not order.active:
             return
         
-        # Execute order at limit price
+        # Determine execution price based on order type
+        if order.trigger_price is not None:
+            # Stop order: execute at trigger_price
+            execution_price = order.trigger_price
+            order_type = "stop"
+        else:
+            # Limit order: execute at limit price
+            execution_price = order.price
+            order_type = "limit"
+        
+        # Execute order
         self._execute_trade(
             order.side,
             order.volume,
-            order.price,
-            deal_id=order.deal_id
+            execution_price,
+            deal_id=order.deal_id,
+            order_id=order.order_id
         )
         # Mark order as executed and inactive
         order.execute_volume = order.volume
         order.active = False
         # Update modify_time to execution time
         order.modify_time = self.current_time
-        logger.info(
-            f"Limit order executed: order_id={order.order_id}, "
-            f"side={order.side.value}, price={order.price}, "
-            f"volume={order.volume}, bar_high={high}, bar_low={low}"
-        )
+        
+        # Log execution
+        if order_type == "stop":
+            logger.info(
+                f"Stop order executed: order_id={order.order_id}, "
+                f"side={order.side.value}, trigger_price={order.trigger_price}, "
+                f"execution_price={execution_price}, volume={order.volume}, "
+                f"bar_high={high}, bar_low={low}"
+            )
+        else:
+            logger.info(
+                f"Limit order executed: order_id={order.order_id}, "
+                f"side={order.side.value}, price={order.price}, "
+                f"volume={order.volume}, bar_high={high}, bar_low={low}"
+            )
     
     def _check_and_execute_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
         """
