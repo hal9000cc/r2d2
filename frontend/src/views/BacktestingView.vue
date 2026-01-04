@@ -699,14 +699,20 @@ const ordersColumns = [
     format: (value) => value ? parseFloat(value).toFixed(8) : '—'
   },
   { 
+    key: 'trigger_price', 
+    label: 'Trigger Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
     key: 'volume', 
     label: 'Volume',
     class: 'align-right',
     format: (value) => value ? parseFloat(value).toFixed(8) : '—'
   },
   { 
-    key: 'execute_volume', 
-    label: 'Execute Volume',
+    key: 'filled_volume', 
+    label: 'Filled Volume',
     class: 'align-right',
     format: (value) => value ? parseFloat(value).toFixed(8) : '—'
   },
@@ -715,12 +721,6 @@ const ordersColumns = [
     label: 'Status',
     width: '80px',
     format: (value) => value ? 'Active' : 'Inactive'
-  },
-  { 
-    key: 'trigger_price', 
-    label: 'Trigger Price',
-    class: 'align-right',
-    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
   }
 ]
 
@@ -738,10 +738,10 @@ const filteredOrders = computed(() => {
   if (!hideCanceledOrders.value) {
     return allOrders.value
   }
-  // Filter out canceled orders (execute_volume = 0 and not active)
+  // Filter out canceled orders (filled_volume = 0 and not active)
   return allOrders.value.filter(order => {
-    const executeVolume = parseFloat(order.execute_volume) || 0
-    return !(executeVolume === 0 && !order.active)
+    const filledVolume = parseFloat(order.filled_volume) || 0
+    return !(filledVolume === 0 && !order.active)
   })
 })
 
@@ -770,8 +770,8 @@ function getDealsRowClass(row) {
 
 function getOrdersRowClass(row) {
   // Check for cancelled orders (inactive and not executed)
-  const executeVolume = parseFloat(row.execute_volume) || 0
-  if (!row.active && executeVolume === 0) {
+  const filledVolume = parseFloat(row.filled_volume) || 0
+  if (!row.active && filledVolume === 0) {
     return 'row-inactive'
   }
   

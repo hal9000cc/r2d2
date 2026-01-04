@@ -367,7 +367,7 @@ class BackTestingResults:
             side_str = order.side.value  # "buy" or "sell"
             trigger_price_str = self._format_value(order.trigger_price)
             
-            # Format member: order_id|deal_id|create_time_iso|modify_time_iso|side|price|volume|execute_volume|active|trigger_price
+            # Format member: order_id|deal_id|create_time_iso|modify_time_iso|side|price|volume|filled_volume|active|trigger_price
             member = (
                 f"{order.order_id}|"
                 f"{self._format_value(order.deal_id)}|"
@@ -376,7 +376,7 @@ class BackTestingResults:
                 f"{side_str}|"
                 f"{order.price}|"
                 f"{order.volume}|"
-                f"{order.execute_volume}|"
+                f"{order.filled_volume}|"
                 f"{1 if order.active else 0}|"
                 f"{trigger_price_str}"
             )
@@ -779,7 +779,7 @@ class BackTestingResults:
                                 'side': parts[4],
                                 'price': parts[5],
                                 'volume': parts[6],
-                                'execute_volume': parts[7],
+                                    'filled_volume': parts[7],
                                 'active': parts[8] == '1' if parts[8] else False,
                                 'trigger_price': parts[9] if parts[9] else None
                             }

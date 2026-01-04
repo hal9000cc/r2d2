@@ -40,7 +40,7 @@ class Order(BaseModel):
     volume: VOLUME_TYPE
     create_time: np.datetime64
     modify_time: np.datetime64
-    execute_volume: VOLUME_TYPE = 0.0
+    filled_volume: VOLUME_TYPE = 0.0
     active: bool = True
     side: OrderSide
     deal_id: Optional[int] = None
@@ -329,7 +329,7 @@ class BrokerBacktesting(Broker):
             volume=quantity,
             create_time=self.current_time,
             modify_time=self.current_time,  # Initially same as create_time
-            execute_volume=0.0,
+            filled_volume=0.0,
             active=True,
             side=side,
             deal_id=deal_id
@@ -374,7 +374,7 @@ class BrokerBacktesting(Broker):
             volume=quantity,
             create_time=self.current_time,
             modify_time=self.current_time,  # Initially same as create_time
-            execute_volume=0.0,
+            filled_volume=0.0,
             active=True,
             side=side,
             deal_id=deal_id,
@@ -478,7 +478,7 @@ class BrokerBacktesting(Broker):
             order_id=order.order_id
         )
         # Mark order as executed and inactive
-        order.execute_volume = order.volume
+        order.filled_volume = order.volume
         order.active = False
         # Update modify_time to execution time
         order.modify_time = self.current_time
