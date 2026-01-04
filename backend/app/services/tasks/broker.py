@@ -97,6 +97,12 @@ class TradingStats(BaseModel):
     profit_long: PRICE_TYPE = 0.0  # Profit from long deals
     profit_short: PRICE_TYPE = 0.0  # Profit from short deals
     
+    # Backtesting parameters (set from task)
+    fee_taker: PRICE_TYPE = 0.0  # Taker fee rate (as fraction, e.g., 0.001 for 0.1%)
+    fee_maker: PRICE_TYPE = 0.0  # Maker fee rate (as fraction, e.g., 0.001 for 0.1%)
+    slippage: PRICE_TYPE = 0.0  # Slippage value (absolute, in currency, e.g., 0.001 USD)
+    price_step: PRICE_TYPE = 0.0  # Price step (minimum step size, e.g., 0.1, 0.001)
+    
     def add_trade(self, trade: 'Broker.Trade') -> None:
         """
         Add trade to statistics.

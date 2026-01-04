@@ -52,6 +52,30 @@
           <span class="stats-label">Max drawdown:</span>
           <span class="stats-value">{{ formatCurrency(stats.drawdown_max) }}</span>
         </div>
+        
+        <!-- Separator -->
+        <div class="stats-separator"></div>
+        
+        <!-- Testing parameters section -->
+        <div class="stats-section-title">Testing parameters</div>
+        
+        <!-- Fee Maker -->
+        <div class="stats-row">
+          <span class="stats-label">Fee Maker:</span>
+          <span class="stats-value">{{ formatFee(stats.fee_maker) }}</span>
+        </div>
+        
+        <!-- Fee Taker -->
+        <div class="stats-row">
+          <span class="stats-label">Fee Taker:</span>
+          <span class="stats-value">{{ formatFee(stats.fee_taker) }}</span>
+        </div>
+        
+        <!-- Slippage -->
+        <div class="stats-row">
+          <span class="stats-label">Slippage:</span>
+          <span class="stats-value">{{ formatSlippage(stats.slippage, stats.price_step) }}</span>
+        </div>
       </div>
     </div>
   </div>
@@ -127,6 +151,57 @@ export default {
         return '0.00%'
       }
       return value.toFixed(2) + '%'
+    },
+    
+    /**
+     * Format fee as percentage (3 decimal places)
+     * @param {number|string|null} value - Fee rate as fraction (e.g., 0.001 for 0.1%)
+     * @returns {string} Formatted fee as percentage
+     */
+    formatFee(value) {
+      if (value === null || value === undefined || value === '') {
+        return '—'
+      }
+      const num = typeof value === 'string' ? parseFloat(value) : value
+      if (isNaN(num)) {
+        return '—'
+      }
+      // Convert fraction to percentage (0.001 -> 0.1%)
+      return (num * 100).toFixed(3) + '%'
+    },
+    
+    /**
+     * Format slippage in currency (decimal places based on price_step, minimum 2)
+     * @param {number|string|null} value - Slippage value in currency
+     * @param {number|string|null} priceStep - Price step (minimum step size)
+     * @returns {string} Formatted slippage
+     */
+    formatSlippage(value, priceStep) {
+      if (value === null || value === undefined || value === '') {
+        return '—'
+      }
+      const num = typeof value === 'string' ? parseFloat(value) : value
+      if (isNaN(num)) {
+        return '—'
+      }
+      
+      // Calculate decimal places from price_step
+      let decimalPlaces = 2 // minimum
+      if (priceStep !== null && priceStep !== undefined && priceStep !== '') {
+        const step = typeof priceStep === 'string' ? parseFloat(priceStep) : priceStep
+        if (!isNaN(step) && step > 0) {
+          // Count decimal places in price_step
+          const stepStr = step.toString()
+          if (stepStr.includes('.')) {
+            const decimalPart = stepStr.split('.')[1]
+            // Remove trailing zeros
+            const significantDigits = decimalPart.replace(/0+$/, '')
+            decimalPlaces = Math.max(significantDigits.length, 2)
+          }
+        }
+      }
+      
+      return num.toFixed(decimalPlaces)
     }
   }
 }
@@ -200,6 +275,22 @@ export default {
 .stats-sub {
   color: var(--text-secondary);
   font-size: 11px;
+}
+
+.stats-separator {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: var(--spacing-sm) 0;
+  width: 100%;
+}
+
+.stats-section-title {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+  margin-bottom: var(--spacing-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 </style>
 

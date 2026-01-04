@@ -428,6 +428,10 @@ class BackTestingResults:
                 'profit_gross': broker.stats.profit_gross,
                 'profit_long': broker.stats.profit_long,
                 'profit_short': broker.stats.profit_short,
+                'fee_taker': broker.stats.fee_taker,
+                'fee_maker': broker.stats.fee_maker,
+                'slippage': broker.stats.slippage,
+                'price_step': broker.stats.price_step,
                 'completed': is_finish,
             }
             stats_json = json.dumps(stats_dict)
