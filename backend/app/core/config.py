@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Dict
 from dotenv import load_dotenv
 
 # Base directory (backend/)
@@ -61,6 +61,17 @@ REDIS_QUOTE_RESPONSE_PREFIX=quotes:responses
 # Quotes fetch retry configuration
 QUOTES_FETCH_RETRY_ATTEMPTS=3
 QUOTES_FETCH_RETRY_DELAY=1
+
+# Symbols cache TTL (time-to-live) in seconds
+SYMBOLS_CACHE_TTL_SECONDS=600
+
+# Exchange API keys and secrets
+# Format: api_key_<source> and api_secret_<source>
+# Example:
+# api_key_bybit=your_bybit_api_key
+# api_secret_bybit=your_bybit_api_secret
+# api_key_binance=your_binance_api_key
+# api_secret_binance=your_binance_api_secret
 """
     
     # Generate .env content by commenting all parameter lines but keeping default values visible
@@ -151,6 +162,51 @@ REDIS_QUOTE_RESPONSE_PREFIX = os.getenv("REDIS_QUOTE_RESPONSE_PREFIX", "quotes:r
 # Quotes fetch retry configuration
 QUOTES_FETCH_RETRY_ATTEMPTS = int(os.getenv("QUOTES_FETCH_RETRY_ATTEMPTS", "3"))
 QUOTES_FETCH_RETRY_DELAY = float(os.getenv("QUOTES_FETCH_RETRY_DELAY", "1.0"))
+
+# Symbols cache TTL configuration (in seconds)
+SYMBOLS_CACHE_TTL_SECONDS = int(os.getenv("SYMBOLS_CACHE_TTL_SECONDS", "3600"))
+
+# API keys and secrets cache (lazy loading)
+_api_keys_cache: Dict[str, Optional[str]] = {}
+_api_secrets_cache: Dict[str, Optional[str]] = {}
+
+
+def get_api_key(source: str) -> Optional[str]:
+    """
+    Get API key for a given source (exchange).
+    
+    Reads from environment variable api_key_{source} (e.g., api_key_bybit).
+    Results are cached after first read.
+    
+    Args:
+        source: Exchange name (e.g., 'bybit', 'binance')
+    
+    Returns:
+        API key string if found, None otherwise
+    """
+    if source not in _api_keys_cache:
+        env_key = f"api_key_{source.lower()}"
+        _api_keys_cache[source] = os.getenv(env_key) or None
+    return _api_keys_cache[source]
+
+
+def get_api_secret(source: str) -> Optional[str]:
+    """
+    Get API secret for a given source (exchange).
+    
+    Reads from environment variable api_secret_{source} (e.g., api_secret_bybit).
+    Results are cached after first read.
+    
+    Args:
+        source: Exchange name (e.g., 'bybit', 'binance')
+    
+    Returns:
+        API secret string if found, None otherwise
+    """
+    if source not in _api_secrets_cache:
+        env_key = f"api_secret_{source.lower()}"
+        _api_secrets_cache[source] = os.getenv(env_key) or None
+    return _api_secrets_cache[source]
 
 
 def redis_params() -> dict:

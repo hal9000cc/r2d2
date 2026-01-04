@@ -14,6 +14,7 @@
       :disabled="disabled || !isSourceValid"
       :required="required"
       autocomplete="off"
+      title="Trading symbol (e.g., BTC/USDT, ETH/USD)"
       @input="handleInput"
     />
     <datalist :id="datalistId">

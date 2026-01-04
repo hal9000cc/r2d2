@@ -55,7 +55,6 @@ class BrokerBacktesting(Broker):
     
     def __init__(
         self, 
-        fee: float, 
         task: Task, 
         result_id: str,
         callbacks_dict: Dict[str, Callable],
@@ -65,8 +64,7 @@ class BrokerBacktesting(Broker):
         Initialize broker.
         
         Args:
-            fee: Trading fee rate (as fraction, e.g., 0.001 for 0.1%)
-            task: Task instance
+            task: Task instance (contains fee_taker, fee_maker, price_step, slippage_in_steps)
             result_id: Unique ID for this backtesting run
             callbacks_dict: Dictionary with callback functions:
                 - 'on_start': Callable(parameters: Dict[str, Any])
@@ -75,8 +73,12 @@ class BrokerBacktesting(Broker):
             results_save_period: Period for saving results in seconds (default: TRADE_RESULTS_SAVE_PERIOD)
         """
         super().__init__(result_id)
-        self.fee = fee
         self.task = task
+        # Get fee and slippage from task, with defaults
+        self.fee_taker = task.fee_taker if task.fee_taker > 0 else 0.001  # Default to 0.1% if not set
+        self.fee_maker = task.fee_maker if task.fee_maker > 0 else 0.001  # Default to 0.1% if not set
+        # Calculate slippage from slippage_in_steps and price_step
+        self.slippage = (task.slippage_in_steps * task.price_step) if task.price_step > 0 else 0.0
         self.results_save_period = results_save_period
         self.callbacks = callbacks_dict
         
@@ -158,7 +160,8 @@ class BrokerBacktesting(Broker):
         quantity: VOLUME_TYPE,
         price: PRICE_TYPE,
         deal_id: Optional[int] = None,
-        order_id: Optional[int] = None
+        order_id: Optional[int] = None,
+        is_market_order: bool = False
     ) -> OrderResult:
         """
         Execute a trade (buy or sell) at specified price.
@@ -167,26 +170,40 @@ class BrokerBacktesting(Broker):
         Args:
             side: Order side (BUY or SELL)
             quantity: Quantity to trade
-            price: Execution price
+            price: Execution price (before slippage adjustment)
             deal_id: Optional deal ID to associate with this trade
             order_id: Optional order ID that triggered this trade
+            is_market_order: If True, apply slippage and use fee_taker; otherwise use fee_maker
         
         Returns:
             OrderResult with 'trades', 'deals', 'orders', and 'errors' lists
         """
+        # Apply slippage for market orders (always in unfavorable direction)
+        execution_price = price
+        if is_market_order and self.slippage > 0:
+            if side == OrderSide.BUY:
+                # Buy: slippage increases price (unfavorable)
+                execution_price = price + self.slippage
+            else:  # SELL
+                # Sell: slippage decreases price (unfavorable)
+                execution_price = price - self.slippage
+        
+        # Select fee based on order type
+        fee_rate = self.fee_taker if is_market_order else self.fee_maker
+        
         # Calculate trade amount and fee
-        trade_amount = quantity * price
-        trade_fee = trade_amount * self.fee
+        trade_amount = quantity * execution_price
+        trade_fee = trade_amount * fee_rate
         
         # Update equity
         if side == OrderSide.BUY:
             self.equity_symbol += quantity
             self.equity_usd -= trade_amount + trade_fee
-            result = self.reg_buy(quantity, trade_fee, price, self.current_time, deal_id=deal_id, order_id=order_id)
+            result = self.reg_buy(quantity, trade_fee, execution_price, self.current_time, deal_id=deal_id, order_id=order_id)
         else:  # SELL
             self.equity_symbol -= quantity
             self.equity_usd += trade_amount - trade_fee
-            result = self.reg_sell(quantity, trade_fee, price, self.current_time, deal_id=deal_id, order_id=order_id)
+            result = self.reg_sell(quantity, trade_fee, execution_price, self.current_time, deal_id=deal_id, order_id=order_id)
         
         # Add empty orders and errors lists
         return OrderResult(
@@ -223,7 +240,15 @@ class BrokerBacktesting(Broker):
         
         if trigger_price is not None:
             # Place stop order
-            order_id = self.place_stop_order(OrderSide.BUY, quantity, trigger_price)
+            try:
+                order_id = self.place_stop_order(OrderSide.BUY, quantity, trigger_price)
+            except (ValueError, RuntimeError) as e:
+                return OrderResult(
+                    trades=[],
+                    deals=[],
+                    orders=[],
+                    errors=[str(e)]
+                )
             return OrderResult(
                 trades=[],
                 deals=[],
@@ -245,7 +270,7 @@ class BrokerBacktesting(Broker):
         if self.price is None:
             raise RuntimeError("Cannot execute buy: price is not set")
         
-        return self._execute_trade(OrderSide.BUY, quantity, self.price)
+        return self._execute_trade(OrderSide.BUY, quantity, self.price, is_market_order=True)
     
     def sell(self, quantity: VOLUME_TYPE, price: Optional[PRICE_TYPE] = None, trigger_price: Optional[PRICE_TYPE] = None) -> OrderResult:
         """
@@ -274,7 +299,15 @@ class BrokerBacktesting(Broker):
         
         if trigger_price is not None:
             # Place stop order
-            order_id = self.place_stop_order(OrderSide.SELL, quantity, trigger_price)
+            try:
+                order_id = self.place_stop_order(OrderSide.SELL, quantity, trigger_price)
+            except (ValueError, RuntimeError) as e:
+                return OrderResult(
+                    trades=[],
+                    deals=[],
+                    orders=[],
+                    errors=[str(e)]
+                )
             return OrderResult(
                 trades=[],
                 deals=[],
@@ -296,7 +329,7 @@ class BrokerBacktesting(Broker):
         if self.price is None:
             raise RuntimeError("Cannot execute sell: price is not set")
         
-        return self._execute_trade(OrderSide.SELL, quantity, self.price)
+        return self._execute_trade(OrderSide.SELL, quantity, self.price, is_market_order=True)
     
     def place_limit_order(
         self,
@@ -361,9 +394,29 @@ class BrokerBacktesting(Broker):
         
         Returns:
             order_id: Unique order identifier
+        
+        Raises:
+            RuntimeError: If current_time is not set
+            ValueError: If stop order validation fails (current price vs trigger_price)
         """
         if self.current_time is None:
             raise RuntimeError("Cannot place stop order: current_time is not set")
+        
+        if self.price is None:
+            raise RuntimeError("Cannot place stop order: current price is not set")
+        
+        # Validate stop order: for long (BUY) orders, current price must be below trigger_price
+        # For short (SELL) orders, current price must be above trigger_price
+        if side == OrderSide.BUY:
+            if self.price >= trigger_price:
+                raise ValueError(
+                    f"Cannot place long stop order: current price ({self.price}) must be below trigger_price ({trigger_price})"
+                )
+        elif side == OrderSide.SELL:
+            if self.price <= trigger_price:
+                raise ValueError(
+                    f"Cannot place short stop order: current price ({self.price}) must be above trigger_price ({trigger_price})"
+                )
         
         # Create order with order_id based on list length
         order_id = len(self.orders) + 1
@@ -469,13 +522,14 @@ class BrokerBacktesting(Broker):
             execution_price = order.price
             order_type = "limit"
         
-        # Execute order
+        # Execute order (limit/stop orders are not market orders, so no slippage, use fee_maker)
         self._execute_trade(
             order.side,
             order.volume,
             execution_price,
             deal_id=order.deal_id,
-            order_id=order.order_id
+            order_id=order.order_id,
+            is_market_order=False
         )
         # Mark order as executed and inactive
         order.filled_volume = order.volume

@@ -14,6 +14,7 @@
       :required="required"
       :disabled="disabled"
       autocomplete="off"
+      :title="title || 'Exchange or data source (e.g., binance, bybit)'"
       @input="handleInput"
       @focus="isFocused = true"
       @blur="isFocused = false"
@@ -49,6 +50,10 @@ export default {
     disabled: {
       type: Boolean,
       default: false
+    },
+    title: {
+      type: String,
+      default: 'Exchange or data source (e.g., binance, bybit)'
     }
   },
   emits: ['update:modelValue', 'change', 'valid'],

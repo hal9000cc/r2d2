@@ -6,6 +6,7 @@
         ref="navFormRef" 
         :disabled="buttonDisabled"
         :is-running="isBacktestingRunning"
+        :add-message="addLocalMessage"
         @start="handleStart"
         @stop="handleStop"
         @form-data-changed="handleFormDataChanged"
@@ -869,8 +870,8 @@ watch(allMessages, (newMessages, oldMessages) => {
     const startIndex = lastProcessedMessageIndex.value + 1
     for (let i = startIndex; i < newMessages.length; i++) {
       const message = newMessages[i]
-      // Check if message is important (error or critical level)
-      if (message.level === 'error' || message.level === 'critical') {
+      // Check if message is important (error, critical, or warning level)
+      if (message.level === 'error' || message.level === 'critical' || message.level === 'warning') {
         unreadImportantMessagesCount.value++
       }
     }
@@ -1897,6 +1898,12 @@ async function handleTaskSelected(task) {
       const dateEnd = new Date(freshTask.dateEnd)
       navFormRef.value.formData.dateTo = dateEnd.toISOString().split('T')[0]
     }
+    
+    // Load fee, price step and slippage parameters
+    navFormRef.value.formData.feeTaker = freshTask.fee_taker || 0.0
+    navFormRef.value.formData.feeMaker = freshTask.fee_maker || 0.0
+    navFormRef.value.formData.priceStep = freshTask.price_step || 0.0
+    navFormRef.value.formData.slippageInSteps = freshTask.slippage_in_steps !== undefined ? freshTask.slippage_in_steps : 1.0
   }
 
   // 7. Load parameters from task
@@ -2086,6 +2093,10 @@ async function saveCurrentTask() {
       timeframe: formData.timeframe ? formData.timeframe.toString() : '',
       dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
       dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
+      fee_taker: formData.feeTaker || 0.0,
+      fee_maker: formData.feeMaker || 0.0,
+      price_step: formData.priceStep || 0.0,
+      slippage_in_steps: formData.slippageInSteps !== undefined ? formData.slippageInSteps : 1.0,
       parameters: customParameters
     }
 

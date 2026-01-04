@@ -672,7 +672,6 @@ def process_backtesting_task(task: Task, result_id: str) -> None:
     # Create broker with strategy callbacks
     callbacks = Strategy.create_strategy_callbacks(strategy)
     broker = BrokerBacktesting(
-        fee=0.001,
         task=task,
         result_id=result_id,
         callbacks_dict=callbacks,

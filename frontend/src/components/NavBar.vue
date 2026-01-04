@@ -70,9 +70,9 @@ export default {
 .navbar {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  height: var(--navbar-height);
-  padding: 0 var(--spacing-xl);
+  align-items: flex-start;
+  min-height: var(--navbar-height);
+  padding: var(--spacing-sm) var(--spacing-xl);
   background-color: var(--bg-primary);
   border-bottom: 1px solid var(--border-color);
   box-shadow: var(--shadow-md);
@@ -83,6 +83,8 @@ export default {
   display: flex;
   align-items: center;
   position: relative;
+  height: var(--navbar-height);
+  flex-shrink: 0;
 }
 
 .navbar-brand {
@@ -149,6 +151,9 @@ export default {
   align-items: center;
   flex: 1;
   gap: var(--spacing-lg);
+  flex-wrap: wrap;
+  min-width: 0;
+  align-content: center;
 }
 </style>
 

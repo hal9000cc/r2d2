@@ -1,12 +1,17 @@
 from fastapi import APIRouter, HTTPException, Query
-from typing import List, Dict, Union, Optional
+from typing import List, Dict, Union, Optional, Tuple
 from pydantic import BaseModel, Field
 import ccxt
 import numpy as np
+import time
 from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.exceptions import R2D2QuotesExceptionDataNotReceived
 from app.core.datetime_utils import parse_utc_datetime, datetime64_to_iso
+from app.core.config import SYMBOLS_CACHE_TTL_SECONDS, get_api_key, get_api_secret
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/common", tags=["common"])
 
@@ -14,27 +19,49 @@ router = APIRouter(prefix="/api/v1/common", tags=["common"])
 class SymbolInfo(BaseModel):
     """Information about a trading symbol including fees and precision."""
     symbol: str = Field(..., description="Symbol name (e.g., 'BTC/USDT')")
-    fee_maker: float = Field(..., description="Maker fee rate (as fraction, e.g., 0.001 for 0.1%)")
-    fee_taker: float = Field(..., description="Taker fee rate (as fraction, e.g., 0.001 for 0.1%)")
-    precision_amount: Optional[int] = Field(None, description="Number of decimal places for amount/base currency")
-    precision_price: Optional[int] = Field(None, description="Number of decimal places for price/quote currency")
+    fee_maker_common: float = Field(..., description="Common maker fee rate for symbol (without user level, from exchange info, as fraction, e.g., 0.001 for 0.1%)")
+    fee_taker_common: float = Field(..., description="Common taker fee rate for symbol (without user level, from exchange info, as fraction, e.g., 0.001 for 0.1%)")
+    fee_maker: Optional[float] = Field(None, description="User-specific maker fee rate (requires authentication, as fraction, e.g., 0.001 for 0.1%)")
+    fee_taker: Optional[float] = Field(None, description="User-specific taker fee rate (requires authentication, as fraction, e.g., 0.001 for 0.1%)")
+    precision_amount: Optional[float] = Field(None, description="Minimum step size for amount/base currency (e.g., 0.1, 0.001)")
+    precision_price: Optional[float] = Field(None, description="Minimum step size for price/quote currency (e.g., 0.1, 0.001)")
 
 
-# Cache for symbols by source (stores SymbolInfo objects)
-source_symbols: Dict[str, List[SymbolInfo]] = {}
+class SymbolInfoResponse(BaseModel):
+    """Response containing symbol information and any errors."""
+    symbol_info: SymbolInfo = Field(..., description="Symbol information")
+    errors: List[str] = Field(default_factory=list, description="List of warning/error messages (if any)")
+
+
+# Cache for symbols by source (stores tuple of (List[SymbolInfo], timestamp))
+# timestamp is Unix time when cache was created
+source_symbols: Dict[str, Tuple[List[SymbolInfo], float]] = {}
 
 
 def _is_source_cached(source: str) -> bool:
     """
-    Check if symbols for a source are already cached.
+    Check if symbols for a source are cached and not expired.
     
     Args:
         source: Exchange name
         
     Returns:
-        True if source is cached, False otherwise
+        True if source is cached and not expired, False otherwise
     """
-    return source in source_symbols
+    if source not in source_symbols:
+        return False
+    
+    # Check if cache is expired
+    _, cache_timestamp = source_symbols[source]
+    current_time = time.time()
+    cache_age = current_time - cache_timestamp
+    
+    if cache_age > SYMBOLS_CACHE_TTL_SECONDS:
+        # Cache expired, remove it
+        del source_symbols[source]
+        return False
+    
+    return True
 
 
 def _create_symbol_info_from_market(symbol: str, market: dict) -> SymbolInfo:
@@ -55,23 +82,26 @@ def _create_symbol_info_from_market(symbol: str, market: dict) -> SymbolInfo:
     # Get precision information
     precision = market.get('precision', {})
     # precision can be a dict with 'amount' and 'price' keys, or None
+    # CCXT returns precision as step size (float) directly (e.g., 0.1, 0.001)
+    # Use values as-is without any conversion
     precision_amount = None
     precision_price = None
     if isinstance(precision, dict):
-        precision_amount = precision.get('amount')
-        precision_price = precision.get('price')
-        # Convert to int if they are numbers
-        if precision_amount is not None:
-            precision_amount = int(precision_amount) if isinstance(precision_amount, (int, float)) else None
-        if precision_price is not None:
-            precision_price = int(precision_price) if isinstance(precision_price, (int, float)) else None
+        precision_amount_val = precision.get('amount')
+        precision_price_val = precision.get('price')
+        if precision_amount_val is not None:
+            precision_amount = float(precision_amount_val)
+        if precision_price_val is not None:
+            precision_price = float(precision_price_val)
     
     # If fees are in percentage format, they're already decimals
     # If not percentage, we might need to handle differently, but for now assume they're decimals
     return SymbolInfo(
         symbol=symbol,
-        fee_maker=float(maker_fee) if maker_fee is not None else 0.0,
-        fee_taker=float(taker_fee) if taker_fee is not None else 0.0,
+        fee_maker_common=float(maker_fee) if maker_fee is not None else 0.0,
+        fee_taker_common=float(taker_fee) if taker_fee is not None else 0.0,
+        fee_maker=None,  # Will be filled from fetch_trading_fee if available (user-specific, requires auth)
+        fee_taker=None,  # Will be filled from fetch_trading_fee if available (user-specific, requires auth)
         precision_amount=precision_amount,
         precision_price=precision_price
     )
@@ -107,8 +137,9 @@ def _load_source_symbols(source: str) -> List[SymbolInfo]:
         symbol_info = _create_symbol_info_from_market(symbol, market)
         symbol_infos.append(symbol_info)
     
-    # Cache the result
-    source_symbols[source] = symbol_infos
+    # Cache the result with current timestamp
+    cache_timestamp = time.time()
+    source_symbols[source] = (symbol_infos, cache_timestamp)
     
     return symbol_infos
 
@@ -116,6 +147,7 @@ def _load_source_symbols(source: str) -> List[SymbolInfo]:
 def _ensure_source_loaded(source: str) -> List[SymbolInfo]:
     """
     Ensure symbols for a source are loaded (from cache or by fetching).
+    Checks cache expiration and reloads if needed.
     
     Args:
         source: Exchange name
@@ -128,7 +160,8 @@ def _ensure_source_loaded(source: str) -> List[SymbolInfo]:
         Exception: If failed to load markets
     """
     if _is_source_cached(source):
-        return source_symbols[source]
+        symbol_infos, _ = source_symbols[source]
+        return symbol_infos
     
     return _load_source_symbols(source)
 
@@ -139,7 +172,7 @@ def _get_symbol_info(source: str, symbol: str) -> Optional[SymbolInfo]:
     
     Args:
         source: Exchange name
-        symbol: Symbol name
+        symbol: Symbol name (exact match as returned by ccxt)
         
     Returns:
         SymbolInfo object if found, None otherwise
@@ -150,12 +183,36 @@ def _get_symbol_info(source: str, symbol: str) -> Optional[SymbolInfo]:
     """
     symbol_infos = _ensure_source_loaded(source)
     
-    # Find the symbol in cached data
+    # Try exact match
     for symbol_info in symbol_infos:
         if symbol_info.symbol == symbol:
-            return symbol_info
+            # Return a copy to avoid modifying cached object
+            return SymbolInfo.model_validate(symbol_info.model_dump())
     
     return None
+
+
+def _update_symbol_info_in_cache(source: str, symbol: str, symbol_info: SymbolInfo) -> None:
+    """
+    Update SymbolInfo in cache for a specific symbol.
+    
+    Args:
+        source: Exchange name
+        symbol: Symbol name
+        symbol_info: Updated SymbolInfo object
+    """
+    if source not in source_symbols:
+        return
+    
+    symbol_infos, cache_timestamp = source_symbols[source]
+    
+    # Find and update the symbol in the list
+    for i, cached_info in enumerate(symbol_infos):
+        if cached_info.symbol == symbol:
+            symbol_infos[i] = symbol_info
+            # Update cache with new timestamp (keep original cache timestamp)
+            source_symbols[source] = (symbol_infos, cache_timestamp)
+            break
 
 
 def get_timeframes_dict() -> Dict[str, int]:
@@ -208,18 +265,17 @@ async def get_source_symbols(source: str):
         raise HTTPException(status_code=500, detail=f"Failed to load symbols for source '{source}': {str(e)}")
 
 
-@router.get("/sources/{source}/symbols/{symbol}", response_model=SymbolInfo)
-async def get_symbol_info(source: str, symbol: str):
+@router.get("/sources/{source}/symbols/info", response_model=SymbolInfoResponse)
+async def get_symbol_info(source: str, symbol: str = Query(..., description="Trading symbol (e.g., 'BTC/USDT')")):
     """
     Get detailed information about a specific symbol from a source (exchange).
     
-    Returns SymbolInfo containing:
-    - symbol: Symbol name
-    - fee_maker: Maker fee rate
-    - fee_taker: Taker fee rate
-    - precision_amount: Number of decimal places for amount
-    - precision_price: Number of decimal places for price
+    Returns SymbolInfoResponse containing:
+    - symbol_info: Symbol information with fees and precision
+    - errors: List of warning/error messages (if any)
     """
+    errors: List[str] = []
+    
     try:
         symbol_info = _get_symbol_info(source, symbol)
         if symbol_info is None:
@@ -227,7 +283,54 @@ async def get_symbol_info(source: str, symbol: str):
                 status_code=404,
                 detail=f"Symbol '{symbol}' not found for source '{source}'"
             )
-        return symbol_info
+        
+        # Check if user-specific fees need to be fetched (requires authentication)
+        if symbol_info.fee_maker is None or symbol_info.fee_taker is None:
+            try:
+                # Get API credentials from config
+                api_key = get_api_key(source)
+                api_secret = get_api_secret(source)
+                
+                # Create exchange instance with API credentials if available
+                exchange_class = getattr(ccxt, source)
+                exchange_config = {
+                    'enableRateLimit': True,
+                }
+                if api_key:
+                    exchange_config['apiKey'] = api_key
+                if api_secret:
+                    exchange_config['secret'] = api_secret
+                
+                exchange = exchange_class(exchange_config)
+                
+                # Fetch user-specific trading fees (requires authentication)
+                trading_fee = exchange.fetch_trading_fee(symbol=symbol)
+                
+                # Extract fee_maker and fee_taker from trading_fee response
+                # Structure: {'maker': 0.00036, 'taker': 0.001, ...}
+                if 'maker' in trading_fee and trading_fee['maker'] is not None:
+                    symbol_info.fee_maker = float(trading_fee['maker'])
+                if 'taker' in trading_fee and trading_fee['taker'] is not None:
+                    symbol_info.fee_taker = float(trading_fee['taker'])
+                
+                # Update cache with successfully fetched fees
+                _update_symbol_info_in_cache(source, symbol, symbol_info)
+                
+            except Exception as fee_error:
+                # Log warning and use common fees as fallback
+                error_msg = f"Failed to fetch user-specific fees for {source}/{symbol}: {str(fee_error)}"
+                logger.warning(error_msg)
+                errors.append(error_msg)
+                
+                # Use common fees as fallback
+                symbol_info.fee_maker = symbol_info.fee_maker_common
+                symbol_info.fee_taker = symbol_info.fee_taker_common
+                
+                # Don't update cache on error - allow retry on next request
+
+        
+        return SymbolInfoResponse(symbol_info=symbol_info, errors=errors)
+        
     except HTTPException:
         raise
     except AttributeError:

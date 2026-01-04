@@ -133,7 +133,6 @@ def test_moving_average_crossover_strategy(app_startup):
     from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
     callbacks = Strategy.create_strategy_callbacks(strategy)
     broker = BrokerBacktesting(
-        fee=0.001,
         task=task,
         result_id="test-result-id",
         callbacks_dict=callbacks,

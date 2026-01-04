@@ -29,6 +29,10 @@ class Task(Objects2Redis):
     dateEnd: str = Field(
         default_factory=lambda: (datetime.now() + timedelta(days=-1)).isoformat()
     )
+    fee_taker: float = 0.0  # Taker fee rate (as fraction, e.g., 0.001 for 0.1%)
+    fee_maker: float = 0.0  # Maker fee rate (as fraction, e.g., 0.001 for 0.1%)
+    price_step: float = 0.0  # Minimum price step for the symbol (e.g., 0.1, 0.001)
+    slippage_in_steps: float = 1.0  # Slippage in price steps (e.g., 1.0 means 1 step)
     parameters: Dict[str, Any] = Field(default_factory=dict)
     
     def get_key(self) -> str:
