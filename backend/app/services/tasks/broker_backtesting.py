@@ -1,7 +1,7 @@
 """
 Broker class for handling trading operations and backtesting execution.
 """
-from typing import Optional, Dict, Callable, List
+from typing import Optional, Dict, Callable, List, Tuple
 import numpy as np
 import time
 from pydantic import BaseModel, Field, ConfigDict
@@ -9,7 +9,7 @@ from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
-from app.services.tasks.broker import Broker, OrderSide, OrderResult, CancelOrderResult
+from app.services.tasks.broker import Broker, OrderSide, OrderType, OrderStatus
 from app.services.tasks.backtesting_result import BackTestingResults
 from app.core.logger import get_logger
 from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64, datetime64_to_iso
@@ -36,15 +36,17 @@ class Order(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
     order_id: int = Field(gt=0)
-    price: Optional[PRICE_TYPE] = None
-    volume: VOLUME_TYPE
+    deal_id: Optional[int] = None
+    order_type: OrderType  # Type of order: limit or stop (market orders are not stored as Order objects)
     create_time: np.datetime64
     modify_time: np.datetime64
-    filled_volume: VOLUME_TYPE = 0.0
-    active: bool = True
     side: OrderSide
-    deal_id: Optional[int] = None
+    price: Optional[PRICE_TYPE] = None
     trigger_price: Optional[PRICE_TYPE] = None
+    volume: VOLUME_TYPE
+    filled_volume: VOLUME_TYPE = 0.0
+    status: OrderStatus = OrderStatus.NEW
+    errors: List[str] = Field(default_factory=list)  # List of validation/execution errors
 
 
 class BrokerBacktesting(Broker):
@@ -163,7 +165,7 @@ class BrokerBacktesting(Broker):
         deal_id: Optional[int] = None,
         order_id: Optional[int] = None,
         is_market_order: bool = False
-    ) -> OrderResult:
+    ) -> Tuple[List[int], List[int]]:
         """
         Execute a trade (buy or sell) at specified price.
         Common logic for both market and limit order execution.
@@ -177,7 +179,7 @@ class BrokerBacktesting(Broker):
             is_market_order: If True, apply slippage and use fee_taker; otherwise use fee_maker
         
         Returns:
-            OrderResult with 'trades', 'deals', 'orders', and 'errors' lists
+            Tuple of (trades: List[int], deals: List[int]) containing IDs
         """
         # Apply slippage for market orders (always in unfavorable direction)
         execution_price = price
@@ -200,248 +202,355 @@ class BrokerBacktesting(Broker):
         if side == OrderSide.BUY:
             self.equity_symbol += quantity
             self.equity_usd -= trade_amount + trade_fee
-            result = self.reg_buy(quantity, trade_fee, execution_price, self.current_time, deal_id=deal_id, order_id=order_id)
+            trades, deals = self.reg_buy(quantity, trade_fee, execution_price, self.current_time, deal_id=deal_id, order_id=order_id)
         else:  # SELL
             self.equity_symbol -= quantity
             self.equity_usd += trade_amount - trade_fee
-            result = self.reg_sell(quantity, trade_fee, execution_price, self.current_time, deal_id=deal_id, order_id=order_id)
+            trades, deals = self.reg_sell(quantity, trade_fee, execution_price, self.current_time, deal_id=deal_id, order_id=order_id)
         
-        # Add empty orders and errors lists
-        return OrderResult(
-            trades=result.trades,
-            deals=result.deals,
-            orders=[],
-            errors=[]
-        )
+        return (trades, deals)
     
-    def buy(self, quantity: VOLUME_TYPE, price: Optional[PRICE_TYPE] = None, trigger_price: Optional[PRICE_TYPE] = None) -> OrderResult:
+    def _validate_orders(self, orders: List[Order]) -> Tuple[List[Order], int]:
         """
-        Execute buy operation.
-        If price is specified, places a limit order.
-        If trigger_price is specified, places a stop order.
-        Otherwise executes market order.
-        Increases equity_symbol and decreases equity_usd.
+        Validate a list of orders and add errors to order.errors if validation fails.
+        
+        Args:
+            orders: List of orders to validate
+            
+        Returns:
+            Tuple of (validated orders list, number of errors found)
+        """
+        if not orders:
+            return orders, 0
+        
+        if self.price is None:
+            raise RuntimeError("Cannot validate orders: current price is not set")
+        
+        error_count = 0
+        
+        for order in orders:
+            # Check quantity
+            if order.volume <= 0:
+                order.errors.append(f"Order quantity must be greater than 0, got {order.volume}")
+                error_count += 1
+            
+            # Check: either price or trigger_price, but not both
+            if order.price is not None and order.trigger_price is not None:
+                order.errors.append("Cannot specify both price and trigger_price")
+                order.status = OrderStatus.ERROR
+                error_count += 1
+            
+            # Validate based on order type
+            if order.order_type == OrderType.MARKET:
+                # Market order: price and trigger_price must be None
+                if order.price is not None:
+                    order.errors.append("Market order cannot have price set")
+                    order.status = OrderStatus.ERROR
+                    error_count += 1
+                if order.trigger_price is not None:
+                    order.errors.append("Market order cannot have trigger_price set")
+                    order.status = OrderStatus.ERROR
+                    error_count += 1
+            
+            elif order.order_type == OrderType.LIMIT:
+                # Limit order: trigger_price must be None, price must be set
+                if order.trigger_price is not None:
+                    order.errors.append("Limit order cannot have trigger_price set")
+                    order.status = OrderStatus.ERROR
+                    error_count += 1
+                if order.price is None:
+                    order.errors.append("Limit order must have price set")
+                    order.status = OrderStatus.ERROR
+                    error_count += 1
+                else:
+                    # Check proper price placement relative to current price
+                    if order.side == OrderSide.BUY:
+                        # For BUY limit: current price must be >= limit price (limit below or equal to current)
+                        if self.price < order.price:
+                            order.errors.append(
+                                f"BUY limit order price ({order.price}) must be below or equal to current price ({self.price})"
+                            )
+                            order.status = OrderStatus.ERROR
+                            error_count += 1
+                    else:  # SELL
+                        # For SELL limit: current price must be <= limit price (limit above or equal to current)
+                        if self.price > order.price:
+                            order.errors.append(
+                                f"SELL limit order price ({order.price}) must be above or equal to current price ({self.price})"
+                            )
+                            order.status = OrderStatus.ERROR
+                            error_count += 1
+            
+            elif order.order_type == OrderType.STOP:
+                # Stop order: price must be None, trigger_price must be set
+                if order.price is not None:
+                    order.errors.append("Stop order cannot have price set")
+                    order.status = OrderStatus.ERROR
+                    error_count += 1
+                if order.trigger_price is None:
+                    order.errors.append("Stop order must have trigger_price set")
+                    order.status = OrderStatus.ERROR
+                    error_count += 1
+                else:
+                    # Check proper trigger_price placement relative to current price
+                    if order.side == OrderSide.BUY:
+                        # For BUY stop: current price must be < trigger_price
+                        if self.price >= order.trigger_price:
+                            order.errors.append(
+                                f"BUY stop order trigger_price ({order.trigger_price}) must be above current price ({self.price})"
+                            )
+                            order.status = OrderStatus.ERROR
+                            error_count += 1
+                    else:  # SELL
+                        # For SELL stop: current price must be > trigger_price
+                        if self.price <= order.trigger_price:
+                            order.errors.append(
+                                f"SELL stop order trigger_price ({order.trigger_price}) must be below current price ({self.price})"
+                            )
+                            order.status = OrderStatus.ERROR
+                            error_count += 1
+        
+        return orders, error_count
+    
+    def execute_orders(self, orders: List[Order]) -> List[Order]:
+        """
+        Execute or place orders from the list.
+        Market orders are executed immediately, limit/stop orders are placed.
+        
+        Args:
+            orders: List of validated orders to execute/place
+            
+        Returns:
+            List of copies of executed/placed orders
+        """
+        if not orders:
+            return []
+        
+        if self.current_time is None:
+            raise RuntimeError("Cannot execute orders: current_time is not set")
+        
+        executed_orders = []
+        
+        for order in orders:
+            try:
+                if order.order_type == OrderType.MARKET:
+                    # Market order: execute immediately
+                    if self.price is None:
+                        raise RuntimeError("Cannot execute market order: price is not set")
+                    
+                    # Calculate execution price with slippage
+                    execution_price = self.price
+                    if self.slippage > 0:
+                        if order.side == OrderSide.BUY:
+                            # Buy: slippage increases price (unfavorable)
+                            execution_price = self.price + self.slippage
+                        else:  # SELL
+                            # Sell: slippage decreases price (unfavorable)
+                            execution_price = self.price - self.slippage
+                    
+                    # Update order state before execution
+                    order.price = execution_price
+                    order.modify_time = self.current_time
+                    
+                    # Add to orders list for history (before execution)
+                    order.order_id = len(self.orders) + 1
+                    self.orders.append(order)
+                    
+                    # Execute trade
+                    self._execute_trade(
+                        order.side,
+                        order.volume,
+                        execution_price,
+                        deal_id=order.deal_id,
+                        order_id=order.order_id,
+                        is_market_order=True
+                    )
+                    
+                    # Update order state after execution
+                    order.filled_volume = order.volume
+                    order.status = OrderStatus.EXECUTED
+                    
+                elif order.order_type == OrderType.LIMIT:
+                    # Limit order: place it
+                    order.order_id = len(self.orders) + 1
+                    order.status = OrderStatus.ACTIVE
+                    self.orders.append(order)
+                    self._add_order_to_arrays(order)
+                    
+                elif order.order_type == OrderType.STOP:
+                    # Stop order: place it
+                    order.order_id = len(self.orders) + 1
+                    order.status = OrderStatus.ACTIVE
+                    self.orders.append(order)
+                    self._add_order_to_arrays(order)
+                
+                # Create a copy of the order for return
+                executed_orders.append(order.model_copy(deep=True))
+                
+            except Exception as e:
+                # Add error to order and mark as error
+                order.errors.append(str(e))
+                order.status = OrderStatus.ERROR
+                # Still add to executed orders list (with error)
+                executed_orders.append(order.model_copy(deep=True))
+        
+        return executed_orders
+    
+    def buy(self, quantity: VOLUME_TYPE, price: Optional[PRICE_TYPE] = None, trigger_price: Optional[PRICE_TYPE] = None) -> List[Order]:
+        """
+        Create buy order(s) and execute/place them.
+        If price is specified, creates a limit order.
+        If trigger_price is specified, creates a stop order.
+        Otherwise creates a market order.
         
         Args:
             quantity: Quantity to buy
-            price: Optional limit price. If None and trigger_price is None, executes market order.
+            price: Optional limit price. If None and trigger_price is None, creates market order.
             trigger_price: Optional trigger price for stop order.
         
         Returns:
-            OrderResult with 'trades', 'deals', 'orders', and 'errors' lists
+            List of copies of executed/placed orders
         """
-        # Validate: either price or trigger_price, but not both
-        if price is not None and trigger_price is not None:
-            return OrderResult(
-                trades=[],
-                deals=[],
-                orders=[],
-                errors=["Cannot specify both price and trigger_price"]
-            )
+        if self.current_time is None:
+            raise RuntimeError("Cannot create buy order: current_time is not set")
         
+        # Create order based on parameters
         if trigger_price is not None:
-            # Place stop order
-            try:
-                order_id = self.place_stop_order(OrderSide.BUY, quantity, trigger_price)
-            except (ValueError, RuntimeError) as e:
-                return OrderResult(
-                    trades=[],
-                    deals=[],
-                    orders=[],
-                    errors=[str(e)]
-                )
-            return OrderResult(
-                trades=[],
-                deals=[],
-                orders=[order_id],
+            # Stop order
+            order = Order(
+                order_id=0,  # Will be assigned in execute_orders
+                price=None,
+                volume=quantity,
+                create_time=self.current_time,
+                modify_time=self.current_time,
+                filled_volume=0.0,
+                status=OrderStatus.NEW,
+                side=OrderSide.BUY,
+                deal_id=None,
+                trigger_price=trigger_price,
+                order_type=OrderType.STOP,
+                errors=[]
+            )
+        elif price is not None:
+            # Limit order
+            order = Order(
+                order_id=0,  # Will be assigned in execute_orders
+                price=price,
+                volume=quantity,
+                create_time=self.current_time,
+                modify_time=self.current_time,
+                filled_volume=0.0,
+                status=OrderStatus.NEW,
+                side=OrderSide.BUY,
+                deal_id=None,
+                trigger_price=None,
+                order_type=OrderType.LIMIT,
+                errors=[]
+            )
+        else:
+            # Market order
+            order = Order(
+                order_id=0,  # Will be assigned in execute_orders
+                price=None,
+                volume=quantity,
+                create_time=self.current_time,
+                modify_time=self.current_time,
+                filled_volume=0.0,
+                status=OrderStatus.NEW,
+                side=OrderSide.BUY,
+                deal_id=None,
+                trigger_price=None,
+                order_type=OrderType.MARKET,
                 errors=[]
             )
         
-        if price is not None:
-            # Place limit order
-            order_id = self.place_limit_order(OrderSide.BUY, quantity, price)
-            return OrderResult(
-                trades=[],
-                deals=[],
-                orders=[order_id],
-                errors=[]
-            )
+        # Validate orders
+        orders, error_count = self._validate_orders([order])
         
-        # Market order execution
-        if self.price is None:
-            raise RuntimeError("Cannot execute buy: price is not set")
+        # If validation errors found, return orders with errors
+        if error_count > 0:
+            return [order.model_copy(deep=True) for order in orders]
         
-        return self._execute_trade(OrderSide.BUY, quantity, self.price, is_market_order=True)
+        # Execute/place orders
+        return self.execute_orders(orders)
     
-    def sell(self, quantity: VOLUME_TYPE, price: Optional[PRICE_TYPE] = None, trigger_price: Optional[PRICE_TYPE] = None) -> OrderResult:
+    def sell(self, quantity: VOLUME_TYPE, price: Optional[PRICE_TYPE] = None, trigger_price: Optional[PRICE_TYPE] = None) -> List[Order]:
         """
-        Execute sell operation.
-        If price is specified, places a limit order.
-        If trigger_price is specified, places a stop order.
-        Otherwise executes market order.
-        Decreases equity_symbol and increases equity_usd.
+        Create sell order(s) and execute/place them.
+        If price is specified, creates a limit order.
+        If trigger_price is specified, creates a stop order.
+        Otherwise creates a market order.
         
         Args:
             quantity: Quantity to sell
-            price: Optional limit price. If None and trigger_price is None, executes market order.
+            price: Optional limit price. If None and trigger_price is None, creates market order.
             trigger_price: Optional trigger price for stop order.
         
         Returns:
-            OrderResult with 'trades', 'deals', 'orders', and 'errors' lists
+            List of copies of executed/placed orders
         """
-        # Validate: either price or trigger_price, but not both
-        if price is not None and trigger_price is not None:
-            return OrderResult(
-                trades=[],
-                deals=[],
-                orders=[],
-                errors=["Cannot specify both price and trigger_price"]
-            )
+        if self.current_time is None:
+            raise RuntimeError("Cannot create sell order: current_time is not set")
         
+        # Create order based on parameters
         if trigger_price is not None:
-            # Place stop order
-            try:
-                order_id = self.place_stop_order(OrderSide.SELL, quantity, trigger_price)
-            except (ValueError, RuntimeError) as e:
-                return OrderResult(
-                    trades=[],
-                    deals=[],
-                    orders=[],
-                    errors=[str(e)]
-                )
-            return OrderResult(
-                trades=[],
-                deals=[],
-                orders=[order_id],
+            # Stop order
+            order = Order(
+                order_id=0,  # Will be assigned in execute_orders
+                price=None,
+                volume=quantity,
+                create_time=self.current_time,
+                modify_time=self.current_time,
+                filled_volume=0.0,
+                status=OrderStatus.NEW,
+                side=OrderSide.SELL,
+                deal_id=None,
+                trigger_price=trigger_price,
+                order_type=OrderType.STOP,
+                errors=[]
+            )
+        elif price is not None:
+            # Limit order
+            order = Order(
+                order_id=0,  # Will be assigned in execute_orders
+                price=price,
+                volume=quantity,
+                create_time=self.current_time,
+                modify_time=self.current_time,
+                filled_volume=0.0,
+                status=OrderStatus.NEW,
+                side=OrderSide.SELL,
+                deal_id=None,
+                trigger_price=None,
+                order_type=OrderType.LIMIT,
+                errors=[]
+            )
+        else:
+            # Market order
+            order = Order(
+                order_id=0,  # Will be assigned in execute_orders
+                price=None,
+                volume=quantity,
+                create_time=self.current_time,
+                modify_time=self.current_time,
+                filled_volume=0.0,
+                status=OrderStatus.NEW,
+                side=OrderSide.SELL,
+                deal_id=None,
+                trigger_price=None,
+                order_type=OrderType.MARKET,
                 errors=[]
             )
         
-        if price is not None:
-            # Place limit order
-            order_id = self.place_limit_order(OrderSide.SELL, quantity, price)
-            return OrderResult(
-                trades=[],
-                deals=[],
-                orders=[order_id],
-                errors=[]
-            )
+        # Validate orders
+        orders, error_count = self._validate_orders([order])
         
-        # Market order execution
-        if self.price is None:
-            raise RuntimeError("Cannot execute sell: price is not set")
+        # If validation errors found, return orders with errors
+        if error_count > 0:
+            return [order.model_copy(deep=True) for order in orders]
         
-        return self._execute_trade(OrderSide.SELL, quantity, self.price, is_market_order=True)
-    
-    def place_limit_order(
-        self,
-        side: OrderSide,
-        quantity: VOLUME_TYPE,
-        price: PRICE_TYPE,
-        deal_id: Optional[int] = None
-    ) -> int:
-        """
-        Place a limit order.
-        
-        Args:
-            side: Order side (BUY or SELL)
-            quantity: Order quantity (volume)
-            price: Limit price
-            deal_id: Optional deal ID to associate with this order
-        
-        Returns:
-            order_id: Unique order identifier
-        """
-        if self.current_time is None:
-            raise RuntimeError("Cannot place limit order: current_time is not set")
-        
-        # Create order with order_id based on list length
-        order_id = len(self.orders) + 1
-        
-        order = Order(
-            order_id=order_id,
-            price=price,
-            volume=quantity,
-            create_time=self.current_time,
-            modify_time=self.current_time,  # Initially same as create_time
-            filled_volume=0.0,
-            active=True,
-            side=side,
-            deal_id=deal_id
-        )
-        
-        # Add to orders list
-        self.orders.append(order)
-        
-        # Add to numpy arrays for fast lookup
-        self._add_order_to_arrays(order)
-        
-        return order_id
-    
-    def place_stop_order(
-        self,
-        side: OrderSide,
-        quantity: VOLUME_TYPE,
-        trigger_price: PRICE_TYPE,
-        deal_id: Optional[int] = None
-    ) -> int:
-        """
-        Place a stop order (order on breakout).
-        
-        Args:
-            side: Order side (BUY or SELL)
-            quantity: Order quantity (volume)
-            trigger_price: Trigger price (breakout price)
-            deal_id: Optional deal ID to associate with this order
-        
-        Returns:
-            order_id: Unique order identifier
-        
-        Raises:
-            RuntimeError: If current_time is not set
-            ValueError: If stop order validation fails (current price vs trigger_price)
-        """
-        if self.current_time is None:
-            raise RuntimeError("Cannot place stop order: current_time is not set")
-        
-        if self.price is None:
-            raise RuntimeError("Cannot place stop order: current price is not set")
-        
-        # Validate stop order: for long (BUY) orders, current price must be below trigger_price
-        # For short (SELL) orders, current price must be above trigger_price
-        if side == OrderSide.BUY:
-            if self.price >= trigger_price:
-                raise ValueError(
-                    f"Cannot place long stop order: current price ({self.price}) must be below trigger_price ({trigger_price})"
-                )
-        elif side == OrderSide.SELL:
-            if self.price <= trigger_price:
-                raise ValueError(
-                    f"Cannot place short stop order: current price ({self.price}) must be above trigger_price ({trigger_price})"
-                )
-        
-        # Create order with order_id based on list length
-        order_id = len(self.orders) + 1
-        
-        order = Order(
-            order_id=order_id,
-            price=None,  # Stop orders don't have limit price
-            volume=quantity,
-            create_time=self.current_time,
-            modify_time=self.current_time,  # Initially same as create_time
-            filled_volume=0.0,
-            active=True,
-            side=side,
-            deal_id=deal_id,
-            trigger_price=trigger_price
-        )
-        
-        # Add to orders list
-        self.orders.append(order)
-        
-        # Add to numpy arrays for fast lookup
-        self._add_order_to_arrays(order)
-        
-        return order_id
+        # Execute/place orders
+        return self.execute_orders(orders)
     
     def _add_order_to_arrays(self, order: Order) -> None:
         """
@@ -510,7 +619,7 @@ class BrokerBacktesting(Broker):
             high: High price of current bar (for logging)
             low: Low price of current bar (for logging)
         """
-        if not order.active:
+        if order.status != OrderStatus.ACTIVE:
             return
         
         # Determine execution price based on order type
@@ -532,22 +641,22 @@ class BrokerBacktesting(Broker):
             order_id=order.order_id,
             is_market_order=False
         )
-        # Mark order as executed and inactive
+        # Mark order as executed
         order.filled_volume = order.volume
-        order.active = False
+        order.status = OrderStatus.EXECUTED
         # Update modify_time to execution time
         order.modify_time = self.current_time
         
         # Log execution
         if order_type == "stop":
-            logger.info(
+            logger.debug(
                 f"Stop order executed: order_id={order.order_id}, "
                 f"side={order.side.value}, trigger_price={order.trigger_price}, "
                 f"execution_price={execution_price}, volume={order.volume}, "
                 f"bar_high={high}, bar_low={low}"
             )
         else:
-            logger.info(
+            logger.debug(
                 f"Limit order executed: order_id={order.order_id}, "
                 f"side={order.side.value}, price={order.price}, "
                 f"volume={order.volume}, bar_high={high}, bar_low={low}"
@@ -602,50 +711,49 @@ class BrokerBacktesting(Broker):
                     order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                     self._execute_triggered_order(order, high, low)
     
-    def cancel_orders(self, order_ids: List[int]) -> CancelOrderResult:
+    def cancel_orders(self, order_ids: List[int]) -> List[Order]:
         """
         Cancel orders by their IDs.
         
-        Sets order.active = False, updates modify_time, and removes from numpy arrays.
-        Orders that are already inactive are silently skipped.
+        For ACTIVE orders: sets order.status = CANCELED, updates modify_time, and removes from numpy arrays.
+        For non-ACTIVE orders: includes them in result without modifications.
+        Orders that are not found are silently skipped (not included in result).
         
         Args:
             order_ids: List of order IDs to cancel
         
         Returns:
-            CancelOrderResult with failed_orders and errors lists
+            List of copies of orders (canceled if they were ACTIVE, or as-is if not ACTIVE)
         """
-        failed_orders = []
-        errors = []
+        canceled_orders = []
         
         for order_id in order_ids:
             # Check if order exists
             if order_id <= 0 or order_id > len(self.orders):
-                failed_orders.append(order_id)
-                error_msg = f"cancel_orders(): Order {order_id} not found"
-                errors.append(error_msg)
+                # Order not found - skip silently (will be handled in strategy)
                 continue
             
             # Get order (order_id is 1-based, list is 0-based)
             order = self.orders[order_id - 1]
             
-            # Skip if already inactive (silently)
-            if not order.active:
-                continue
+            # If order is ACTIVE, cancel it
+            if order.status == OrderStatus.ACTIVE:
+                # Cancel order
+                order.status = OrderStatus.CANCELED
+                if self.current_time is not None:
+                    order.modify_time = self.current_time
+                else:
+                    # If current_time is not set, use create_time (shouldn't happen in normal flow)
+                    order.modify_time = order.create_time
+                
+                # Remove from numpy arrays
+                is_stop_order = order.trigger_price is not None
+                self._remove_order_from_arrays(order_id, order.side, is_stop_order)
             
-            # Cancel order
-            order.active = False
-            if self.current_time is not None:
-                order.modify_time = self.current_time
-            else:
-                # If current_time is not set, use create_time (shouldn't happen in normal flow)
-                order.modify_time = order.create_time
-            
-            # Remove from numpy arrays
-            is_stop_order = order.trigger_price is not None
-            self._remove_order_from_arrays(order_id, order.side, is_stop_order)
+            # Add copy to result (whether it was ACTIVE and canceled, or already non-ACTIVE)
+            canceled_orders.append(order.model_copy(deep=True))
         
-        return CancelOrderResult(failed_orders=failed_orders, errors=errors)
+        return canceled_orders
     
     def close_deals(self):
         """

@@ -3,7 +3,7 @@ Generic broker classes for handling trading operations.
 """
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import List, Optional, Dict, TYPE_CHECKING
+from typing import List, Optional, Dict, Tuple, TYPE_CHECKING
 
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict
@@ -22,32 +22,23 @@ class OrderSide(Enum):
     SELL = "sell"
 
 
+class OrderType(Enum):
+    MARKET = "market"
+    LIMIT = "limit"
+    STOP = "stop"
+
+
+class OrderStatus(Enum):
+    NEW = 0  # Only created, not processed
+    ACTIVE = 1  # Validated and active (only limit and stop orders)
+    EXECUTED = 2  # Executed (market immediately, limit/stop after execution)
+    CANCELED = 3  # Was active, canceled (in real trading may be partially executed)
+    ERROR = 4  # Failed validation (in real trading may be other reasons)
+
+
 class DealType(Enum):
     LONG = "long"
     SHORT = "short"
-
-
-class OrderResult(BaseModel):
-    """
-    Result of order execution (buy/sell).
-    
-    Contains lists of IDs for trades, deals, and orders created/modified by the operation,
-    as well as any errors that occurred.
-    """
-    trades: List[int] = Field(default_factory=list, description="List of trade IDs created by this operation")
-    deals: List[int] = Field(default_factory=list, description="List of deal IDs created/modified by this operation")
-    orders: List[int] = Field(default_factory=list, description="List of order IDs created by this operation")
-    errors: List[str] = Field(default_factory=list, description="List of error messages (if any)")
-
-
-class CancelOrderResult(BaseModel):
-    """
-    Result of order cancellation.
-    
-    Contains list of order IDs that could not be cancelled and any errors that occurred.
-    """
-    failed_orders: List[int] = Field(default_factory=list, description="List of order IDs that could not be cancelled")
-    errors: List[str] = Field(default_factory=list, description="List of error messages (if any)")
 
 
 class TradingStats(BaseModel):
@@ -573,7 +564,7 @@ class Broker(ABC):
         time: np.datetime64,
         deal_id: Optional[int] = None,
         order_id: Optional[int] = None,
-    ) -> OrderResult:
+    ) -> Tuple[List[int], List[int]]:
         """
         Register buy trade in deals structure.
 
@@ -593,11 +584,11 @@ class Broker(ABC):
             order_id: Optional order ID that triggered this trade
         
         Returns:
-            OrderResult with 'trades' and 'deals' lists containing IDs
+            Tuple of (trades: List[int], deals: List[int]) containing IDs
         """
         trade = self.create_trade(OrderSide.BUY, quantity, price=price, fee=fee, time=time, order_id=order_id)
         result = self.register_trade(trade, deal_id)
-        return OrderResult(trades=result['trades'], deals=result['deals'])
+        return (result['trades'], result['deals'])
 
     def reg_sell(
         self,
@@ -607,7 +598,7 @@ class Broker(ABC):
         time: np.datetime64,
         deal_id: Optional[int] = None,
         order_id: Optional[int] = None,
-    ) -> OrderResult:
+    ) -> Tuple[List[int], List[int]]:
         """
         Register sell trade in deals structure.
 
@@ -621,11 +612,11 @@ class Broker(ABC):
             order_id: Optional order ID that triggered this trade
         
         Returns:
-            OrderResult with 'trades' and 'deals' lists containing IDs
+            Tuple of (trades: List[int], deals: List[int]) containing IDs
         """
         trade = self.create_trade(OrderSide.SELL, quantity, price=price, fee=fee, time=time, order_id=order_id)
         result = self.register_trade(trade, deal_id)
-        return OrderResult(trades=result['trades'], deals=result['deals'])
+        return (result['trades'], result['deals'])
 
     def create_trade(
         self,

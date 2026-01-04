@@ -5,15 +5,30 @@ import traceback
 import numpy as np
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
-from app.services.tasks.broker import OrderSide, OrderResult, CancelOrderResult
+from app.services.tasks.broker import OrderSide, OrderStatus
+from pydantic import BaseModel, Field
 from app.core.logger import get_logger
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 
 if TYPE_CHECKING:
-    from app.services.tasks.broker_backtesting import BrokerBacktesting as Broker, ta_proxy
+    from app.services.tasks.broker_backtesting import BrokerBacktesting as Broker, ta_proxy, Order
 
 logger = get_logger(__name__)
+
+
+class OrderOperationResult(BaseModel):
+    """
+    Result of order operation (buy/sell/cancel).
+    Contains orders, error messages, and categorized order IDs by status.
+    """
+    orders: List['Order'] = Field(default_factory=list, description="List of orders created by this operation")
+    error_messages: List[str] = Field(default_factory=list, description="List of error messages (if any)")
+    active: List[int] = Field(default_factory=list, description="List of active order IDs")
+    executed: List[int] = Field(default_factory=list, description="List of executed order IDs")
+    canceled: List[int] = Field(default_factory=list, description="List of canceled order IDs")
+    error: List[int] = Field(default_factory=list, description="List of error order IDs")
+
 
 class Strategy(ABC):
     def __init__(self):
@@ -87,7 +102,7 @@ class Strategy(ABC):
         trigger_price: Optional[PRICE_TYPE] = None,
         stop_loss: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None,
         take_profit: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None
-    ) -> OrderResult:
+    ) -> OrderOperationResult:
         """
         Place a buy order. Supports market, limit, and stop orders.
         
@@ -99,30 +114,34 @@ class Strategy(ABC):
             take_profit: Take profit price. Raises NotImplementedError (not realized).
         
         Returns:
-            OrderResult with 'trades', 'deals', 'orders', and 'errors' lists
+            OrderOperationResult with orders, error_messages, and categorized order IDs
         """
         # Check if stop loss/take profit are specified
         if stop_loss is not None or take_profit is not None:
             raise NotImplementedError("not realized")
         
-        # Validate: either price or trigger_price, but not both
-        if price is not None and trigger_price is not None:
-            error_result = OrderResult(
-                trades=[],
-                deals=[],
-                orders=[],
-                errors=["Cannot specify both price and trigger_price"]
-            )
-            self._log_result_errors(error_result.errors, "buy")
-            return error_result
+        # Execute through broker (returns List[Order])
+        orders = self.broker.buy(quantity, price=price, trigger_price=trigger_price)
         
-        # Execute through broker
-        result = self.broker.buy(quantity, price=price, trigger_price=trigger_price)
+        # Extract errors from orders
+        all_errors = [error for order in orders for error in order.errors]
+        
+        # Categorize orders by status
+        active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
+        executed_ids = [order.order_id for order in orders if order.status == OrderStatus.EXECUTED]
+        error_ids = [order.order_id for order in orders if order.status == OrderStatus.ERROR]
         
         # Log errors if any
-        self._log_result_errors(result.errors, "buy")
+        if all_errors:
+            self._log_result_errors(all_errors, "buy")
         
-        return result
+        return OrderOperationResult(
+            orders=orders,
+            error_messages=all_errors,
+            active=active_ids,
+            executed=executed_ids,
+            error=error_ids
+        )
     
     def sell(
         self,
@@ -131,7 +150,7 @@ class Strategy(ABC):
         trigger_price: Optional[PRICE_TYPE] = None,
         stop_loss: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None,
         take_profit: Optional[Union[PRICE_TYPE, List[Tuple[VOLUME_TYPE, PRICE_TYPE]]]] = None
-    ) -> OrderResult:
+    ) -> OrderOperationResult:
         """
         Place a sell order. Supports market, limit, and stop orders.
         
@@ -143,30 +162,34 @@ class Strategy(ABC):
             take_profit: Take profit price. Raises NotImplementedError (not realized).
         
         Returns:
-            OrderResult with 'trades', 'deals', 'orders', and 'errors' lists
+            OrderOperationResult with orders, error_messages, and categorized order IDs
         """
         # Check if stop loss/take profit are specified
         if stop_loss is not None or take_profit is not None:
             raise NotImplementedError("not realized")
         
-        # Validate: either price or trigger_price, but not both
-        if price is not None and trigger_price is not None:
-            error_result = OrderResult(
-                trades=[],
-                deals=[],
-                orders=[],
-                errors=["Cannot specify both price and trigger_price"]
-            )
-            self._log_result_errors(error_result.errors, "sell")
-            return error_result
+        # Execute through broker (returns List[Order])
+        orders = self.broker.sell(quantity, price=price, trigger_price=trigger_price)
         
-        # Execute through broker
-        result = self.broker.sell(quantity, price=price, trigger_price=trigger_price)
+        # Extract errors from orders
+        all_errors = [error for order in orders for error in order.errors]
+        
+        # Categorize orders by status
+        active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
+        executed_ids = [order.order_id for order in orders if order.status == OrderStatus.EXECUTED]
+        error_ids = [order.order_id for order in orders if order.status == OrderStatus.ERROR]
         
         # Log errors if any
-        self._log_result_errors(result.errors, "sell")
+        if all_errors:
+            self._log_result_errors(all_errors, "sell")
         
-        return result
+        return OrderOperationResult(
+            orders=orders,
+            error_messages=all_errors,
+            active=active_ids,
+            executed=executed_ids,
+            error=error_ids
+        )
     
     def logging(self, message: str, level: str = "info") -> None:
         """
@@ -184,7 +207,7 @@ class Strategy(ABC):
     
     def _log_result_errors(self, errors: List[str], method_name: str) -> None:
         """
-        Log errors from result objects (OrderResult, CancelOrderResult).
+        Log errors from result objects (OrderOperationResult).
         Logs to both frontend messages and logger.
         
         Args:
@@ -195,7 +218,7 @@ class Strategy(ABC):
             self.logging(f"{method_name}(): {error}", level="error")
             logger.info(f"{method_name}(): {error}")
     
-    def cancel_orders(self, order_ids: List[int]) -> CancelOrderResult:
+    def cancel_orders(self, order_ids: List[int]) -> OrderOperationResult:
         """
         Cancel orders by their IDs.
         
@@ -203,14 +226,31 @@ class Strategy(ABC):
             order_ids: List of order IDs to cancel
         
         Returns:
-            CancelOrderResult with failed_orders and errors lists
+            OrderOperationResult with canceled order IDs and any errors
         """
-        result = self.broker.cancel_orders(order_ids)
+        canceled_orders = self.broker.cancel_orders(order_ids)
+        
+        # Extract canceled order IDs
+        canceled_ids = [order.order_id for order in canceled_orders]
+        
+        # Find orders that were not found (not in canceled list)
+        error_ids = []
+        error_messages = []
+        for order_id in order_ids:
+            if order_id not in canceled_ids:
+                error_ids.append(order_id)
+                error_messages.append(f"cancel_orders(): Order {order_id} not found")
         
         # Log errors if any
-        self._log_result_errors(result.errors, "cancel_orders")
+        if error_messages:
+            self._log_result_errors(error_messages, "cancel_orders")
         
-        return result
+        return OrderOperationResult(
+            orders=[order.model_copy(deep=True) for order in canceled_orders],
+            error_messages=error_messages,
+            canceled=canceled_ids,
+            error=error_ids
+        )
     
     @staticmethod
     def is_strategy_error(exception: Exception) -> Tuple[bool, Optional[str]]:

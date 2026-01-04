@@ -323,7 +323,7 @@
                   v-model="hideCanceledOrders"
                   class="checkbox-input"
                 />
-                <span>Hide canceled orders</span>
+                <span>Hide inactive/untraded orders</span>
               </label>
             </div>
           </template>
@@ -670,6 +670,12 @@ const ordersColumns = [
   { key: 'order_id', label: 'Order ID', width: '80px' },
   { key: 'deal_id', label: 'Deal ID', width: '80px' },
   { 
+    key: 'order_type', 
+    label: 'Type',
+    width: '80px',
+    format: (value) => value ? value.toUpperCase() : '—'
+  },
+  { 
     key: 'create_time', 
     label: 'Create Time',
     format: (value) => {
@@ -718,10 +724,19 @@ const ordersColumns = [
     format: (value) => value ? parseFloat(value).toFixed(8) : '—'
   },
   { 
-    key: 'active', 
+    key: 'status', 
     label: 'Status',
-    width: '80px',
-    format: (value) => value ? 'Active' : 'Inactive'
+    width: '100px',
+    format: (value) => {
+      const statusMap = {
+        0: 'New',
+        1: 'Active',
+        2: 'Executed',
+        3: 'Canceled',
+        4: 'Error'
+      }
+      return statusMap[value] || 'Unknown'
+    }
   }
 ]
 
@@ -734,15 +749,15 @@ const allOrders = computed(() => getAllOrders())
 // State for hiding canceled orders
 const hideCanceledOrders = ref(false)
 
-// Computed: filtered orders (hide canceled if checkbox is checked)
+// Computed: filtered orders (hide inactive/untraded if checkbox is checked)
 const filteredOrders = computed(() => {
   if (!hideCanceledOrders.value) {
     return allOrders.value
   }
-  // Filter out canceled orders (filled_volume = 0 and not active)
+  // Show only orders with status ACTIVE (1) or with filled_volume != 0
   return allOrders.value.filter(order => {
     const filledVolume = parseFloat(order.filled_volume) || 0
-    return !(filledVolume === 0 && !order.active)
+    return order.status === 1 || filledVolume !== 0
   })
 })
 
@@ -770,9 +785,9 @@ function getDealsRowClass(row) {
 }
 
 function getOrdersRowClass(row) {
-  // Check for cancelled orders (inactive and not executed)
+  // Check for cancelled/error orders (status CANCELED or ERROR with filled_volume = 0)
   const filledVolume = parseFloat(row.filled_volume) || 0
-  if (!row.active && filledVolume === 0) {
+  if ((row.status === 3 || row.status === 4) && filledVolume === 0) {
     return 'row-inactive'
   }
   
@@ -1900,9 +1915,9 @@ async function handleTaskSelected(task) {
     }
     
     // Load fee, price step and slippage parameters
-    navFormRef.value.formData.feeTaker = freshTask.fee_taker || 0.0
-    navFormRef.value.formData.feeMaker = freshTask.fee_maker || 0.0
-    navFormRef.value.formData.priceStep = freshTask.price_step || 0.0
+    navFormRef.value.formData.feeTaker = freshTask.fee_taker !== undefined ? freshTask.fee_taker : 0.0
+    navFormRef.value.formData.feeMaker = freshTask.fee_maker !== undefined ? freshTask.fee_maker : 0.0
+    navFormRef.value.formData.priceStep = freshTask.price_step !== undefined ? freshTask.price_step : 0.0
     navFormRef.value.formData.slippageInSteps = freshTask.slippage_in_steps !== undefined ? freshTask.slippage_in_steps : 1.0
   }
 
@@ -2093,9 +2108,9 @@ async function saveCurrentTask() {
       timeframe: formData.timeframe ? formData.timeframe.toString() : '',
       dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
       dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
-      fee_taker: formData.feeTaker || 0.0,
-      fee_maker: formData.feeMaker || 0.0,
-      price_step: formData.priceStep || 0.0,
+      fee_taker: formData.feeTaker !== undefined ? formData.feeTaker : 0.0,
+      fee_maker: formData.feeMaker !== undefined ? formData.feeMaker : 0.0,
+      price_step: formData.priceStep !== undefined ? formData.priceStep : 0.0,
       slippage_in_steps: formData.slippageInSteps !== undefined ? formData.slippageInSteps : 1.0,
       parameters: customParameters
     }
