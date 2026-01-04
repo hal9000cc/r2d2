@@ -432,6 +432,11 @@ class BackTestingResults:
                 'fee_maker': broker.stats.fee_maker,
                 'slippage': broker.stats.slippage,
                 'price_step': broker.stats.price_step,
+                'source': broker.stats.source,
+                'symbol': broker.stats.symbol,
+                'timeframe': broker.stats.timeframe,
+                'date_start': broker.stats.date_start,
+                'date_end': broker.stats.date_end,
                 'completed': is_finish,
             }
             stats_json = json.dumps(stats_dict)

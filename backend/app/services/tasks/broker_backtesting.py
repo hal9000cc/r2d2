@@ -132,7 +132,8 @@ class BrokerBacktesting(Broker):
         """
         Reset broker state.
         """
-        super().reset()
+        # Pass task to parent reset() to populate stats parameters
+        super().reset(task=self.task)
         self.price = None
         
         # Initialize date range for progress calculation
@@ -150,12 +151,6 @@ class BrokerBacktesting(Broker):
         # Reset equity
         self.equity_usd = 0.0
         self.equity_symbol = 0.0
-        
-        # Initialize backtesting parameters in stats
-        self.stats.fee_taker = self.fee_taker
-        self.stats.fee_maker = self.fee_maker
-        self.stats.slippage = self.slippage
-        self.stats.price_step = self.task.price_step
         
         # Reset limit orders
         self._init_order_arrays()

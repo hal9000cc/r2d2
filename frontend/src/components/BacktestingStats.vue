@@ -59,6 +59,36 @@
         <!-- Testing parameters section -->
         <div class="stats-section-title">Testing parameters</div>
         
+        <!-- Source -->
+        <div v-if="stats?.source" class="stats-row">
+          <span class="stats-label">Source:</span>
+          <span class="stats-value">{{ stats.source }}</span>
+        </div>
+        
+        <!-- Symbol -->
+        <div v-if="stats?.symbol" class="stats-row">
+          <span class="stats-label">Symbol:</span>
+          <span class="stats-value">{{ stats.symbol }}</span>
+        </div>
+        
+        <!-- Timeframe -->
+        <div v-if="stats?.timeframe" class="stats-row">
+          <span class="stats-label">Timeframe:</span>
+          <span class="stats-value">{{ stats.timeframe }}</span>
+        </div>
+        
+        <!-- Date From -->
+        <div v-if="stats?.date_start" class="stats-row">
+          <span class="stats-label">Date From:</span>
+          <span class="stats-value">{{ formatDate(stats.date_start) }}</span>
+        </div>
+        
+        <!-- Date To -->
+        <div v-if="stats?.date_end" class="stats-row">
+          <span class="stats-label">Date To:</span>
+          <span class="stats-value">{{ formatDate(stats.date_end) }}</span>
+        </div>
+        
         <!-- Fee Maker -->
         <div class="stats-row">
           <span class="stats-label">Fee Maker:</span>
@@ -202,6 +232,30 @@ export default {
       }
       
       return num.toFixed(decimalPlaces)
+    },
+    
+    /**
+     * Format date string (YYYY-MM-DD) to readable format
+     * @param {string} dateStr - Date string in YYYY-MM-DD format
+     * @returns {string} Formatted date
+     */
+    formatDate(dateStr) {
+      if (!dateStr) {
+        return '—'
+      }
+      try {
+        const date = new Date(dateStr)
+        if (isNaN(date.getTime())) {
+          return dateStr // Return as-is if invalid
+        }
+        return date.toLocaleDateString('en-US', { 
+          year: 'numeric', 
+          month: '2-digit', 
+          day: '2-digit' 
+        })
+      } catch (e) {
+        return dateStr
+      }
     }
   }
 }

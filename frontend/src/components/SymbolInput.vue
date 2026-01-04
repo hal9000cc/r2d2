@@ -16,6 +16,9 @@
       autocomplete="off"
       title="Trading symbol (e.g., BTC/USDT, ETH/USD)"
       @input="handleInput"
+      @blur="handleBlur"
+      @keydown.enter="handleEnter"
+      @change="handleChange"
     />
     <datalist :id="datalistId">
       <option v-for="symbol in symbols" :key="symbol" :value="symbol"></option>
@@ -58,7 +61,7 @@ export default {
       default: false
     }
   },
-  emits: ['update:modelValue', 'change', 'valid'],
+  emits: ['update:modelValue', 'change', 'valid', 'load-info'],
   data() {
     return {
       symbolsCache: {} // Cache symbols by source: { source: [symbols] }
@@ -173,6 +176,27 @@ export default {
             this.$emit('change', exactMatch)
           })
         }
+      }
+    },
+    handleBlur(event) {
+      // Emit load-info event when field loses focus
+      if (this.modelValue && this.isSourceValid) {
+        this.$emit('load-info', this.modelValue)
+      }
+    },
+    handleEnter(event) {
+      // Emit load-info event when Enter is pressed
+      if (this.modelValue && this.isSourceValid) {
+        this.$emit('load-info', this.modelValue)
+      }
+    },
+    handleChange(event) {
+      // Emit load-info event when value changes (e.g., selection from datalist)
+      // This fires when user selects from datalist dropdown
+      const inputValue = event.target.value
+      if (inputValue && this.isSourceValid && inputValue === this.modelValue) {
+        // Only emit if value matches current modelValue (to avoid duplicate calls)
+        this.$emit('load-info', inputValue)
       }
     }
   }

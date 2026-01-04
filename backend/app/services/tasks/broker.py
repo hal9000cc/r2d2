@@ -3,13 +3,16 @@ Generic broker classes for handling trading operations.
 """
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, TYPE_CHECKING
 
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.core.logger import get_logger
+
+if TYPE_CHECKING:
+    from app.services.tasks.tasks import Task
 
 logger = get_logger(__name__)
 
@@ -102,6 +105,11 @@ class TradingStats(BaseModel):
     fee_maker: PRICE_TYPE = 0.0  # Maker fee rate (as fraction, e.g., 0.001 for 0.1%)
     slippage: PRICE_TYPE = 0.0  # Slippage value (absolute, in currency, e.g., 0.001 USD)
     price_step: PRICE_TYPE = 0.0  # Price step (minimum step size, e.g., 0.1, 0.001)
+    source: str  # Data source (exchange name)
+    symbol: str  # Trading symbol
+    timeframe: str  # Timeframe
+    date_start: str  # Start date (ISO format)
+    date_end: str  # End date (ISO format)
     
     def add_trade(self, trade: 'Broker.Trade') -> None:
         """
@@ -350,16 +358,36 @@ class Broker(ABC):
 
         raise NotImplementedError
 
-    def reset(self, initial_equity_usd: PRICE_TYPE = 0.0) -> None:
+    def reset(self, initial_equity_usd: PRICE_TYPE = 0.0, *, task: 'Task') -> None:
         """
         Reset broker state. Initialize deals list and trades list.
         
         Args:
             initial_equity_usd: Initial capital in USD for statistics
+            task: Task instance to populate backtesting parameters in stats
         """
         self.deals = []
         self.trades = []
-        self.stats = TradingStats(initial_equity_usd=initial_equity_usd)
+        
+        # Get fee and slippage values (with defaults if not set)
+        fee_taker = task.fee_taker if task.fee_taker > 0 else 0.001
+        fee_maker = task.fee_maker if task.fee_maker > 0 else 0.001
+        slippage = (task.slippage_in_steps * task.price_step) if task.price_step > 0 else 0.0
+        
+        # Create stats with all backtesting parameters from task
+        self.stats = TradingStats(
+            initial_equity_usd=initial_equity_usd,
+            fee_taker=fee_taker,
+            fee_maker=fee_maker,
+            slippage=slippage,
+            price_step=task.price_step,
+            source=task.source,
+            symbol=task.symbol,
+            timeframe=task.timeframe,
+            date_start=task.dateStart,
+            date_end=task.dateEnd
+        )
+        
         self.last_auto_deal_id = None
 
     def check_trading_results(self) -> List[str]:

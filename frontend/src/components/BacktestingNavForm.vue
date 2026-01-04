@@ -16,6 +16,7 @@
         input-id="backtesting-symbol"
         :required="true"
         :disabled="disabled"
+        @load-info="handleSymbolLoadInfo"
       />
       <button
         class="info-btn"
@@ -123,7 +124,7 @@
         type="number"
         step="0.1"
         min="0"
-        class="form-input"
+        class="form-input no-spinner"
         :disabled="disabled"
         placeholder="0.0"
         title="Slippage in price steps for backtesting (e.g., 1.0 means 1 step). Applied to market orders only during testing."
@@ -333,14 +334,6 @@ export default {
       },
       deep: true
     },
-    // Watch for symbol changes to auto-fill fees and slippage
-    'formData.symbol': {
-      handler(newSymbol, oldSymbol) {
-        if (newSymbol && newSymbol !== oldSymbol && this.formData.source && this.isSourceValid) {
-          this.loadSymbolInfo()
-        }
-      }
-    },
     'formData.source': {
       handler(newSource, oldSource) {
         // Reset symbol info when source changes
@@ -353,6 +346,12 @@ export default {
     }
   },
   methods: {
+    handleSymbolLoadInfo(symbol) {
+      // Called when symbol input loses focus, Enter is pressed, or value is selected from datalist
+      if (symbol && this.formData.source && this.isSourceValid) {
+        this.loadSymbolInfo()
+      }
+    },
     handleAction() {
       if (this.isRunning) {
         this.$emit('stop')
