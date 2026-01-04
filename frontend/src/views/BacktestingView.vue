@@ -315,6 +315,16 @@
                 Clear
               </button>
             </div>
+            <div v-if="activeTab === 'orders'" class="header-actions">
+              <label class="checkbox-label">
+                <input 
+                  type="checkbox" 
+                  v-model="hideCanceledOrders"
+                  class="checkbox-input"
+                />
+                <span>Hide canceled orders</span>
+              </label>
+            </div>
           </template>
           <template #messages>
             <MessagesPanel :messages="allMessages" />
@@ -347,7 +357,7 @@
             <DataTable 
               ref="ordersTableRef"
               :columns="ordersColumns"
-              :data="allOrders"
+              :data="filteredOrders"
               row-key="order_id"
               :row-class="getOrdersRowClass"
               empty-message="No orders yet"
@@ -719,6 +729,21 @@ const dealsArray = computed(() => getAllDeals())
 
 // Computed: orders as array for table
 const allOrders = computed(() => getAllOrders())
+
+// State for hiding canceled orders
+const hideCanceledOrders = ref(false)
+
+// Computed: filtered orders (hide canceled if checkbox is checked)
+const filteredOrders = computed(() => {
+  if (!hideCanceledOrders.value) {
+    return allOrders.value
+  }
+  // Filter out canceled orders (execute_volume = 0 and not active)
+  return allOrders.value.filter(order => {
+    const executeVolume = parseFloat(order.execute_volume) || 0
+    return !(executeVolume === 0 && !order.active)
+  })
+})
 
 // Row class functions for table row coloring
 function getTradesRowClass(row) {
@@ -2611,6 +2636,23 @@ async function handleSaveStrategy() {
 
 .save-btn {
   margin-right: var(--spacing-sm);
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--color-primary);
 }
 
 .strategy-error {
