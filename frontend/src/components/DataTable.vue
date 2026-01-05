@@ -35,6 +35,19 @@
         </tr>
       </tbody>
     </table>
+    <!-- Context menu -->
+    <div 
+      v-if="contextMenuVisible"
+      ref="contextMenu"
+      class="context-menu"
+      :style="contextMenuStyle"
+      @click.stop
+    >
+      <div class="context-menu-item" @click="handleCopyClick">
+        <span class="context-menu-item-label">Copy</span>
+        <span class="context-menu-item-shortcut">Ctrl+C</span>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -78,7 +91,13 @@ export default {
   data() {
     return {
       selectedRowKey: null,
-      rowRefs: []
+      rowRefs: [],
+      contextMenuVisible: false,
+      contextMenuStyle: {
+        top: '0px',
+        left: '0px'
+      },
+      contextMenuRow: null
     }
   },
   watch: {
@@ -176,17 +195,73 @@ export default {
     handleRowContextMenu(event, row, index) {
       if (!this.enabled) return
       
+      // Prevent default browser context menu
+      event.preventDefault()
+      
       // Select row on right-click
       const rowKey = this.getRowKey(row, index)
       this.selectRow(rowKey)
       
-      // Emit contextmenu event with row data for parent to handle
+      // Store row for context menu
+      this.contextMenuRow = row
+      
+      // Show context menu at cursor position
+      this.showContextMenu(event)
+      
+      // Also emit contextmenu event for backward compatibility
       this.$emit('row-contextmenu', {
         event,
         row,
         index,
         rowKey
       })
+    },
+    showContextMenu(event) {
+      // Use fixed positioning relative to viewport
+      const menuWidth = 120 // Approximate menu width
+      const menuHeight = 40 // Approximate menu height
+      
+      let left = event.clientX
+      let top = event.clientY
+      
+      // Adjust if menu would go outside viewport
+      if (left + menuWidth > window.innerWidth) {
+        left = window.innerWidth - menuWidth - 5
+      }
+      if (top + menuHeight > window.innerHeight) {
+        top = window.innerHeight - menuHeight - 5
+      }
+      
+      // Ensure menu doesn't go off-screen on the left or top
+      left = Math.max(5, left)
+      top = Math.max(5, top)
+      
+      this.contextMenuStyle = {
+        top: `${top}px`,
+        left: `${left}px`,
+        position: 'fixed'
+      }
+      
+      this.contextMenuVisible = true
+      
+      // Close menu on outside click
+      this.$nextTick(() => {
+        document.addEventListener('click', this.hideContextMenu, { once: true })
+        document.addEventListener('contextmenu', this.hideContextMenu, { once: true })
+      })
+    },
+    hideContextMenu() {
+      this.contextMenuVisible = false
+      this.contextMenuRow = null
+    },
+    handleCopyClick() {
+      if (this.contextMenuRow) {
+        // Emit copy event with row data
+        this.$emit('row-copy', {
+          row: this.contextMenuRow
+        })
+      }
+      this.hideContextMenu()
     },
     handleContainerClick(event) {
       // If clicking on container but not on a row, deselect
@@ -543,6 +618,43 @@ export default {
 /* Make container focusable for keyboard navigation */
 .data-table-container:focus {
   outline: none;
+}
+
+.context-menu {
+  position: fixed;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 10000;
+  min-width: 120px;
+  padding: var(--spacing-xs) 0;
+}
+
+.context-menu-item {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  user-select: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.context-menu-item:hover {
+  background-color: var(--bg-hover);
+}
+
+.context-menu-item-label {
+  flex: 1;
+}
+
+.context-menu-item-shortcut {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-family: monospace;
 }
 </style>
 

@@ -341,6 +341,7 @@
               :enabled="activeTab === 'trades'"
               :on-row-selected="handleTradeSelected"
               @row-contextmenu="handleTradeContextMenu"
+              @row-copy="handleTradeCopy"
             />
           </template>
           <template #deals>
@@ -354,6 +355,7 @@
               :enabled="activeTab === 'deals'"
               :on-row-selected="handleDealSelected"
               @row-contextmenu="handleDealContextMenu"
+              @row-copy="handleDealCopy"
             />
           </template>
           <template #orders>
@@ -367,6 +369,7 @@
               :enabled="activeTab === 'orders'"
               :on-row-selected="handleOrderSelected"
               @row-contextmenu="handleOrderContextMenu"
+              @row-copy="handleOrderCopy"
             />
           </template>
         </Tabs>
@@ -818,6 +821,18 @@ function handleTradeContextMenu({ row }) {
 }
 
 function handleDealContextMenu({ row }) {
+  copyRowToClipboard(row, 'deals')
+}
+
+function handleOrderCopy({ row }) {
+  copyRowToClipboard(row, 'orders')
+}
+
+function handleTradeCopy({ row }) {
+  copyRowToClipboard(row, 'trades')
+}
+
+function handleDealCopy({ row }) {
   copyRowToClipboard(row, 'deals')
 }
 
