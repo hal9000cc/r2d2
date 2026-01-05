@@ -243,6 +243,7 @@ class BrokerBacktesting(Broker):
             # Check quantity
             if order.volume <= 0:
                 order.errors.append(f"Order quantity must be greater than 0, got {order.volume}")
+                order.status = OrderStatus.ERROR
                 error_count += 1
             
             # Check: either price or trigger_price, but not both
@@ -353,35 +354,30 @@ class BrokerBacktesting(Broker):
                     if self.price is None:
                         raise RuntimeError("Cannot execute market order: price is not set")
                     
-                    # Calculate execution price with slippage
-                    execution_price = self.price
-                    if self.slippage > 0:
-                        if order.side == OrderSide.BUY:
-                            # Buy: slippage increases price (unfavorable)
-                            execution_price = self.price + self.slippage
-                        else:  # SELL
-                            # Sell: slippage decreases price (unfavorable)
-                            execution_price = self.price - self.slippage
-                    
                     # Update order state before execution
-                    order.price = execution_price
+                    # Note: slippage will be applied in _execute_trade(), so we store base price here
+                    order.price = self.price
                     order.modify_time = self.current_time
                     
                     # Add to orders list for history (before execution)
                     order.order_id = len(self.orders) + 1
                     self.orders.append(order)
                     
-                    # Execute trade
+                    # Execute trade (slippage will be applied in _execute_trade for market orders)
                     self._execute_trade(
                         order.side,
                         order.volume,
-                        execution_price,
+                        self.price,  # Pass base price, slippage applied in _execute_trade
                         deal_id=order.deal_id,
                         order_id=order.order_id,
                         is_market_order=True
                     )
                     
                     # Update order state after execution
+                    # Get actual execution price from the trade that was just created
+                    if len(self.trades) > 0:
+                        last_trade = self.trades[-1]
+                        order.price = last_trade.price  # Update with actual execution price (with slippage)
                     order.filled_volume = order.volume
                     order.status = OrderStatus.EXECUTED
                     
@@ -662,6 +658,7 @@ class BrokerBacktesting(Broker):
         )
         # Mark order as executed
         order.filled_volume = order.volume
+        order.price = execution_price  # Set execution price
         order.status = OrderStatus.EXECUTED
         # Update modify_time to execution time
         order.modify_time = self.current_time
@@ -678,9 +675,9 @@ class BrokerBacktesting(Broker):
             high: High price of current bar
             low: Low price of current bar
         """
-        # Check long limit orders (BUY): triggered if low < price
+        # Check long limit orders (BUY): triggered if low <= price
         if len(self.long_order_ids) > 0:
-            triggered_mask = low < self.long_order_prices
+            triggered_mask = low <= self.long_order_prices
             triggered_order_ids = self.long_order_ids[triggered_mask]
             
             if len(triggered_order_ids) > 0:
