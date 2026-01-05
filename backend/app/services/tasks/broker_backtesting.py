@@ -574,7 +574,7 @@ class BrokerBacktesting(Broker):
         Args:
             order: Order to add
         """
-        if order.trigger_price is not None:
+        if order.order_type == OrderType.STOP:
             # Stop order
             if order.side == OrderSide.BUY:
                 # Add to long stop arrays
@@ -584,7 +584,7 @@ class BrokerBacktesting(Broker):
                 # Add to short stop arrays
                 self.short_stop_order_ids = np.append(self.short_stop_order_ids, order.order_id)
                 self.short_stop_trigger_prices = np.append(self.short_stop_trigger_prices, order.trigger_price)
-        else:
+        elif order.order_type == OrderType.LIMIT:
             # Limit order
             if order.side == OrderSide.BUY:
                 # Add to long arrays
@@ -594,36 +594,38 @@ class BrokerBacktesting(Broker):
                 # Add to short arrays
                 self.short_order_ids = np.append(self.short_order_ids, order.order_id)
                 self.short_order_prices = np.append(self.short_order_prices, order.price)
+        else:
+            raise ValueError(f"Invalid order type: {order.order_type} in _add_order_to_arrays: {order.order_id}")
     
-    def _remove_order_from_arrays(self, order_id: int, side: OrderSide, is_stop_order: bool = False) -> None:
+    def _remove_order_from_arrays(self, order: Order) -> None:
         """
         Remove order from numpy arrays.
         
         Args:
-            order_id: Order ID to remove
-            side: Order side (BUY or SELL)
-            is_stop_order: True if this is a stop order, False if limit order
+            order: Order to remove
         """
-        if is_stop_order:
+        if order.order_type == OrderType.STOP:
             # Remove from stop arrays
-            if side == OrderSide.BUY:
-                mask = self.long_stop_order_ids != order_id
+            if order.side == OrderSide.BUY:
+                mask = self.long_stop_order_ids != order.order_id
                 self.long_stop_order_ids = self.long_stop_order_ids[mask]
                 self.long_stop_trigger_prices = self.long_stop_trigger_prices[mask]
             else:  # SELL
-                mask = self.short_stop_order_ids != order_id
+                mask = self.short_stop_order_ids != order.order_id
                 self.short_stop_order_ids = self.short_stop_order_ids[mask]
                 self.short_stop_trigger_prices = self.short_stop_trigger_prices[mask]
-        else:
+        elif order.order_type == OrderType.LIMIT:
             # Remove from limit arrays
-            if side == OrderSide.BUY:
-                mask = self.long_order_ids != order_id
+            if order.side == OrderSide.BUY:
+                mask = self.long_order_ids != order.order_id
                 self.long_order_ids = self.long_order_ids[mask]
                 self.long_order_prices = self.long_order_prices[mask]
             else:  # SELL
-                mask = self.short_order_ids != order_id
+                mask = self.short_order_ids != order.order_id
                 self.short_order_ids = self.short_order_ids[mask]
                 self.short_order_prices = self.short_order_prices[mask]
+        else:
+            raise ValueError(f"Invalid order type: {order.order_type} in _remove_order_from_arrays: {order.order_id}")
     
     def _execute_triggered_order(self, order: Order, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
         """
@@ -638,14 +640,16 @@ class BrokerBacktesting(Broker):
             return
         
         # Determine execution price based on order type
-        if order.trigger_price is not None:
+        if order.order_type == OrderType.STOP:
             # Stop order: execute at trigger_price
             execution_price = order.trigger_price
-            order_type = "stop"
-        else:
+        elif order.order_type == OrderType.LIMIT:
             # Limit order: execute at limit price
             execution_price = order.price
-            order_type = "limit"
+        else:
+            # Should not happen for triggered orders, but handle gracefully
+            logger.warning(f"Unexpected order type {order.order_type} in _execute_triggered_order {order.order_id}")
+            return
         
         # Execute order (limit/stop orders are not market orders, so no slippage, use fee_maker)
         self._execute_trade(
@@ -662,20 +666,8 @@ class BrokerBacktesting(Broker):
         # Update modify_time to execution time
         order.modify_time = self.current_time
         
-        # Log execution
-        if order_type == "stop":
-            logger.debug(
-                f"Stop order executed: order_id={order.order_id}, "
-                f"side={order.side.value}, trigger_price={order.trigger_price}, "
-                f"execution_price={execution_price}, volume={order.volume}, "
-                f"bar_high={high}, bar_low={low}"
-            )
-        else:
-            logger.debug(
-                f"Limit order executed: order_id={order.order_id}, "
-                f"side={order.side.value}, price={order.price}, "
-                f"volume={order.volume}, bar_high={high}, bar_low={low}"
-            )
+        # Remove order from arrays (no longer active)
+        self._remove_order_from_arrays(order)
     
     def _check_and_execute_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
         """
@@ -762,8 +754,7 @@ class BrokerBacktesting(Broker):
                     order.modify_time = order.create_time
                 
                 # Remove from numpy arrays
-                is_stop_order = order.trigger_price is not None
-                self._remove_order_from_arrays(order_id, order.side, is_stop_order)
+                self._remove_order_from_arrays(order)
             
             # Add copy to result (whether it was ACTIVE and canceled, or already non-ACTIVE)
             canceled_orders.append(order.model_copy(deep=True))
@@ -945,6 +936,9 @@ class BrokerBacktesting(Broker):
             close_array = all_close[:i_time+1]
             volume_array = all_volume[:i_time+1]
             
+            # Check for triggered limit orders FIRST (before on_bar, so orders can execute before strategy cancels them)
+            self._check_and_execute_orders(all_high[i_time], all_low[i_time])
+            
             # Call on_bar callback with all necessary data
             if 'on_bar' in self.callbacks:
                 self.callbacks['on_bar'](
@@ -959,9 +953,6 @@ class BrokerBacktesting(Broker):
                     self.equity_usd,
                     self.equity_symbol
                 )
-            
-            # Check for triggered limit orders
-            self._check_and_execute_orders(all_high[i_time], all_low[i_time])
             
             # Check if it's time to update state and progress
             current_time = time.time()
