@@ -40,7 +40,8 @@ async def get_backtesting_tasks():
     tasks = task_list.list()
     result = []
     for task in tasks:
-        task_dict = task.model_dump()
+        # Use exclude_unset=False to include all fields, even with default values
+        task_dict = task.model_dump(exclude_unset=False)
         result.append(task_dict)
     return result
 
@@ -60,14 +61,16 @@ async def get_backtesting_task(task_id: int):
     # If task_id == 0, return empty task with new ID
     if task_id == 0:
         task = task_list.new()
-        task_dict = task.model_dump()
+        # Use exclude_unset=False to include all fields, even with default values
+        task_dict = task.model_dump(exclude_unset=False)
         return task_dict
     
     task = task_list.load(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    task_dict = task.model_dump()
+    # Use model_dump with exclude_unset=False to include all fields, even with default values
+    task_dict = task.model_dump(exclude_unset=False)
     return task_dict
 
 
@@ -112,7 +115,8 @@ async def create_backtesting_task(task_data: Dict[str, Any]):
     # Save task
     saved_task = task.save()
     
-    task_dict = saved_task.model_dump()
+    # Use exclude_unset=False to include all fields, even with default values
+    task_dict = saved_task.model_dump(exclude_unset=False)
     return task_dict
 
 
@@ -149,7 +153,8 @@ async def update_backtesting_task(task_id: int, task_data: Dict[str, Any]):
     # save() will add or update the task
     updated_task = task.save()
     
-    task_dict = updated_task.model_dump()
+    # Use exclude_unset=False to include all fields, even with default values
+    task_dict = updated_task.model_dump(exclude_unset=False)
     return task_dict
 
 

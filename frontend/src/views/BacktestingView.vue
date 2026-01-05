@@ -2026,6 +2026,13 @@ async function handleTaskSelected(task) {
       // Convert string timeframe from API to Timeframe object
       const timeframeStr = freshTask.timeframe || ''
       navFormRef.value.formData.timeframe = timeframesComposable?.getTimeframe(timeframeStr) || null
+      
+      // Set fee, price step and slippage parameters AFTER source watcher has processed
+      // This ensures watcher doesn't reset these fields
+      navFormRef.value.formData.feeTaker = freshTask.fee_taker !== undefined && freshTask.fee_taker !== null ? freshTask.fee_taker : 0.0
+      navFormRef.value.formData.feeMaker = freshTask.fee_maker !== undefined && freshTask.fee_maker !== null ? freshTask.fee_maker : 0.0
+      navFormRef.value.formData.priceStep = freshTask.price_step !== undefined && freshTask.price_step !== null ? freshTask.price_step : 0.0
+      navFormRef.value.formData.slippageInSteps = freshTask.slippage_in_steps !== undefined && freshTask.slippage_in_steps !== null ? freshTask.slippage_in_steps : 1.0
     })
 
     // Convert ISO dates to YYYY-MM-DD format for date inputs
@@ -2037,12 +2044,6 @@ async function handleTaskSelected(task) {
       const dateEnd = new Date(freshTask.dateEnd)
       navFormRef.value.formData.dateTo = dateEnd.toISOString().split('T')[0]
     }
-    
-    // Load fee, price step and slippage parameters
-    navFormRef.value.formData.feeTaker = freshTask.fee_taker !== undefined ? freshTask.fee_taker : 0.0
-    navFormRef.value.formData.feeMaker = freshTask.fee_maker !== undefined ? freshTask.fee_maker : 0.0
-    navFormRef.value.formData.priceStep = freshTask.price_step !== undefined ? freshTask.price_step : 0.0
-    navFormRef.value.formData.slippageInSteps = freshTask.slippage_in_steps !== undefined ? freshTask.slippage_in_steps : 1.0
   }
 
   // 7. Load parameters from task
@@ -2290,33 +2291,31 @@ async function saveAll() {
 }
 async function saveAllSync() {
   // Save all synchronously (for beforeunload/unmount)
-  if (!currentStrategyFilePath.value || !isStrategyLoaded.value) {
-    return
-  }
-
   try {
-    // Save strategy using sendBeacon or sync XHR
-    const strategyData = JSON.stringify({
-      file_path: currentStrategyFilePath.value,
-      text: strategyCode.value
-    })
-    
-    if (navigator.sendBeacon) {
-      const blob = new Blob([strategyData], { type: 'application/json' })
-      const url = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`
-      navigator.sendBeacon(url, blob)
-    } else {
-      try {
-        const xhr = new XMLHttpRequest()
-        xhr.open('POST', `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`, false)
-        xhr.setRequestHeader('Content-Type', 'application/json')
-        xhr.send(strategyData)
-      } catch (error) {
-        console.error('Failed to save strategy on page unload:', error)
+    // Save strategy if available
+    if (currentStrategyFilePath.value && isStrategyLoaded.value) {
+      const strategyData = JSON.stringify({
+        file_path: currentStrategyFilePath.value,
+        text: strategyCode.value
+      })
+      
+      if (navigator.sendBeacon) {
+        const blob = new Blob([strategyData], { type: 'application/json' })
+        const url = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`
+        navigator.sendBeacon(url, blob)
+      } else {
+        try {
+          const xhr = new XMLHttpRequest()
+          xhr.open('POST', `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`, false)
+          xhr.setRequestHeader('Content-Type', 'application/json')
+          xhr.send(strategyData)
+        } catch (error) {
+          console.error('Failed to save strategy on page unload:', error)
+        }
       }
     }
 
-    // Save task if available
+    // Save task if available (even if strategy is not loaded)
     const taskData = prepareTaskData()
     if (taskData) {
       const taskDataJson = JSON.stringify(taskData)
