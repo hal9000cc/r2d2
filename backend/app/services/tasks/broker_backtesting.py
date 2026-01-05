@@ -4,7 +4,7 @@ Broker class for handling trading operations and backtesting execution.
 from typing import Optional, Dict, Callable, List, Tuple
 import numpy as np
 import time
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
@@ -35,7 +35,7 @@ class Order(BaseModel):
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
-    order_id: int = Field(gt=0)
+    order_id: int = Field(description="Order ID (assigned when order is added to orders list)")
     deal_id: Optional[int] = None
     order_type: OrderType  # Type of order: limit or stop (market orders are not stored as Order objects)
     create_time: np.datetime64
@@ -47,6 +47,17 @@ class Order(BaseModel):
     filled_volume: VOLUME_TYPE = 0.0
     status: OrderStatus = OrderStatus.NEW
     errors: List[str] = Field(default_factory=list)  # List of validation/execution errors
+    
+    @model_validator(mode='after')
+    def validate_order_id(self):
+        """Validate that order_id is greater than 0 if order is not in NEW or ERROR status.
+        
+        Orders with ERROR status may have order_id=0 if they failed validation before being added to orders list.
+        Orders with NEW status have order_id=0 until they are processed in execute_orders().
+        """
+        if self.order_id <= 0 and self.status not in (OrderStatus.NEW, OrderStatus.ERROR):
+            raise ValueError(f"order_id must be greater than 0 for orders with status {self.status}")
+        return self
 
 
 class BrokerBacktesting(Broker):
@@ -153,7 +164,7 @@ class BrokerBacktesting(Broker):
         # Reset equity
         self.equity_usd = 0.0
         self.equity_symbol = 0.0
-        
+    
         # Reset limit orders
         self._init_order_arrays()
     
@@ -267,16 +278,18 @@ class BrokerBacktesting(Broker):
                     if order.side == OrderSide.BUY:
                         # For BUY limit: current price must be >= limit price (limit below or equal to current)
                         if self.price < order.price:
+                            time_str = datetime64_to_iso(self.current_time)
                             order.errors.append(
-                                f"BUY limit order price ({order.price}) must be below or equal to current price ({self.price})"
+                                f"BUY limit order price ({order.price}) must be below or equal to current price ({self.price}) at time {time_str}"
                             )
                             order.status = OrderStatus.ERROR
                             error_count += 1
                     else:  # SELL
                         # For SELL limit: current price must be <= limit price (limit above or equal to current)
                         if self.price > order.price:
+                            time_str = datetime64_to_iso(self.current_time)
                             order.errors.append(
-                                f"SELL limit order price ({order.price}) must be above or equal to current price ({self.price})"
+                                f"SELL limit order price ({order.price}) must be above or equal to current price ({self.price}) at time {time_str}"
                             )
                             order.status = OrderStatus.ERROR
                             error_count += 1
@@ -296,16 +309,18 @@ class BrokerBacktesting(Broker):
                     if order.side == OrderSide.BUY:
                         # For BUY stop: current price must be < trigger_price
                         if self.price >= order.trigger_price:
+                            time_str = datetime64_to_iso(self.current_time)
                             order.errors.append(
-                                f"BUY stop order trigger_price ({order.trigger_price}) must be above current price ({self.price})"
+                                f"BUY stop order trigger_price ({order.trigger_price}) must be above current price ({self.price}) at time {time_str}"
                             )
                             order.status = OrderStatus.ERROR
                             error_count += 1
                     else:  # SELL
                         # For SELL stop: current price must be > trigger_price
                         if self.price <= order.trigger_price:
+                            time_str = datetime64_to_iso(self.current_time)
                             order.errors.append(
-                                f"SELL stop order trigger_price ({order.trigger_price}) must be below current price ({self.price})"
+                                f"SELL stop order trigger_price ({order.trigger_price}) must be below current price ({self.price}) at time {time_str}"
                             )
                             order.status = OrderStatus.ERROR
                             error_count += 1

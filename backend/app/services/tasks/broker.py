@@ -452,12 +452,12 @@ class Broker(ABC):
             # Compare with stored values using tolerance for floating point
             tolerance = 1e-10
             comparisons = [
-                ('buy_quantity', deal.buy_quantity, recalc_buy_quantity),
-                ('buy_cost', deal.buy_cost, recalc_buy_cost),
-                ('sell_quantity', deal.sell_quantity, recalc_sell_quantity),
-                ('sell_proceeds', deal.sell_proceeds, recalc_sell_proceeds),
-                ('fee', deal.fee, recalc_fee),
-            ]
+                    ('buy_quantity', deal.buy_quantity, recalc_buy_quantity),
+                    ('buy_cost', deal.buy_cost, recalc_buy_cost),
+                    ('sell_quantity', deal.sell_quantity, recalc_sell_quantity),
+                    ('sell_proceeds', deal.sell_proceeds, recalc_sell_proceeds),
+                    ('fee', deal.fee, recalc_fee),
+                ]
             
             for field, stored, recalc in comparisons:
                 if abs(stored - recalc) > tolerance:

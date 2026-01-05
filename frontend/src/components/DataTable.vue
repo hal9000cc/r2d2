@@ -27,6 +27,7 @@
           :ref="el => setRowRef(el, index)"
           :class="getRowClass(row, index)"
           @click.stop="handleRowClick(row, index)"
+          @contextmenu.stop="handleRowContextMenu($event, row, index)"
         >
           <td v-for="column in columns" :key="column.key" :class="getCellClass(column, row)">
             {{ formatCell(row[column.key], column, row) }}
@@ -171,6 +172,21 @@ export default {
       
       const rowKey = this.getRowKey(row, index)
       this.selectRow(rowKey)
+    },
+    handleRowContextMenu(event, row, index) {
+      if (!this.enabled) return
+      
+      // Select row on right-click
+      const rowKey = this.getRowKey(row, index)
+      this.selectRow(rowKey)
+      
+      // Emit contextmenu event with row data for parent to handle
+      this.$emit('row-contextmenu', {
+        event,
+        row,
+        index,
+        rowKey
+      })
     },
     handleContainerClick(event) {
       // If clicking on container but not on a row, deselect
@@ -376,6 +392,14 @@ export default {
     deselect() {
       if (!this.enabled) return
       this.selectedRowKey = null
+    },
+    getSelectedRow() {
+      if (this.selectedRowKey === null) return null
+      
+      const index = this.data.findIndex((row, idx) => this.getRowKey(row, idx) === this.selectedRowKey)
+      if (index === -1) return null
+      
+      return this.data[index]
     }
   }
 }

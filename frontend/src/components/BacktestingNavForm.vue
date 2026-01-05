@@ -9,13 +9,13 @@
       title="Exchange or data source (e.g., binance, bybit)"
     />
     <div class="symbol-input-wrapper">
-      <SymbolInput
-        v-model="formData.symbol"
-        :source="formData.source"
-        :is-source-valid="isSourceValid"
-        input-id="backtesting-symbol"
-        :required="true"
-        :disabled="disabled"
+    <SymbolInput
+      v-model="formData.symbol"
+      :source="formData.source"
+      :is-source-valid="isSourceValid"
+      input-id="backtesting-symbol"
+      :required="true"
+      :disabled="disabled"
         @load-info="handleSymbolLoadInfo"
       />
       <button

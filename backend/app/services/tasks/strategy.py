@@ -11,8 +11,11 @@ from app.core.logger import get_logger
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 
+# Import Order for runtime use (needed for OrderOperationResult)
+from app.services.tasks.broker_backtesting import Order
+
 if TYPE_CHECKING:
-    from app.services.tasks.broker_backtesting import BrokerBacktesting as Broker, ta_proxy, Order
+    from app.services.tasks.broker_backtesting import BrokerBacktesting as Broker, ta_proxy
 
 logger = get_logger(__name__)
 

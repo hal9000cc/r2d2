@@ -340,6 +340,7 @@
               empty-message="No trades yet"
               :enabled="activeTab === 'trades'"
               :on-row-selected="handleTradeSelected"
+              @row-contextmenu="handleTradeContextMenu"
             />
           </template>
           <template #deals>
@@ -352,6 +353,7 @@
               empty-message="No deals yet"
               :enabled="activeTab === 'deals'"
               :on-row-selected="handleDealSelected"
+              @row-contextmenu="handleDealContextMenu"
             />
           </template>
           <template #orders>
@@ -364,6 +366,7 @@
               empty-message="No orders yet"
               :enabled="activeTab === 'orders'"
               :on-row-selected="handleOrderSelected"
+              @row-contextmenu="handleOrderContextMenu"
             />
           </template>
         </Tabs>
@@ -511,6 +514,7 @@ const strategyParametersRef = ref(null)
 const chartPanelRef = ref(null)
 const tradesTableRef = ref(null)
 const dealsTableRef = ref(null)
+const ordersTableRef = ref(null)
 
 // Use backtesting composable
 const {
@@ -803,6 +807,18 @@ function getOrdersRowClass(row) {
 function handleOrderSelected(order) {
   // Optional: handle order selection
   // Similar to handleTradeSelected or handleDealSelected
+}
+
+function handleOrderContextMenu({ row }) {
+  copyRowToClipboard(row, 'orders')
+}
+
+function handleTradeContextMenu({ row }) {
+  copyRowToClipboard(row, 'trades')
+}
+
+function handleDealContextMenu({ row }) {
+  copyRowToClipboard(row, 'deals')
 }
 
 // Computed properties
@@ -1641,9 +1657,15 @@ function determineActiveContext() {
   if (activeTab.value === 'trades' && tradesTableRef.value) {
     context.table = true
     context.tableRef = tradesTableRef.value
+    context.tableType = 'trades'
   } else if (activeTab.value === 'deals' && dealsTableRef.value) {
     context.table = true
     context.tableRef = dealsTableRef.value
+    context.tableType = 'deals'
+  } else if (activeTab.value === 'orders' && ordersTableRef.value) {
+    context.table = true
+    context.tableRef = ordersTableRef.value
+    context.tableType = 'orders'
   }
   
   // Check if chart is active
@@ -1707,6 +1729,18 @@ function routeTableCommand(event) {
   
   if (!context.table || !context.tableRef) return
   
+  // Handle Ctrl+C (or Cmd+C on Mac) for copying selected row
+  // Use event.code instead of event.key to work regardless of keyboard layout
+  if ((event.ctrlKey || event.metaKey) && event.code === 'KeyC') {
+    const selectedRow = context.tableRef.getSelectedRow()
+    if (selectedRow) {
+      copyRowToClipboard(selectedRow, context.tableType)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      return
+    }
+  }
+  
   // Ignore modifiers for table navigation
   if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return
   
@@ -1746,6 +1780,81 @@ function routeTableCommand(event) {
   if (handled) {
     event.preventDefault()
     event.stopImmediatePropagation()
+  }
+}
+
+/**
+ * Copy selected row data to clipboard
+ * @param {Object} row - Selected row data
+ * @param {string} tableType - Type of table: 'trades', 'deals', or 'orders'
+ */
+function copyRowToClipboard(row, tableType) {
+  let text = ''
+  
+  if (tableType === 'orders') {
+    // Format order data as key-value pairs
+    const orderData = {
+      'Order ID': row.order_id,
+      'Deal ID': row.deal_id || '—',
+      'Type': row.order_type ? row.order_type.toUpperCase() : '—',
+      'Create Time': row.create_time ? new Date(row.create_time).toISOString().replace('T', ' ').substring(0, 19) : '—',
+      'Modify Time': row.modify_time ? new Date(row.modify_time).toISOString().replace('T', ' ').substring(0, 19) : '—',
+      'Side': row.side ? row.side.toUpperCase() : '—',
+      'Price': row.price ? parseFloat(row.price).toFixed(8) : '—',
+      'Trigger Price': row.trigger_price ? parseFloat(row.trigger_price).toFixed(8) : '—',
+      'Volume': row.volume ? parseFloat(row.volume).toFixed(8) : '—',
+      'Filled Volume': row.filled_volume ? parseFloat(row.filled_volume).toFixed(8) : '—',
+      'Status': (() => {
+        const statusMap = { 0: 'New', 1: 'Active', 2: 'Executed', 3: 'Canceled', 4: 'Error' }
+        return statusMap[row.status] || 'Unknown'
+      })(),
+      'Errors': row.errors && row.errors.length > 0 ? row.errors.join('; ') : '—'
+    }
+    
+    text = Object.entries(orderData)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join('\n')
+  } else if (tableType === 'trades') {
+    // Format trade data
+    const tradeData = {
+      'Trade ID': row.trade_id,
+      'Deal ID': row.deal_id,
+      'Order ID': row.order_id || '—',
+      'Time': row.time ? new Date(row.time).toISOString().replace('T', ' ').substring(0, 19) : '—',
+      'Side': row.side ? row.side.toUpperCase() : '—',
+      'Price': row.price ? parseFloat(row.price).toFixed(8) : '—',
+      'Quantity': row.quantity ? parseFloat(row.quantity).toFixed(8) : '—',
+      'Fee': row.fee ? parseFloat(row.fee).toFixed(8) : '—',
+      'Sum': row.sum ? parseFloat(row.sum).toFixed(8) : '—'
+    }
+    
+    text = Object.entries(tradeData)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join('\n')
+  } else if (tableType === 'deals') {
+    // Format deal data
+    const dealData = {
+      'Deal ID': row.deal_id,
+      'Side': row.side ? row.side.toUpperCase() : '—',
+      'Entry Time': row.entry_time ? new Date(row.entry_time).toISOString().replace('T', ' ').substring(0, 19) : '—',
+      'Exit Time': row.exit_time ? new Date(row.exit_time).toISOString().replace('T', ' ').substring(0, 19) : '—',
+      'Entry Price': row.entry_price ? parseFloat(row.entry_price).toFixed(8) : '—',
+      'Exit Price': row.exit_price ? parseFloat(row.exit_price).toFixed(8) : '—',
+      'Max Volume': row.max_volume ? parseFloat(row.max_volume).toFixed(8) : '—',
+      'Profit': row.profit !== null && row.profit !== undefined ? parseFloat(row.profit).toFixed(8) : '—',
+      'Fees': row.fees ? parseFloat(row.fees).toFixed(8) : '—'
+    }
+    
+    text = Object.entries(dealData)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join('\n')
+  }
+  
+  // Copy to clipboard
+  if (text) {
+    navigator.clipboard.writeText(text).catch(err => {
+      console.error('Failed to copy to clipboard:', err)
+    })
   }
 }
 
@@ -2049,6 +2158,73 @@ async function saveCurrentStrategy() {
     return false
   }
 }
+/**
+ * Prepare task data object from current form state.
+ * Used for both regular save and sync save (beforeunload/unmount).
+ * 
+ * @returns {Object|null} Task data object or null if task/form is not available
+ */
+function prepareTaskData() {
+  if (!currentTaskId.value || !navFormRef.value) {
+    return null
+  }
+  
+  // Get general parameters from form
+  const formData = navFormRef.value.formData
+  
+  // Get custom parameters from StrategyParameters component
+  let customParameters = {}
+  if (strategyParametersRef.value) {
+    // Get raw parameter values
+    const rawValues = strategyParametersRef.value.parameterValues || {}
+    // Convert values to proper types based on parameter descriptions
+    const parametersDesc = strategyParametersDescription.value || {}
+    customParameters = {}
+    for (const paramName in rawValues) {
+      const value = rawValues[paramName]
+      if (parametersDesc[paramName]) {
+        const paramDesc = parametersDesc[paramName]
+        const typeLower = paramDesc.type?.toLowerCase() || 'string'
+        // Convert to proper type
+        if (typeLower === 'int' || typeLower === 'integer') {
+          const parsed = parseInt(value, 10)
+          customParameters[paramName] = isNaN(parsed) ? value : parsed
+        } else if (typeLower === 'float' || typeLower === 'double') {
+          const parsed = parseFloat(value)
+          customParameters[paramName] = isNaN(parsed) ? value : parsed
+        } else if (typeLower === 'bool' || typeLower === 'boolean') {
+          customParameters[paramName] = Boolean(value)
+        } else {
+          customParameters[paramName] = String(value)
+        }
+      } else {
+        // If no description, keep as is
+        customParameters[paramName] = value
+      }
+    }
+  } else {
+    // Fallback: use currentTaskParameters if component ref not available
+    customParameters = currentTaskParameters.value || {}
+  }
+
+  // Prepare task data
+  // file_name is relative path (from STRATEGIES_DIR, with .py extension)
+  return {
+    file_name: currentStrategyFilePath.value || '',
+    name: currentTask.value?.name || '',
+    source: formData.source || '',
+    symbol: formData.symbol || '',
+    timeframe: formData.timeframe ? formData.timeframe.toString() : '',
+    dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
+    dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
+    fee_taker: formData.feeTaker !== undefined ? formData.feeTaker : 0.0,
+    fee_maker: formData.feeMaker !== undefined ? formData.feeMaker : 0.0,
+    price_step: formData.priceStep !== undefined ? formData.priceStep : 0.0,
+    slippage_in_steps: formData.slippageInSteps !== undefined ? formData.slippageInSteps : 1.0,
+    parameters: customParameters
+  }
+}
+
 async function saveCurrentTask() {
   if (!currentTaskId.value || !navFormRef.value) {
     return
@@ -2060,59 +2236,9 @@ async function saveCurrentTask() {
   }
 
   try {
-    // Get general parameters from form
-    const formData = navFormRef.value.formData
-    
-    // Get custom parameters from StrategyParameters component
-    let customParameters = {}
-    if (strategyParametersRef.value) {
-      // Get raw parameter values
-      const rawValues = strategyParametersRef.value.parameterValues || {}
-      // Convert values to proper types based on parameter descriptions
-      const parametersDesc = strategyParametersDescription.value || {}
-      customParameters = {}
-      for (const paramName in rawValues) {
-        const value = rawValues[paramName]
-        if (parametersDesc[paramName]) {
-          const paramDesc = parametersDesc[paramName]
-          const typeLower = paramDesc.type?.toLowerCase() || 'string'
-          // Convert to proper type
-          if (typeLower === 'int' || typeLower === 'integer') {
-            const parsed = parseInt(value, 10)
-            customParameters[paramName] = isNaN(parsed) ? value : parsed
-          } else if (typeLower === 'float' || typeLower === 'double') {
-            const parsed = parseFloat(value)
-            customParameters[paramName] = isNaN(parsed) ? value : parsed
-          } else if (typeLower === 'bool' || typeLower === 'boolean') {
-            customParameters[paramName] = Boolean(value)
-          } else {
-            customParameters[paramName] = String(value)
-          }
-        } else {
-          // If no description, keep as is
-          customParameters[paramName] = value
-        }
-      }
-    } else {
-      // Fallback: use currentTaskParameters if component ref not available
-      customParameters = currentTaskParameters.value || {}
-    }
-
-    // Prepare task data
-    // file_name is relative path (from STRATEGIES_DIR, with .py extension)
-    const taskData = {
-      file_name: currentStrategyFilePath.value || '',
-      name: currentTask.value?.name || '',
-      source: formData.source || '',
-      symbol: formData.symbol || '',
-      timeframe: formData.timeframe ? formData.timeframe.toString() : '',
-      dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
-      dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
-      fee_taker: formData.feeTaker !== undefined ? formData.feeTaker : 0.0,
-      fee_maker: formData.feeMaker !== undefined ? formData.feeMaker : 0.0,
-      price_step: formData.priceStep !== undefined ? formData.priceStep : 0.0,
-      slippage_in_steps: formData.slippageInSteps !== undefined ? formData.slippageInSteps : 1.0,
-      parameters: customParameters
+    const taskData = prepareTaskData()
+    if (!taskData) {
+      return
     }
 
     ensureConnection()
@@ -2176,26 +2302,9 @@ async function saveAllSync() {
     }
 
     // Save task if available
-    if (currentTaskId.value && navFormRef.value) {
-      const formData = navFormRef.value.formData
-      let customParameters = {}
-      if (strategyParametersRef.value) {
-        customParameters = strategyParametersRef.value.parameterValues || {}
-      } else {
-        customParameters = currentTaskParameters.value || {}
-      }
-
-      // file_name is relative path (from STRATEGIES_DIR, with .py extension)
-      const taskData = JSON.stringify({
-        file_name: currentStrategyFilePath.value || '',
-        name: currentTask.value?.name || '',
-        source: formData.source || '',
-        symbol: formData.symbol || '',
-        timeframe: formData.timeframe ? formData.timeframe.toString() : '',
-        dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
-        dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
-        parameters: customParameters
-      })
+    const taskData = prepareTaskData()
+    if (taskData) {
+      const taskDataJson = JSON.stringify(taskData)
 
       // Use fetch with keepalive for PUT request (sendBeacon doesn't support PUT)
       try {
@@ -2205,7 +2314,7 @@ async function saveAllSync() {
           headers: {
             'Content-Type': 'application/json'
           },
-          body: taskData,
+          body: taskDataJson,
           keepalive: true // Allows request to continue after page unload
         }).catch(error => {
           // Silently handle errors during page unload
