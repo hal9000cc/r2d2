@@ -4,7 +4,7 @@ Generic broker classes for handling trading operations.
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Optional, Dict, Tuple, Set, TYPE_CHECKING
-
+import math
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
@@ -387,6 +387,36 @@ class Broker(ABC):
         self.result_id = result_id
         self.last_auto_deal_id: Optional[int] = None
         self.active_deals: Set[int] = set()  # Set of deal_id for active (open) deals
+        
+        # Precision for amount and price (set in subclass)
+        self.precision_amount: float = 0.0
+        self.precision_price: float = 0.0
+    
+    def round_to_precision(self, value: float, precision: float) -> float:
+        """
+        Round value to nearest multiple of precision.
+        
+        Args:
+            value: Value to round
+            precision: Precision step (e.g., 0.01, 0.001)
+        
+        Returns:
+            Rounded value
+        """
+        return round(value / precision) * precision
+    
+    def floor_to_precision(self, value: float, precision: float) -> float:
+        """
+        Round value down to nearest multiple of precision.
+        
+        Args:
+            value: Value to round down
+            precision: Precision step (e.g., 0.01, 0.001)
+        
+        Returns:
+            Rounded down value
+        """
+        return math.floor(value / precision) * precision
 
     @abstractmethod
     def buy(self, quantity: VOLUME_TYPE, deal_id: Optional[int] = None):

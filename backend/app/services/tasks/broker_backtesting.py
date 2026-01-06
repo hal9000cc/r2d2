@@ -48,6 +48,17 @@ class BrokerBacktesting(Broker):
         """
         super().__init__(result_id)
         self.task = task
+        
+        # Validate precision values
+        if task.precision_amount == 0.0:
+            raise ValueError("precision_amount must be greater than 0")
+        if task.precision_price == 0.0:
+            raise ValueError("precision_price must be greater than 0")
+        
+        # Set precision values
+        self.precision_amount = task.precision_amount
+        self.precision_price = task.precision_price
+        
         # Get fee and slippage from task, with defaults
         self.fee_taker = task.fee_taker if task.fee_taker > 0 else 0.001  # Default to 0.1% if not set
         self.fee_maker = task.fee_maker if task.fee_maker > 0 else 0.001  # Default to 0.1% if not set
@@ -722,58 +733,68 @@ class BrokerBacktesting(Broker):
         else:  # OrderSide.SELL
             deal.type = DealType.SHORT
         
-        # 6. Create stop loss orders
+        # 6. Create stop loss orders (with temporary volume=0, will be updated later)
         stop_orders = []
         opposite_side = OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY
-        for fraction, price in stop_losses:
-            assert fraction is not None, "Fraction must be set for stop loss orders"
-            assert 0 < fraction <= 1.0, f"Stop loss fraction must be in (0, 1], got {fraction}"
-            
-            order = Order(
-                order_id=0,  # Will be assigned by _add_order
-                deal_id=deal_id,
-                order_type=OrderType.STOP,
-                create_time=self.current_time,
-                modify_time=self.current_time,
-                side=opposite_side,
-                price=None,
-                trigger_price=PRICE_TYPE(price),
-                volume=fraction * total_entry_volume,
-                filled_volume=0.0,
-                status=OrderStatus.NEW,
-                order_group=OrderGroup.STOP_LOSS,
-                fraction=float(fraction),
-                errors=[]
-            )
-            stop_orders.append(order)
-            self._add_order(order)
+        if stop_losses:
+            for fraction, price in stop_losses:
+                assert fraction is not None, "Fraction must be set for stop loss orders"
+                assert 0 < fraction <= 1.0, f"Stop loss fraction must be in (0, 1], got {fraction}"
+                
+                order = Order(
+                    order_id=0,  # Will be assigned by _add_order
+                    deal_id=deal_id,
+                    order_type=OrderType.STOP,
+                    create_time=self.current_time,
+                    modify_time=self.current_time,
+                    side=opposite_side,
+                    price=None,
+                    trigger_price=PRICE_TYPE(price),
+                    volume=0.0,  # Temporary volume, will be updated by _update_stop_loss_volumes
+                    filled_volume=0.0,
+                    status=OrderStatus.NEW,
+                    order_group=OrderGroup.STOP_LOSS,
+                    fraction=float(fraction),
+                    errors=[]
+                )
+                stop_orders.append(order)
+                self._add_order(order)
         
-        # 7. Create take profit orders
+        # 7. Create take profit orders (with temporary volume=0, will be updated later)
         take_orders = []
-        for fraction, price in take_profits:
-            assert fraction is not None, "Fraction must be set for take profit orders"
-            assert 0 < fraction <= 1.0, f"Take profit fraction must be in (0, 1], got {fraction}"
-            
-            order = Order(
-                order_id=0,  # Will be assigned by _add_order
-                deal_id=deal_id,
-                order_type=OrderType.LIMIT,
-                create_time=self.current_time,
-                modify_time=self.current_time,
-                side=opposite_side,
-                price=PRICE_TYPE(price),
-                trigger_price=None,
-                volume=fraction * total_entry_volume,
-                filled_volume=0.0,
-                status=OrderStatus.NEW,
-                order_group=OrderGroup.TAKE_PROFIT,
-                fraction=float(fraction),
-                errors=[]
-            )
-            take_orders.append(order)
-            self._add_order(order)
+        if take_profits:
+            for fraction, price in take_profits:
+                assert fraction is not None, "Fraction must be set for take profit orders"
+                assert 0 < fraction <= 1.0, f"Take profit fraction must be in (0, 1], got {fraction}"
+                
+                order = Order(
+                    order_id=0,  # Will be assigned by _add_order
+                    deal_id=deal_id,
+                    order_type=OrderType.LIMIT,
+                    create_time=self.current_time,
+                    modify_time=self.current_time,
+                    side=opposite_side,
+                    price=PRICE_TYPE(price),
+                    trigger_price=None,
+                    volume=0.0,  # Temporary volume, will be updated by _update_take_profit_volumes
+                    filled_volume=0.0,
+                    status=OrderStatus.NEW,
+                    order_group=OrderGroup.TAKE_PROFIT,
+                    fraction=float(fraction),
+                    errors=[]
+                )
+                take_orders.append(order)
+                self._add_order(order)
         
-        # 8. Form list of orders to execute
+        # 8. Update stop loss volumes using extreme stop logic
+        if stop_orders:
+            self._update_stop_loss_volumes(deal, total_entry_volume)
+        
+        # 9. Update take profit volumes using extreme take logic
+        if take_orders:
+            self._update_take_profit_volumes(deal, total_entry_volume)
+        
+        # 10. Form list of orders to execute
         orders_to_execute = []
         # Always add entry orders and stop orders
         orders_to_execute.extend(entry_orders)
@@ -783,16 +804,16 @@ class BrokerBacktesting(Broker):
             orders_to_execute.extend(take_orders)
         # Note: take profit orders for limit entry remain in NEW status and will be activated later
         
-        # 9. Execute orders
+        # 11. Execute orders
         executed_orders = self.execute_orders_sltp(orders_to_execute)
         
-        # 10. Check for errors
+        # 12. Check for errors
         has_errors = any(order.status == OrderStatus.ERROR for order in executed_orders)
         if has_errors:
             self.close_deal(deal_id)
             return None
         
-        # 11. Return deal
+        # 13. Return deal
         return self.get_deal_by_id(deal_id)
     
     def _add_order_to_np_arrays(self, order: Order) -> None:
@@ -947,6 +968,183 @@ class BrokerBacktesting(Broker):
                     order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                     self._execute_triggered_order(order, high, low)
     
+    def _find_extreme_stop_order(self, deal: Deal) -> Optional[Order]:
+        """
+        Find the extreme stop loss order for a deal.
+        
+        For LONG: returns stop with minimum trigger_price (farthest down)
+        For SHORT: returns stop with maximum trigger_price (farthest up)
+        
+        Args:
+            deal: Deal to find extreme stop for
+        
+        Returns:
+            Extreme stop order or None if no stop orders exist
+        """
+        stop_orders = [order for order in deal.orders if order.order_group == OrderGroup.STOP_LOSS]
+        if not stop_orders:
+            return None
+        
+        if deal.type == DealType.LONG:
+            # LONG: minimum trigger_price (farthest down)
+            return min(stop_orders, key=lambda o: o.trigger_price if o.trigger_price is not None else float('inf'))
+        else:  # SHORT
+            # SHORT: maximum trigger_price (farthest up)
+            return max(stop_orders, key=lambda o: o.trigger_price if o.trigger_price is not None else float('-inf'))
+    
+    def _find_extreme_take_order(self, deal: Deal) -> Optional[Order]:
+        """
+        Find the extreme take profit order for a deal.
+        
+        For LONG: returns take with maximum price (farthest up)
+        For SHORT: returns take with minimum price (farthest down)
+        
+        Args:
+            deal: Deal to find extreme take for
+        
+        Returns:
+            Extreme take order or None if no take orders exist
+        """
+        take_orders = [order for order in deal.orders if order.order_group == OrderGroup.TAKE_PROFIT]
+        if not take_orders:
+            return None
+        
+        if deal.type == DealType.LONG:
+            # LONG: maximum price (farthest up)
+            return max(take_orders, key=lambda o: o.price if o.price is not None else float('-inf'))
+        else:  # SHORT
+            # SHORT: minimum price (farthest down)
+            return min(take_orders, key=lambda o: o.price if o.price is not None else float('inf'))
+    
+    def _get_unexecuted_entry_limit_volume(
+        self,
+        deal: Deal,
+        current_price: PRICE_TYPE,
+        extreme_stop_price: PRICE_TYPE
+    ) -> VOLUME_TYPE:
+        """
+        Get volume of unexecuted entry limit orders that are in range between
+        current price and extreme stop price.
+        
+        Args:
+            deal: Deal to check
+            current_price: Current market price
+            extreme_stop_price: Extreme stop trigger price
+        
+        Returns:
+            Sum of volumes of unexecuted entry limit orders in range
+        """
+        unexecuted_volume = 0.0
+        
+        for order in deal.orders:
+            # Check if it's an entry limit order (not executed)
+            if (order.order_group == OrderGroup.NONE and
+                order.order_type == OrderType.LIMIT and
+                order.status in [OrderStatus.NEW, OrderStatus.ACTIVE] and
+                order.price is not None):
+                
+                # Check if price is in range (non-strict inequalities)
+                if deal.type == DealType.LONG:
+                    # LONG: current_price >= order.price >= extreme_stop_price
+                    if current_price >= order.price >= extreme_stop_price:
+                        unexecuted_volume += order.volume
+                else:  # SHORT
+                    # SHORT: current_price <= order.price <= extreme_stop_price
+                    if current_price <= order.price <= extreme_stop_price:
+                        unexecuted_volume += order.volume
+        
+        return VOLUME_TYPE(unexecuted_volume)
+    
+    def _update_stop_loss_volumes(self, deal: Deal, target_volume: VOLUME_TYPE) -> None:
+        """
+        Update volumes of all stop loss orders in a deal.
+        
+        All stops except extreme one get rounded volumes based on fraction.
+        Extreme stop gets remainder to ensure sum equals target_volume.
+        
+        Args:
+            deal: Deal to update stop orders for
+            target_volume: Target total volume for all stop orders
+        """
+        stop_orders = [order for order in deal.orders if order.order_group == OrderGroup.STOP_LOSS]
+        if not stop_orders:
+            return
+        
+        extreme_stop = self._find_extreme_stop_order(deal)
+        if extreme_stop is None:
+            return
+        
+        # Calculate volumes for all stops except extreme
+        stop_volumes = []
+        for order in stop_orders:
+            if order.order_id == extreme_stop.order_id:
+                # Extreme stop: will be calculated as remainder
+                stop_volumes.append(0.0)
+            else:
+                # Regular stop: round to precision
+                assert order.fraction is not None, f"Stop order {order.order_id} must have fraction"
+                volume = self.round_to_precision(order.fraction * target_volume, self.precision_amount)
+                stop_volumes.append(volume)
+        
+        # Calculate extreme stop volume as remainder
+        extreme_index = next(i for i, order in enumerate(stop_orders) if order.order_id == extreme_stop.order_id)
+        extreme_volume = target_volume - sum(stop_volumes)
+        stop_volumes[extreme_index] = extreme_volume
+        
+        # Update all stop orders
+        for order, volume in zip(stop_orders, stop_volumes):
+            order.volume = volume
+            order.modify_time = self.current_time
+    
+    def _update_take_profit_volumes(self, deal: Deal, target_volume: VOLUME_TYPE) -> List[Order]:
+        """
+        Update volumes of all take profit orders in a deal.
+        
+        All takes except extreme one get rounded volumes based on fraction.
+        Extreme take gets remainder to ensure sum equals target_volume.
+        
+        Args:
+            deal: Deal to update take orders for
+            target_volume: Target total volume for all take orders
+        
+        Returns:
+            List of take orders in NEW status that need to be activated
+        """
+        take_orders = [order for order in deal.orders if order.order_group == OrderGroup.TAKE_PROFIT]
+        if not take_orders:
+            return []
+        
+        extreme_take = self._find_extreme_take_order(deal)
+        if extreme_take is None:
+            return []
+        
+        # Separate into NEW and ACTIVE
+        new_takes = [order for order in take_orders if order.status == OrderStatus.NEW]
+        
+        # Calculate volumes for all takes except extreme
+        take_volumes = []
+        for order in take_orders:
+            if order.order_id == extreme_take.order_id:
+                # Extreme take: will be calculated as remainder
+                take_volumes.append(0.0)
+            else:
+                # Regular take: round to precision
+                assert order.fraction is not None, f"Take order {order.order_id} must have fraction"
+                volume = self.round_to_precision(order.fraction * target_volume, self.precision_amount)
+                take_volumes.append(volume)
+        
+        # Calculate extreme take volume as remainder
+        extreme_index = next(i for i, order in enumerate(take_orders) if order.order_id == extreme_take.order_id)
+        extreme_volume = target_volume - sum(take_volumes)
+        take_volumes[extreme_index] = extreme_volume
+        
+        # Update all take orders
+        for order, volume in zip(take_orders, take_volumes):
+            order.volume = volume
+            order.modify_time = self.current_time
+        
+        return new_takes
+    
     def _update_sltp_orders(self) -> None:
         """
         Update stop loss and take profit orders for active deals.
@@ -955,12 +1153,36 @@ class BrokerBacktesting(Broker):
         This method iterates through all active deals and updates their exit orders
         (stop losses and take profits) to reflect current position sizes.
         """
+        assert self.current_time is not None, "Cannot update SL/TP orders: current_time is not set"
+        assert self.price is not None, "Cannot update SL/TP orders: price is not set"
+        
         # Iterate through active deals
-        for deal_id in self.active_deals:
+        for deal_id in list(self.active_deals):  # Iterate over copy as set may change
             deal = self.get_deal_by_id(deal_id)
-            # TODO: Update stop loss and take profit order volumes based on deal.quantity
-            # TODO: Activate take profit orders when entry orders are executed
-            pass
+            
+            # Safety check: deal should be open
+            assert not deal.is_closed, f"Deal {deal_id} is closed but in active_deals"
+            
+            # 1. Update stop loss volumes
+            extreme_stop = self._find_extreme_stop_order(deal)
+            if extreme_stop is not None:
+                # Calculate unexecuted entry limit volume
+                extreme_stop_price = extreme_stop.trigger_price
+                if extreme_stop_price is not None:
+                    unexecuted_entry_volume = self._get_unexecuted_entry_limit_volume(
+                        deal, self.price, extreme_stop_price
+                    )
+                    # Target volume = current position + unexecuted entry limits
+                    target_volume = deal.quantity + unexecuted_entry_volume
+                    self._update_stop_loss_volumes(deal, target_volume)
+            
+            # 2. Update take profit volumes (only if deal has position)
+            if abs(deal.quantity) > 0:
+                new_takes = self._update_take_profit_volumes(deal, deal.quantity)
+                
+                # 3. Activate take profit orders in NEW status
+                if new_takes:
+                    self.execute_orders_sltp(new_takes)
     
     def _check_and_execute_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
         """

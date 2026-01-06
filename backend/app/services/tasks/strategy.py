@@ -59,6 +59,10 @@ class Strategy(ABC):
 
         # TA proxy will be set when callbacks are created
         self.talib: Optional[ta_proxy] = None
+        
+        # Precision for amount and price (set from broker after broker is assigned)
+        self.precision_amount: float = 0.0
+        self.precision_price: float = 0.0
 
     def on_start(self):
         """
@@ -117,6 +121,37 @@ class Strategy(ABC):
         Returns:
             OrderOperationResult with orders, error_messages, and categorized order IDs
         """
+        # Update precision from broker if available
+        if self.broker is not None:
+            self.precision_amount = self.broker.precision_amount
+            self.precision_price = self.broker.precision_price
+        
+        # Round quantity down to precision_amount
+        original_quantity = quantity
+        quantity = self.floor_to_precision(quantity, self.precision_amount)
+        if abs(quantity - original_quantity) > 1e-10:
+            msg = f"Volume {original_quantity} rounded down to {quantity} due to precision_amount={self.precision_amount}"
+            logger.warning(msg)
+            print(msg)
+        
+        # Round price to precision_price if specified
+        original_price = price
+        if price is not None:
+            price = self.round_to_precision(price, self.precision_price)
+            if abs(price - original_price) > 1e-10:
+                msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
+                logger.warning(msg)
+                print(msg)
+        
+        # Round trigger_price to precision_price if specified
+        original_trigger_price = trigger_price
+        if trigger_price is not None:
+            trigger_price = self.round_to_precision(trigger_price, self.precision_price)
+            if abs(trigger_price - original_trigger_price) > 1e-10:
+                msg = f"Trigger price {original_trigger_price} rounded to {trigger_price} due to precision_price={self.precision_price}"
+                logger.warning(msg)
+                print(msg)
+        
         # Execute through broker (returns List[Order])
         orders = self.broker.buy(quantity, price=price, trigger_price=trigger_price)
         
@@ -165,6 +200,37 @@ class Strategy(ABC):
         Returns:
             OrderOperationResult with orders, error_messages, and categorized order IDs
         """
+        # Update precision from broker if available
+        if self.broker is not None:
+            self.precision_amount = self.broker.precision_amount
+            self.precision_price = self.broker.precision_price
+        
+        # Round quantity down to precision_amount
+        original_quantity = quantity
+        quantity = self.floor_to_precision(quantity, self.precision_amount)
+        if abs(quantity - original_quantity) > 1e-10:
+            msg = f"Volume {original_quantity} rounded down to {quantity} due to precision_amount={self.precision_amount}"
+            logger.warning(msg)
+            print(msg)
+        
+        # Round price to precision_price if specified
+        original_price = price
+        if price is not None:
+            price = self.round_to_precision(price, self.precision_price)
+            if abs(price - original_price) > 1e-10:
+                msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
+                logger.warning(msg)
+                print(msg)
+        
+        # Round trigger_price to precision_price if specified
+        original_trigger_price = trigger_price
+        if trigger_price is not None:
+            trigger_price = self.round_to_precision(trigger_price, self.precision_price)
+            if abs(trigger_price - original_trigger_price) > 1e-10:
+                msg = f"Trigger price {original_trigger_price} rounded to {trigger_price} due to precision_price={self.precision_price}"
+                logger.warning(msg)
+                print(msg)
+        
         # Execute through broker (returns List[Order])
         orders = self.broker.sell(quantity, price=price, trigger_price=trigger_price)
         
@@ -207,6 +273,7 @@ class Strategy(ABC):
         """
         Normalize enter parameter to list of (volume, price) tuples.
         Price can be None for market orders.
+        Applies precision rounding: volume rounded down, price rounded to nearest.
         
         Args:
             enter: Entry order - volume (market), (volume, price) tuple, or list of tuples
@@ -214,15 +281,53 @@ class Strategy(ABC):
         Returns:
             List of (volume, price) tuples. Price is None for market orders.
         """
+        # Update precision from broker if available
+        if self.broker is not None:
+            self.precision_amount = self.broker.precision_amount
+            self.precision_price = self.broker.precision_price
+        
         if isinstance(enter, (int, float)):
             # Market order: volume only
-            return [(VOLUME_TYPE(enter), None)]
+            original_vol = enter
+            vol = self.floor_to_precision(enter, self.precision_amount)
+            if abs(vol - original_vol) > 1e-10:
+                msg = f"Volume {original_vol} rounded down to {vol} due to precision_amount={self.precision_amount}"
+                logger.warning(msg)
+                print(msg)
+            return [(VOLUME_TYPE(vol), None)]
         elif isinstance(enter, tuple) and len(enter) == 2:
             # Single limit order: (volume, price)
-            return [(VOLUME_TYPE(enter[0]), PRICE_TYPE(enter[1]))]
+            original_vol = enter[0]
+            original_price = enter[1]
+            vol = self.floor_to_precision(enter[0], self.precision_amount)
+            price = self.round_to_precision(enter[1], self.precision_price)
+            if abs(vol - original_vol) > 1e-10:
+                msg = f"Volume {original_vol} rounded down to {vol} due to precision_amount={self.precision_amount}"
+                logger.warning(msg)
+                print(msg)
+            if abs(price - original_price) > 1e-10:
+                msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
+                logger.warning(msg)
+                print(msg)
+            return [(VOLUME_TYPE(vol), PRICE_TYPE(price))]
         elif isinstance(enter, list):
             # Multiple limit orders: list of (volume, price) tuples
-            return [(VOLUME_TYPE(vol), PRICE_TYPE(price)) for vol, price in enter]
+            result = []
+            for vol, price in enter:
+                original_vol = vol
+                original_price = price
+                rounded_vol = self.floor_to_precision(vol, self.precision_amount)
+                rounded_price = self.round_to_precision(price, self.precision_price)
+                if abs(rounded_vol - original_vol) > 1e-10:
+                    msg = f"Volume {original_vol} rounded down to {rounded_vol} due to precision_amount={self.precision_amount}"
+                    logger.warning(msg)
+                    print(msg)
+                if abs(rounded_price - original_price) > 1e-10:
+                    msg = f"Price {original_price} rounded to {rounded_price} due to precision_price={self.precision_price}"
+                    logger.warning(msg)
+                    print(msg)
+                result.append((VOLUME_TYPE(rounded_vol), PRICE_TYPE(rounded_price)))
+            return result
         else:
             raise ValueError(f"Invalid enter parameter type: {type(enter)}")
     
@@ -236,6 +341,7 @@ class Strategy(ABC):
     ) -> List[Tuple[Optional[float], PRICE_TYPE]]:
         """
         Normalize stop_loss or take_profit parameter to list of (fraction, price) tuples.
+        Applies precision rounding: prices rounded to nearest.
         
         Args:
             exit_param: Exit parameter - price, list of prices, or list of (fraction, price) tuples
@@ -244,12 +350,23 @@ class Strategy(ABC):
             List of (fraction, price) tuples. Fraction is None for "all remaining".
             If input was list of prices, fractions are distributed equally, last one has None.
         """
+        # Update precision from broker if available
+        if self.broker is not None:
+            self.precision_amount = self.broker.precision_amount
+            self.precision_price = self.broker.precision_price
+        
         if exit_param is None:
             return []
         
         if isinstance(exit_param, (int, float)):
             # Single price: (None, price) - all remaining
-            return [(None, PRICE_TYPE(exit_param))]
+            original_price = exit_param
+            price = self.round_to_precision(exit_param, self.precision_price)
+            if abs(price - original_price) > 1e-10:
+                msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
+                logger.warning(msg)
+                print(msg)
+            return [(None, PRICE_TYPE(price))]
         
         if isinstance(exit_param, list):
             if not exit_param:
@@ -258,17 +375,47 @@ class Strategy(ABC):
             # Check if first element is a tuple (fraction, price) or just a price
             if isinstance(exit_param[0], tuple):
                 # List of (fraction, price) tuples
-                return [(f if f is None else float(f), PRICE_TYPE(p)) for f, p in exit_param]
+                result = []
+                for f, p in exit_param:
+                    original_price = p
+                    rounded_price = self.round_to_precision(p, self.precision_price)
+                    if abs(rounded_price - original_price) > 1e-10:
+                        msg = f"Price {original_price} rounded to {rounded_price} due to precision_price={self.precision_price}"
+                        logger.warning(msg)
+                        print(msg)
+                    result.append((f if f is None else float(f), PRICE_TYPE(rounded_price)))
+                return result
             else:
                 # List of prices: distribute equally
                 num_prices = len(exit_param)
                 if num_prices == 1:
-                    return [(None, PRICE_TYPE(exit_param[0]))]
+                    original_price = exit_param[0]
+                    price = self.round_to_precision(exit_param[0], self.precision_price)
+                    if abs(price - original_price) > 1e-10:
+                        msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
+                        logger.warning(msg)
+                        print(msg)
+                    return [(None, PRICE_TYPE(price))]
                 else:
                     # Equal fractions, last one is None
                     fraction = 1.0 / num_prices
-                    result = [(fraction, PRICE_TYPE(p)) for p in exit_param[:-1]]
-                    result.append((None, PRICE_TYPE(exit_param[-1])))
+                    result = []
+                    for p in exit_param[:-1]:
+                        original_price = p
+                        rounded_price = self.round_to_precision(p, self.precision_price)
+                        if abs(rounded_price - original_price) > 1e-10:
+                            msg = f"Price {original_price} rounded to {rounded_price} due to precision_price={self.precision_price}"
+                            logger.warning(msg)
+                            print(msg)
+                        result.append((fraction, PRICE_TYPE(rounded_price)))
+                    # Last price
+                    original_price = exit_param[-1]
+                    price = self.round_to_precision(exit_param[-1], self.precision_price)
+                    if abs(price - original_price) > 1e-10:
+                        msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
+                        logger.warning(msg)
+                        print(msg)
+                    result.append((None, PRICE_TYPE(price)))
                     return result
         
         raise ValueError(f"Invalid exit parameter type: {type(exit_param)}")

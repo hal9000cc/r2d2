@@ -10,9 +10,10 @@ This guide describes the API for developing trading strategies in the backtestin
 4. [Access to Indicators](#access-to-indicators)
 5. [Strategy Parameters](#strategy-parameters)
 6. [Position Tracking](#position-tracking)
-7. [Order Placement](#order-placement)
-8. [Order Management](#order-management)
-9. [Logging](#logging)
+7. [Precision and Rounding](#precision-and-rounding)
+8. [Order Placement](#order-placement)
+9. [Order Management](#order-management)
+10. [Logging](#logging)
 
 ---
 
@@ -350,6 +351,75 @@ def on_bar(self):
     current_price = self.close[-1]
     total_capital = self.equity_usd + self.equity_symbol * current_price
     self.logging(f"Total capital: {total_capital} USD")
+```
+
+---
+
+## Precision and Rounding
+
+The strategy has access to precision values for amount and price, which are used to ensure all trading values conform to exchange requirements.
+
+### Precision Attributes
+
+- `self.precision_amount` - minimum step size for amount/base currency (e.g., 0.1, 0.001)
+- `self.precision_price` - minimum step size for price/quote currency (e.g., 0.1, 0.001)
+
+These values are automatically set from the broker after the broker is assigned. They are available in all strategy methods.
+
+### Rounding Methods
+
+The strategy provides two methods for rounding values to precision:
+
+#### `round_to_precision(value: float, precision: float) -> float`
+
+Rounds value to the nearest multiple of precision.
+
+```python
+# Round price to nearest precision
+price = 100.123
+rounded_price = self.round_to_precision(price, self.precision_price)
+# If precision_price = 0.01, result is 100.12
+```
+
+#### `floor_to_precision(value: float, precision: float) -> float`
+
+Rounds value down to the nearest multiple of precision.
+
+```python
+# Round volume down to precision
+volume = 1.234
+rounded_volume = self.floor_to_precision(volume, self.precision_amount)
+# If precision_amount = 0.01, result is 1.23
+```
+
+### Automatic Rounding
+
+All trading methods (`buy()`, `sell()`, `buy_sltp()`, `sell_sltp()`) automatically apply precision rounding:
+
+- **Volume (quantity)** - rounded down using `floor_to_precision()` with `precision_amount`
+- **Price** - rounded to nearest using `round_to_precision()` with `precision_price`
+- **Trigger price** - rounded to nearest using `round_to_precision()` with `precision_price`
+
+If a value is changed due to rounding, a warning is logged.
+
+### Usage Examples
+
+```python
+def on_bar(self):
+    # Calculate desired volume
+    desired_volume = 1.2345
+    
+    # Round down manually if needed
+    volume = self.floor_to_precision(desired_volume, self.precision_amount)
+    
+    # Calculate desired price
+    desired_price = 100.123
+    
+    # Round to nearest manually if needed
+    price = self.round_to_precision(desired_price, self.precision_price)
+    
+    # Place order (will also be rounded automatically)
+    self.buy(quantity=volume, price=price)
 ```
 
 ---
