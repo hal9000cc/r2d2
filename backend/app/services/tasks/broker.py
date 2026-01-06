@@ -3,7 +3,7 @@ Generic broker classes for handling trading operations.
 """
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import List, Optional, Dict, Tuple, TYPE_CHECKING
+from typing import List, Optional, Dict, Tuple, Set, TYPE_CHECKING
 
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict, model_validator
@@ -386,6 +386,7 @@ class Broker(ABC):
         self.trades: List[Trade] = []
         self.result_id = result_id
         self.last_auto_deal_id: Optional[int] = None
+        self.active_deals: Set[int] = set()  # Set of deal_id for active (open) deals
 
     @abstractmethod
     def buy(self, quantity: VOLUME_TYPE, deal_id: Optional[int] = None):
@@ -419,6 +420,7 @@ class Broker(ABC):
         """
         self.deals = []
         self.trades = []
+        self.active_deals = set()  # Reset active deals set
         
         # Get fee and slippage values (with defaults if not set)
         fee_taker = task.fee_taker if task.fee_taker > 0 else 0.001
@@ -609,12 +611,18 @@ class Broker(ABC):
         # Update trade statistics
         self.stats.add_trade(trade)
         
-        # If deal is now closed, register it in statistics
+        # Update active_deals set based on deal status
         if deal.is_closed:
+            # Deal is closed, remove from active deals
+            self.active_deals.discard(deal.deal_id)
+            # Register it in statistics
             self.stats.add_deal(deal)
             # If this was the last automatic deal, clear the reference
             if deal.deal_id == self.last_auto_deal_id:
                 self.last_auto_deal_id = None
+        else:
+            # Deal is open, add to active deals
+            self.active_deals.add(deal.deal_id)
 
     def reg_buy(
         self,

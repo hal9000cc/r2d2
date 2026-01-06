@@ -566,6 +566,12 @@ def start_backtesting_worker(task_id: int) -> str:
     if not task.dateEnd:
         logger.error(f"Task {task_id} dateEnd is required")
         raise HTTPException(status_code=400, detail="Task dateEnd is required")
+    if task.precision_amount == 0.0:
+        logger.error(f"Task {task_id} precision_amount is required (must be greater than 0)")
+        raise HTTPException(status_code=400, detail="Precision Amount must be greater than 0")
+    if task.precision_price == 0.0:
+        logger.error(f"Task {task_id} precision_price is required (must be greater than 0)")
+        raise HTTPException(status_code=400, detail="Precision Price must be greater than 0")
     
     # Clear previous backtesting results for this task
     try:

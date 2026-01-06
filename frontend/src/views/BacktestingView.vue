@@ -2027,10 +2027,12 @@ async function handleTaskSelected(task) {
       const timeframeStr = freshTask.timeframe || ''
       navFormRef.value.formData.timeframe = timeframesComposable?.getTimeframe(timeframeStr) || null
       
-      // Set fee, price step and slippage parameters AFTER source watcher has processed
+      // Set fee, precision, price step and slippage parameters AFTER source watcher has processed
       // This ensures watcher doesn't reset these fields
       navFormRef.value.formData.feeTaker = freshTask.fee_taker !== undefined && freshTask.fee_taker !== null ? freshTask.fee_taker : 0.0
       navFormRef.value.formData.feeMaker = freshTask.fee_maker !== undefined && freshTask.fee_maker !== null ? freshTask.fee_maker : 0.0
+      navFormRef.value.formData.precisionAmount = freshTask.precision_amount !== undefined && freshTask.precision_amount !== null ? freshTask.precision_amount : 0.0
+      navFormRef.value.formData.precisionPrice = freshTask.precision_price !== undefined && freshTask.precision_price !== null ? freshTask.precision_price : 0.0
       navFormRef.value.formData.priceStep = freshTask.price_step !== undefined && freshTask.price_step !== null ? freshTask.price_step : 0.0
       navFormRef.value.formData.slippageInSteps = freshTask.slippage_in_steps !== undefined && freshTask.slippage_in_steps !== null ? freshTask.slippage_in_steps : 1.0
     })
@@ -2235,6 +2237,8 @@ function prepareTaskData() {
       dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
     fee_taker: formData.feeTaker !== undefined ? formData.feeTaker : 0.0,
     fee_maker: formData.feeMaker !== undefined ? formData.feeMaker : 0.0,
+    precision_amount: formData.precisionAmount !== undefined ? formData.precisionAmount : 0.0,
+    precision_price: formData.precisionPrice !== undefined ? formData.precisionPrice : 0.0,
     price_step: formData.priceStep !== undefined ? formData.priceStep : 0.0,
     slippage_in_steps: formData.slippageInSteps !== undefined ? formData.slippageInSteps : 1.0,
       parameters: customParameters
@@ -2363,6 +2367,16 @@ async function handleStart(formData) {
   // Validate form data
   if (!formData.source || !formData.symbol || !formData.timeframe || !formData.dateFrom || !formData.dateTo) {
     showAlert('error', 'Please fill in all required fields: Source, Symbol, Timeframe, Date From, Date To')
+    return
+  }
+  
+  // Validate precision fields
+  if (!formData.precisionAmount || formData.precisionAmount <= 0) {
+    showAlert('error', 'Precision Amount must be greater than 0')
+    return
+  }
+  if (!formData.precisionPrice || formData.precisionPrice <= 0) {
+    showAlert('error', 'Precision Price must be greater than 0')
     return
   }
 

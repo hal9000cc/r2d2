@@ -11,8 +11,8 @@ from app.core.logger import get_logger
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 
-# Import Order for runtime use (needed for OrderOperationResult)
-from app.services.tasks.broker import Order
+# Import Order and Deal for runtime use (needed for OrderOperationResult and close_deal)
+from app.services.tasks.broker import Order, Deal
 
 if TYPE_CHECKING:
     from app.services.tasks.broker_backtesting import BrokerBacktesting as Broker, ta_proxy
@@ -725,27 +725,25 @@ class Strategy(ABC):
             volume=0.0  # Volume will be filled differently
         )
     
-    def deal_orders(self, deal_id: int) -> OrderOperationResult:
+    def close_deal(self, deal_id: int) -> Deal:
         """
-        Get all orders associated with a specific deal.
+        Close a specific deal by canceling all active orders and closing position.
         
         Args:
-            deal_id: ID of the deal to get orders for
+            deal_id: ID of the deal to close
         
         Returns:
-            OrderOperationResult with all orders for the specified deal.
-            Orders are categorized by status (active, executed, canceled, error).
-            If deal_id is not found, returns empty result with error message.
+            Deal: Deep copy of the closed deal
         
         Raises:
-            NotImplementedError: This method is not yet implemented.
+            IndexError: If deal with specified deal_id does not exist
         """
-        # Placeholder for future implementation
-        return OrderOperationResult(
-            deal_id=deal_id,
-            error_messages=[f"deal_orders(): Method not yet implemented for deal_id {deal_id}"],
-            volume=0.0  # Volume will be filled differently
-        )
+        # Call broker's close_deal method
+        self.broker.close_deal(deal_id)
+        
+        # Get deal and return deep copy
+        deal = self.broker.get_deal_by_id(deal_id)
+        return deal.model_copy(deep=True)
     
     @staticmethod
     def is_strategy_error(exception: Exception) -> Tuple[bool, Optional[str]]:

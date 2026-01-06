@@ -1,168 +1,199 @@
 <template>
   <div class="backtesting-nav-form">
-    <SourceInput
-      v-model="formData.source"
-      input-id="backtesting-source"
-      :required="true"
-      :disabled="disabled"
-      @valid="isSourceValid = $event"
-      title="Exchange or data source (e.g., binance, bybit)"
-    />
-    <div class="symbol-input-wrapper">
-    <SymbolInput
-      v-model="formData.symbol"
-      :source="formData.source"
-      :is-source-valid="isSourceValid"
-      input-id="backtesting-symbol"
-      :required="true"
-      :disabled="disabled"
-        @load-info="handleSymbolLoadInfo"
-      />
-      <button
-        class="info-btn"
-        :disabled="!formData.symbol || disabled"
-        @click="showSymbolInfo"
-        title="Show symbol information"
-      >
-        <InformationCircleIcon class="info-icon" />
-      </button>
-    </div>
-    <div class="form-group">
-      <label for="timeframe">
-        Timeframe
-        <span class="required">*</span>
-      </label>
-      <input
-        id="timeframe"
-        v-model="timeframeString"
-        type="text"
-        class="form-input"
-        :class="{ 'invalid': formData.timeframe && timeframes.length > 0 && !isTimeframeValid }"
-        :list="timeframeDatalistId"
-        placeholder="Type to search timeframe..."
-        :disabled="disabled"
+    <!-- First row: source, symbol, timeframe, dateFrom, dateTo, Start button -->
+    <div class="form-row">
+      <SourceInput
+        v-model="formData.source"
+        input-id="backtesting-source"
         :required="true"
-        autocomplete="off"
-        title="Trading timeframe (e.g., 1h, 1d, 5m)"
-      />
-      <datalist :id="timeframeDatalistId">
-        <option v-for="tf in timeframes" :key="tf.name" :value="tf.name"></option>
-      </datalist>
-    </div>
-    
-    <!-- Separator between main and testing parameters -->
-    <div class="form-separator"></div>
-    
-    <!-- Testing parameters group -->
-    <div class="form-group">
-      <label for="feeTaker">Fee Taker</label>
-      <input
-        id="feeTaker"
-        v-model.number="formData.feeTaker"
-        type="number"
-        step="any"
-        min="0"
-        max="1"
-        class="form-input no-spinner"
         :disabled="disabled"
-        placeholder="0.001"
-        title="Taker fee rate (applied to market orders, as fraction, e.g., 0.001 for 0.1%)"
+        @valid="isSourceValid = $event"
+        title="Exchange or data source (e.g., binance, bybit)"
       />
-    </div>
-    <div class="form-group">
-      <label for="feeMaker">Fee Maker</label>
-      <input
-        id="feeMaker"
-        v-model.number="formData.feeMaker"
-        type="number"
-        step="any"
-        min="0"
-        max="1"
-        class="form-input no-spinner"
-        :disabled="disabled"
-        placeholder="0.001"
-        title="Maker fee rate (applied to limit orders, as fraction, e.g., 0.001 for 0.1%)"
-      />
-    </div>
-    <div class="form-group">
-      <label for="priceStep">Price Step</label>
-      <input
-        id="priceStep"
-        v-model.number="formData.priceStep"
-        type="number"
-        step="0.0001"
-        min="0"
-        class="form-input no-spinner"
-        :disabled="disabled"
-        placeholder="0.0"
-        title="Minimum price step for the symbol (e.g., 0.1, 0.001)"
-      />
-    </div>
-    <div class="form-group">
-      <button
-        type="button"
-        class="refresh-btn"
-        :disabled="!formData.symbol || !formData.source || disabled || isLoadingSymbolInfo"
-        @click="refreshSymbolInfo"
-        title="Update fees and price step from exchange (source)"
-      >
-        <ArrowPathIcon 
-          :class="['refresh-icon', { 'spinning': isLoadingSymbolInfo }]"
+      <div class="symbol-input-wrapper">
+        <SymbolInput
+          v-model="formData.symbol"
+          :source="formData.source"
+          :is-source-valid="isSourceValid"
+          input-id="backtesting-symbol"
+          :required="true"
+          :disabled="disabled"
+          @load-info="handleSymbolLoadInfo"
         />
+        <button
+          class="info-btn"
+          :disabled="!formData.symbol || disabled"
+          @click="showSymbolInfo"
+          title="Show symbol information"
+        >
+          <InformationCircleIcon class="info-icon" />
+        </button>
+      </div>
+      <div class="form-group">
+        <label for="timeframe">
+          Timeframe
+          <span class="required">*</span>
+        </label>
+        <input
+          id="timeframe"
+          v-model="timeframeString"
+          type="text"
+          class="form-input"
+          :class="{ 'invalid': formData.timeframe && timeframes.length > 0 && !isTimeframeValid }"
+          :list="timeframeDatalistId"
+          placeholder="Type to search timeframe..."
+          :disabled="disabled"
+          :required="true"
+          autocomplete="off"
+          title="Trading timeframe (e.g., 1h, 1d, 5m)"
+        />
+        <datalist :id="timeframeDatalistId">
+          <option v-for="tf in timeframes" :key="tf.name" :value="tf.name"></option>
+        </datalist>
+      </div>
+      <div class="form-group">
+        <label for="dateFrom">Date From</label>
+        <input
+          id="dateFrom"
+          v-model="formData.dateFrom"
+          type="date"
+          class="form-input"
+          :disabled="disabled"
+          title="Start date for backtesting period"
+        />
+      </div>
+      <div class="form-group">
+        <label for="dateTo">Date To</label>
+        <input
+          id="dateTo"
+          v-model="formData.dateTo"
+          type="date"
+          class="form-input"
+          :disabled="disabled"
+          title="End date for backtesting period"
+        />
+      </div>
+      <button 
+        :class="['action-btn', isRunning ? 'stop-btn' : 'start-btn']" 
+        :disabled="disabled && !isRunning" 
+        @click="handleAction"
+      >
+        <PlayIcon v-if="!isRunning" class="btn-icon" />
+        <StopIcon v-else class="btn-icon" />
+        {{ isRunning ? 'Stop' : 'Start' }}
       </button>
     </div>
     
-    <!-- Separator between testing parameters and dates -->
-    <div class="form-separator"></div>
-    
-    <!-- Slippage parameter -->
-    <div class="form-group">
-      <label for="slippageInSteps">Slippage (in steps)</label>
-      <input
-        id="slippageInSteps"
-        v-model.number="formData.slippageInSteps"
-        type="number"
-        step="0.1"
-        min="0"
-        class="form-input no-spinner"
-        :disabled="disabled"
-        placeholder="0.0"
-        title="Slippage in price steps for backtesting (e.g., 1.0 means 1 step). Applied to market orders only during testing."
-      />
+    <!-- Second row: feeTaker, feeMaker, precisionAmount, precisionPrice, priceStep, refresh-btn, slippageInSteps -->
+    <div class="form-row">
+      <div class="form-group">
+        <label for="feeTaker">Fee Taker</label>
+        <input
+          id="feeTaker"
+          v-model.number="formData.feeTaker"
+          type="number"
+          step="any"
+          min="0"
+          max="1"
+          class="form-input no-spinner"
+          :disabled="disabled"
+          placeholder="0.001"
+          title="Taker fee rate (applied to market orders, as fraction, e.g., 0.001 for 0.1%)"
+        />
+      </div>
+      <div class="form-group">
+        <label for="feeMaker">Fee Maker</label>
+        <input
+          id="feeMaker"
+          v-model.number="formData.feeMaker"
+          type="number"
+          step="any"
+          min="0"
+          max="1"
+          class="form-input no-spinner"
+          :disabled="disabled"
+          placeholder="0.001"
+          title="Maker fee rate (applied to limit orders, as fraction, e.g., 0.001 for 0.1%)"
+        />
+      </div>
+      <div class="form-group">
+        <label for="precisionAmount">
+          Precision Amount
+          <span class="required">*</span>
+        </label>
+        <input
+          id="precisionAmount"
+          v-model.number="formData.precisionAmount"
+          type="number"
+          step="any"
+          min="0"
+          class="form-input no-spinner"
+          :class="{ 'invalid': formData.precisionAmount <= 0 }"
+          :disabled="disabled"
+          placeholder="0.0"
+          title="Minimum step size for amount/base currency (e.g., 0.1, 0.001)"
+        />
+      </div>
+      <div class="form-group">
+        <label for="precisionPrice">
+          Precision Price
+          <span class="required">*</span>
+        </label>
+        <input
+          id="precisionPrice"
+          v-model.number="formData.precisionPrice"
+          type="number"
+          step="any"
+          min="0"
+          class="form-input no-spinner"
+          :class="{ 'invalid': formData.precisionPrice <= 0 }"
+          :disabled="disabled"
+          placeholder="0.0"
+          title="Minimum step size for price/quote currency (e.g., 0.1, 0.001)"
+        />
+      </div>
+      <div class="form-group">
+        <label for="priceStep">Price Step</label>
+        <input
+          id="priceStep"
+          v-model.number="formData.priceStep"
+          type="number"
+          step="0.0001"
+          min="0"
+          class="form-input no-spinner"
+          :disabled="disabled"
+          placeholder="0.0"
+          title="Minimum price step for the symbol (e.g., 0.1, 0.001)"
+        />
+      </div>
+      <div class="form-group">
+        <button
+          type="button"
+          class="refresh-btn"
+          :disabled="!formData.symbol || !formData.source || disabled || isLoadingSymbolInfo"
+          @click="refreshSymbolInfo"
+          title="Update fees, precision and price step from exchange (source)"
+        >
+          <ArrowPathIcon 
+            :class="['refresh-icon', { 'spinning': isLoadingSymbolInfo }]"
+          />
+        </button>
+      </div>
+      <div class="form-group">
+        <label for="slippageInSteps">Slippage (in steps)</label>
+        <input
+          id="slippageInSteps"
+          v-model.number="formData.slippageInSteps"
+          type="number"
+          step="0.1"
+          min="0"
+          class="form-input no-spinner"
+          :disabled="disabled"
+          placeholder="0.0"
+          title="Slippage in price steps for backtesting (e.g., 1.0 means 1 step). Applied to market orders only during testing."
+        />
+      </div>
     </div>
-    
-    <!-- Date parameters group -->
-    <div class="form-group">
-      <label for="dateFrom">Date From</label>
-      <input
-        id="dateFrom"
-        v-model="formData.dateFrom"
-        type="date"
-        class="form-input"
-        :disabled="disabled"
-        title="Start date for backtesting period"
-      />
-    </div>
-    <div class="form-group">
-      <label for="dateTo">Date To</label>
-      <input
-        id="dateTo"
-        v-model="formData.dateTo"
-        type="date"
-        class="form-input"
-        :disabled="disabled"
-        title="End date for backtesting period"
-      />
-    </div>
-    <button 
-      :class="['action-btn', isRunning ? 'stop-btn' : 'start-btn']" 
-      :disabled="disabled && !isRunning" 
-      @click="handleAction"
-    >
-      <PlayIcon v-if="!isRunning" class="btn-icon" />
-      <StopIcon v-else class="btn-icon" />
-      {{ isRunning ? 'Stop' : 'Start' }}
-    </button>
     
     <!-- Symbol Info Modal -->
     <Teleport to="body">
@@ -290,6 +321,8 @@ export default {
         dateTo: '',
         feeTaker: 0.0,
         feeMaker: 0.0,
+        precisionAmount: 0.0,
+        precisionPrice: 0.0,
         priceStep: 0.0,
         slippageInSteps: 1.0
       },
@@ -340,6 +373,8 @@ export default {
         if (newSource !== oldSource) {
           this.formData.feeTaker = 0.0
           this.formData.feeMaker = 0.0
+          this.formData.precisionAmount = 0.0
+          this.formData.precisionPrice = 0.0
           this.formData.priceStep = 0.0
         }
       }
@@ -405,8 +440,13 @@ export default {
             this.formData.feeMaker = symbolInfo.fee_maker
           }
           
-          // Use precision_price as price_step
+          // Fill precision values
+          if (symbolInfo.precision_amount !== null && symbolInfo.precision_amount !== undefined) {
+            this.formData.precisionAmount = symbolInfo.precision_amount
+          }
           if (symbolInfo.precision_price !== null && symbolInfo.precision_price !== undefined) {
+            this.formData.precisionPrice = symbolInfo.precision_price
+            // Also use precision_price as price_step (for backward compatibility)
             this.formData.priceStep = symbolInfo.precision_price
           }
         } else if (response.status === 404) {
@@ -493,12 +533,18 @@ export default {
 <style scoped>
 .backtesting-nav-form {
   display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  height: auto;
+  min-height: var(--navbar-height);
+}
+
+.form-row {
+  display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--spacing-lg);
-  height: auto;
-  min-height: var(--navbar-height);
-  align-content: center;
+  width: 100%;
 }
 
 .form-group {

@@ -9,7 +9,7 @@ from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
-from app.services.tasks.broker import Broker, OrderSide, OrderType, OrderStatus, OrderGroup, Trade, Order, Deal
+from app.services.tasks.broker import Broker, OrderSide, OrderType, OrderStatus, OrderGroup, Trade, Order, Deal, DealType
 from app.services.tasks.backtesting_result import BackTestingResults
 from app.core.logger import get_logger
 from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64, datetime64_to_iso
@@ -38,7 +38,7 @@ class BrokerBacktesting(Broker):
         Initialize broker.
         
         Args:
-            task: Task instance (contains fee_taker, fee_maker, price_step, slippage_in_steps)
+            task: Task instance (contains fee_taker, fee_maker, price_step, precision_amount, precision_price, slippage_in_steps)
             result_id: Unique ID for this backtesting run
             callbacks_dict: Dictionary with callback functions:
                 - 'on_start': Callable(parameters: Dict[str, Any])
@@ -389,6 +389,86 @@ class BrokerBacktesting(Broker):
         
         return executed_orders
     
+    def execute_orders_sltp(self, orders: List[Order]) -> List[Order]:
+        """
+        Execute or place orders from the list (for SLTP deals).
+        
+        Similar to execute_orders, but orders are already added via _add_order.
+        This method only processes orders (executes market, activates limit/stop).
+        
+        Args:
+            orders: List of orders already added via _add_order to execute/place
+            
+        Returns:
+            List of copies of executed/placed orders
+        """
+        if not orders:
+            return []
+        
+        if self.current_time is None:
+            raise RuntimeError("Cannot execute orders: current_time is not set")
+        
+        executed_orders = []
+        
+        for order in orders:
+            try:
+                # Assert that order was already added (has order_id)
+                assert order.order_id > 0, f"Order must be added via _add_order before processing (order_id={order.order_id})"
+                assert order.status == OrderStatus.NEW, f"Order must be in NEW status before processing (status={order.status})"
+                
+                if order.order_type == OrderType.MARKET:
+                    # Market order: execute immediately
+                    if self.price is None:
+                        raise RuntimeError("Cannot execute market order: price is not set")
+                    
+                    # Update order state before execution
+                    order.price = self.price
+                    order.modify_time = self.current_time
+                    
+                    # Execute trade (slippage will be applied in _execute_trade for market orders)
+                    self._execute_trade(
+                        order.side,
+                        order.volume,
+                        self.price,  # Pass base price, slippage applied in _execute_trade
+                        deal_id=order.deal_id,
+                        order_id=order.order_id,
+                        is_market_order=True
+                    )
+                    
+                    # Update order state after execution
+                    # Get actual execution price from the trade that was just created
+                    if len(self.trades) > 0:
+                        last_trade = self.trades[-1]
+                        order.price = last_trade.price  # Update with actual execution price (with slippage)
+                    order.filled_volume = order.volume
+                    order.status = OrderStatus.EXECUTED
+                    order.modify_time = self.current_time
+                    
+                elif order.order_type == OrderType.LIMIT:
+                    # Limit order: place it
+                    order.status = OrderStatus.ACTIVE
+                    order.modify_time = self.current_time
+                    self._add_order_to_np_arrays(order)
+                    
+                elif order.order_type == OrderType.STOP:
+                    # Stop order: place it
+                    order.status = OrderStatus.ACTIVE
+                    order.modify_time = self.current_time
+                    self._add_order_to_np_arrays(order)
+                
+                # Create a copy of the order for return
+                executed_orders.append(order.model_copy(deep=True))
+                
+            except Exception as e:
+                # Add error to order and mark as error
+                order.errors.append(str(e))
+                order.status = OrderStatus.ERROR
+                order.modify_time = self.current_time
+                # Still add to executed orders list (with error)
+                executed_orders.append(order.model_copy(deep=True))
+        
+        return executed_orders
+    
     def buy(self, quantity: VOLUME_TYPE, price: Optional[PRICE_TYPE] = None, trigger_price: Optional[PRICE_TYPE] = None) -> List[Order]:
         """
         Create buy order(s) and execute/place them.
@@ -575,15 +655,145 @@ class BrokerBacktesting(Broker):
         
         Returns:
             Optional[Deal]: Copy of the deal that groups all orders (orders are in deal.orders),
-                          or None if deal was not created
-        
-        Note:
-            This is a stub implementation. Full implementation will be added later.
+                          or None if deal was not created (e.g., due to errors)
         """
-        # TODO: Implement full logic
-        # TODO: Check that if entries contains market order (price=None), list has only one element
-        # For now, return empty result as stub
-        return None
+        if self.current_time is None:
+            raise RuntimeError("Cannot execute deal: current_time is not set")
+        
+        # 1. Create deal
+        deal_id = self.create_deal()
+        
+        # 2. Check market entry constraint
+        market_entry_count = sum(1 for _, price in entries if price is None)
+        if market_entry_count > 0:
+            assert len(entries) == 1, f"Market entry (price=None) must be the only entry, got {len(entries)} entries"
+        
+        # 3. Determine entry type and calculate total volume
+        is_market_entry = market_entry_count > 0
+        total_entry_volume = sum(vol for vol, _ in entries)
+        assert total_entry_volume > 0, f"Total entry volume must be positive, got {total_entry_volume}"
+        
+        # 4. Create entry orders
+        entry_orders = []
+        for volume, price in entries:
+            if price is None:
+                # Market order
+                order = Order(
+                    order_id=0,  # Will be assigned by _add_order
+                    deal_id=deal_id,
+                    order_type=OrderType.MARKET,
+                    create_time=self.current_time,
+                    modify_time=self.current_time,
+                    side=side,
+                    price=None,
+                    trigger_price=None,
+                    volume=volume,
+                    filled_volume=0.0,
+                    status=OrderStatus.NEW,
+                    order_group=OrderGroup.NONE,
+                    fraction=None,
+                    errors=[]
+                )
+            else:
+                # Limit order
+                order = Order(
+                    order_id=0,  # Will be assigned by _add_order
+                    deal_id=deal_id,
+                    order_type=OrderType.LIMIT,
+                    create_time=self.current_time,
+                    modify_time=self.current_time,
+                    side=side,
+                    price=PRICE_TYPE(price),
+                    trigger_price=None,
+                    volume=volume,
+                    filled_volume=0.0,
+                    status=OrderStatus.NEW,
+                    order_group=OrderGroup.NONE,
+                    fraction=None,
+                    errors=[]
+                )
+            entry_orders.append(order)
+            self._add_order(order)
+        
+        # 5. Set deal type based on entry side
+        deal = self.get_deal_by_id(deal_id)
+        if side == OrderSide.BUY:
+            deal.type = DealType.LONG
+        else:  # OrderSide.SELL
+            deal.type = DealType.SHORT
+        
+        # 6. Create stop loss orders
+        stop_orders = []
+        opposite_side = OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY
+        for fraction, price in stop_losses:
+            assert fraction is not None, "Fraction must be set for stop loss orders"
+            assert 0 < fraction <= 1.0, f"Stop loss fraction must be in (0, 1], got {fraction}"
+            
+            order = Order(
+                order_id=0,  # Will be assigned by _add_order
+                deal_id=deal_id,
+                order_type=OrderType.STOP,
+                create_time=self.current_time,
+                modify_time=self.current_time,
+                side=opposite_side,
+                price=None,
+                trigger_price=PRICE_TYPE(price),
+                volume=fraction * total_entry_volume,
+                filled_volume=0.0,
+                status=OrderStatus.NEW,
+                order_group=OrderGroup.STOP_LOSS,
+                fraction=float(fraction),
+                errors=[]
+            )
+            stop_orders.append(order)
+            self._add_order(order)
+        
+        # 7. Create take profit orders
+        take_orders = []
+        for fraction, price in take_profits:
+            assert fraction is not None, "Fraction must be set for take profit orders"
+            assert 0 < fraction <= 1.0, f"Take profit fraction must be in (0, 1], got {fraction}"
+            
+            order = Order(
+                order_id=0,  # Will be assigned by _add_order
+                deal_id=deal_id,
+                order_type=OrderType.LIMIT,
+                create_time=self.current_time,
+                modify_time=self.current_time,
+                side=opposite_side,
+                price=PRICE_TYPE(price),
+                trigger_price=None,
+                volume=fraction * total_entry_volume,
+                filled_volume=0.0,
+                status=OrderStatus.NEW,
+                order_group=OrderGroup.TAKE_PROFIT,
+                fraction=float(fraction),
+                errors=[]
+            )
+            take_orders.append(order)
+            self._add_order(order)
+        
+        # 8. Form list of orders to execute
+        orders_to_execute = []
+        # Always add entry orders and stop orders
+        orders_to_execute.extend(entry_orders)
+        orders_to_execute.extend(stop_orders)
+        # Add take profit orders only for market entry
+        if is_market_entry:
+            orders_to_execute.extend(take_orders)
+        # Note: take profit orders for limit entry remain in NEW status and will be activated later
+        
+        # 9. Execute orders
+        executed_orders = self.execute_orders_sltp(orders_to_execute)
+        
+        # 10. Check for errors
+        has_errors = any(order.status == OrderStatus.ERROR for order in executed_orders)
+        if has_errors:
+            self.close_deal(deal_id)
+            return None
+        
+        # 11. Return deal
+        return self.get_deal_by_id(deal_id)
     
     def _add_order_to_np_arrays(self, order: Order) -> None:
         """
@@ -688,7 +898,7 @@ class BrokerBacktesting(Broker):
         # Remove order from arrays (no longer active)
         self._remove_order_from_np_arrays(order)
     
-    def _check_and_execute_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
+    def _execute_triggered_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
         """
         Check for triggered orders (limit and stop) on current bar and execute them.
         Uses vectorized operations to find triggered orders.
@@ -737,6 +947,38 @@ class BrokerBacktesting(Broker):
                     order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                     self._execute_triggered_order(order, high, low)
     
+    def _update_sltp_orders(self) -> None:
+        """
+        Update stop loss and take profit orders for active deals.
+        Updates order volumes and activation status based on current deal positions.
+        
+        This method iterates through all active deals and updates their exit orders
+        (stop losses and take profits) to reflect current position sizes.
+        """
+        # Iterate through active deals
+        for deal_id in self.active_deals:
+            deal = self.get_deal_by_id(deal_id)
+            # TODO: Update stop loss and take profit order volumes based on deal.quantity
+            # TODO: Activate take profit orders when entry orders are executed
+            pass
+    
+    def _check_and_execute_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
+        """
+        Check and execute orders on current bar.
+        
+        First executes triggered orders (limit and stop), then updates SL/TP orders
+        for active deals based on current position sizes.
+        
+        Args:
+            high: High price of current bar
+            low: Low price of current bar
+        """
+        # First: execute triggered orders
+        self._execute_triggered_orders(high, low)
+        
+        # Second: update stop loss and take profit orders for active deals
+        self._update_sltp_orders()
+    
     def cancel_orders(self, order_ids: List[int]) -> List[Order]:
         """
         Cancel orders by their IDs.
@@ -751,6 +993,8 @@ class BrokerBacktesting(Broker):
         Returns:
             List of copies of orders (canceled if they were ACTIVE, or as-is if not ACTIVE)
         """
+        assert self.current_time is not None, "Cannot cancel orders: current_time is not set"
+        
         canceled_orders = []
         
         for order_id in order_ids:
@@ -766,11 +1010,7 @@ class BrokerBacktesting(Broker):
             if order.status == OrderStatus.ACTIVE:
                 # Cancel order
                 order.status = OrderStatus.CANCELED
-                if self.current_time is not None:
-                    order.modify_time = self.current_time
-                else:
-                    # If current_time is not set, use create_time (shouldn't happen in normal flow)
-                    order.modify_time = order.create_time
+                order.modify_time = self.current_time
                 
                 # Remove from numpy arrays
                 self._remove_order_from_np_arrays(order)
@@ -779,6 +1019,62 @@ class BrokerBacktesting(Broker):
             canceled_orders.append(order.model_copy(deep=True))
         
         return canceled_orders
+    
+    def close_deal(self, deal_id: int) -> None:
+        """
+        Close a specific deal by canceling all active orders and closing position.
+        
+        Args:
+            deal_id: ID of the deal to close
+        """
+        assert self.current_time is not None, "Cannot close deal: current_time is not set"
+        
+        deal = self.get_deal_by_id(deal_id)
+        
+        # Deactivate all active orders in the deal
+        for order in deal.orders:
+            if order.status == OrderStatus.ACTIVE:
+                order.status = OrderStatus.CANCELED
+                order.modify_time = self.current_time
+                # Remove from numpy arrays
+                self._remove_order_from_np_arrays(order)
+        
+        # Close position if there is any
+        if abs(deal.quantity) > 1e-10:  # Use tolerance for floating point comparison
+            # Determine closing side based on deal type
+            if deal.type is None:
+                # If deal type is not set, determine from quantity sign
+                # Positive quantity means we bought (LONG), need to sell
+                # Negative quantity means we sold (SHORT), need to buy
+                close_side = OrderSide.SELL if deal.quantity > 0 else OrderSide.BUY
+            else:
+                # Use deal type
+                if deal.type == DealType.LONG:
+                    close_side = OrderSide.SELL
+                else:  # DealType.SHORT
+                    close_side = OrderSide.BUY
+            
+            # Create market order to close position
+            close_order = Order(
+                order_id=0,  # Will be assigned by _add_order
+                deal_id=deal_id,
+                order_type=OrderType.MARKET,
+                create_time=self.current_time,
+                modify_time=self.current_time,
+                side=close_side,
+                price=None,
+                trigger_price=None,
+                volume=abs(deal.quantity),
+                filled_volume=0.0,
+                status=OrderStatus.NEW,
+                order_group=OrderGroup.NONE,
+                fraction=None,
+                errors=[]
+            )
+            
+            # Add order and execute
+            self._add_order(close_order)
+            self.execute_orders_sltp([close_order])
     
     def close_deals(self):
         """
@@ -809,6 +1105,11 @@ class BrokerBacktesting(Broker):
             # If no list, skip state update (standalone mode)
             return
         
+        # Assert that current_time is set (required for progress calculation)
+        assert self.current_time is not None, "Cannot update state: current_time is not set"
+        assert self.date_start is not None, "Cannot update state: date_start is not set"
+        assert self.date_end is not None, "Cannot update state: date_end is not set"
+        
         # Calculate and update progress based on current_time and date range
         total_delta = self.date_end - self.date_start
         current_delta = self.current_time - self.date_start
@@ -816,8 +1117,8 @@ class BrokerBacktesting(Broker):
         self.progress = round(max(0.0, min(100.0, progress)), 1)
         
         # Convert datetime64 to ISO strings for frontend
-        date_start_iso = datetime64_to_iso(self.date_start) if self.date_start is not None else None
-        current_time_iso = datetime64_to_iso(self.current_time) if self.current_time is not None else None
+        date_start_iso = datetime64_to_iso(self.date_start)
+        current_time_iso = datetime64_to_iso(self.current_time)
         
         # Save results to Redis if results instance is provided
         if results is not None:

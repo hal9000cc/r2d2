@@ -32,6 +32,8 @@ class Task(Objects2Redis):
     fee_taker: float = 0.0  # Taker fee rate (as fraction, e.g., 0.001 for 0.1%)
     fee_maker: float = 0.0  # Maker fee rate (as fraction, e.g., 0.001 for 0.1%)
     price_step: float = 0.0  # Minimum price step for the symbol (e.g., 0.1, 0.001)
+    precision_amount: float = 0.0  # Minimum step size for amount/base currency (e.g., 0.1, 0.001)
+    precision_price: float = 0.0  # Minimum step size for price/quote currency (e.g., 0.1, 0.001)
     slippage_in_steps: float = 1.0  # Slippage in price steps (e.g., 1.0 means 1 step)
     parameters: Dict[str, Any] = Field(default_factory=dict)
     
