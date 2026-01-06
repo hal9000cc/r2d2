@@ -12,7 +12,7 @@ from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 
 # Import Order for runtime use (needed for OrderOperationResult)
-from app.services.tasks.broker_backtesting import Order
+from app.services.tasks.broker import Order
 
 if TYPE_CHECKING:
     from app.services.tasks.broker_backtesting import BrokerBacktesting as Broker, ta_proxy
@@ -25,7 +25,7 @@ class OrderOperationResult(BaseModel):
     Result of order operation (buy/sell/cancel).
     Contains orders, error messages, and categorized order IDs by status.
     """
-    orders: List['Order'] = Field(default_factory=list, description="List of orders created by this operation")
+    orders: List[Order] = Field(default_factory=list, description="List of orders created by this operation")
     error_messages: List[str] = Field(default_factory=list, description="List of error messages (if any)")
     active: List[int] = Field(default_factory=list, description="List of active order IDs")
     executed: List[int] = Field(default_factory=list, description="List of executed order IDs")
@@ -136,7 +136,7 @@ class Strategy(ABC):
         deal_id = 0
         if orders:
             # Get deal_id from first order (all orders in buy/sell have same deal_id)
-            deal_id = orders[0].deal_id if orders[0].deal_id is not None else 0
+            deal_id = orders[0].deal_id
         
         return OrderOperationResult(
             orders=orders,
@@ -184,7 +184,7 @@ class Strategy(ABC):
         deal_id = 0
         if orders:
             # Get deal_id from first order (all orders in buy/sell have same deal_id)
-            deal_id = orders[0].deal_id if orders[0].deal_id is not None else 0
+            deal_id = orders[0].deal_id
         
         return OrderOperationResult(
             orders=orders,
@@ -530,7 +530,10 @@ class Strategy(ABC):
             )
         
         # Execute deal through broker
-        orders, deal = self.broker.execute_deal(OrderSide.BUY, entries, stop_losses, take_profits)
+        deal = self.broker.execute_deal(OrderSide.BUY, entries, stop_losses, take_profits)
+        
+        # Get orders from deal (if deal was created)
+        orders = deal.orders if deal else []
         
         # Extract errors from orders
         all_errors = [error for order in orders for error in order.errors]
@@ -623,7 +626,10 @@ class Strategy(ABC):
             )
         
         # Execute deal through broker
-        orders, deal = self.broker.execute_deal(OrderSide.SELL, entries, stop_losses, take_profits)
+        deal = self.broker.execute_deal(OrderSide.SELL, entries, stop_losses, take_profits)
+        
+        # Get orders from deal (if deal was created)
+        orders = deal.orders if deal else []
         
         # Extract errors from orders
         all_errors = [error for order in orders for error in order.errors]

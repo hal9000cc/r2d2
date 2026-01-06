@@ -6,14 +6,13 @@ from enum import Enum
 from typing import List, Optional, Dict, Tuple, TYPE_CHECKING
 
 import numpy as np
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.core.logger import get_logger
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
-    from app.services.tasks.broker_backtesting import Order
 
 logger = get_logger(__name__)
 
@@ -46,6 +45,173 @@ class OrderGroup(Enum):
 class DealType(Enum):
     LONG = "long"
     SHORT = "short"
+
+
+class Trade(BaseModel):
+    """
+    Represents a single trade (buy or sell operation).
+    """
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    trade_id: int = Field(gt=0)
+    deal_id: int = 0  # Will be set when trade is added to deal
+    order_id: int
+    time: np.datetime64
+    side: OrderSide
+    price: PRICE_TYPE
+    quantity: VOLUME_TYPE
+    fee: PRICE_TYPE
+    sum: PRICE_TYPE
+
+
+class Order(BaseModel):
+    """
+    Represents an order.
+    
+    Can be a limit order or a conditional order (stop order):
+    - Limit order: only `price` is set. Executes when market price reaches limit price.
+    - Stop order: `trigger_price` is set. Executes when market price reaches trigger price.
+    - Stop-limit order: both `price` and `trigger_price` are set. When trigger_price is reached,
+      a limit order at `price` is placed.
+    
+    The `modify_time` field is updated whenever the order is modified (executed, cancelled, etc.).
+    This allows filtering orders by modification time for efficient retrieval.
+    
+    The `fraction` field is used for stop loss and take profit orders to specify what fraction
+    of the position should be closed when the order executes. For entry orders, this field is None.
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    order_id: int = Field(description="Order ID (assigned when order is added to orders list)")
+    deal_id: int = 0  # Deal ID (0 means no deal)
+    order_type: OrderType  # Type of order: limit or stop (market orders are not stored as Order objects)
+    create_time: np.datetime64
+    modify_time: np.datetime64
+    side: OrderSide
+    price: Optional[PRICE_TYPE] = None
+    trigger_price: Optional[PRICE_TYPE] = None
+    volume: VOLUME_TYPE
+    filled_volume: VOLUME_TYPE = 0.0
+    status: OrderStatus = OrderStatus.NEW
+    order_group: OrderGroup = OrderGroup.NONE  # Order group: 0 - none, 1 - stop loss, 2 - take profit
+    fraction: Optional[float] = None  # Fraction of position to close (for stop loss and take profit orders)
+    errors: List[str] = Field(default_factory=list)  # List of validation/execution errors
+    
+    @model_validator(mode='after')
+    def validate_order(self):
+        """Validate order fields.
+        
+        - order_id must be greater than 0 if order is not in NEW or ERROR status.
+        - fraction must be set (not None) for orders with order_group != NONE.
+        """
+        # Validate order_id
+        if self.order_id <= 0 and self.status not in (OrderStatus.NEW, OrderStatus.ERROR):
+            raise ValueError(f"order_id must be greater than 0 for orders with status {self.status}")
+        
+        # Validate fraction for exit orders
+        if self.order_group != OrderGroup.NONE and self.fraction is None:
+            raise ValueError(f"fraction must be set for orders with order_group={self.order_group}")
+        
+        return self
+
+
+class Deal(BaseModel):
+    """
+    Trading deal that groups multiple trades and orders.
+
+    - Accumulates trades belonging to a single logical deal.
+    - Accumulates orders (entry and exit) belonging to a single logical deal.
+    - Tracks average buy and sell prices across all trades.
+    - Tracks current position quantity, total fees and profit.
+    """
+
+    deal_id: int = Field(gt=0)
+    trades: List[Trade] = Field(default_factory=list)
+    orders: List[Order] = Field(default_factory=list)  # List of orders (entry and exit) associated with this deal
+
+    # Deal type (long/short) - determined by first trade
+    type: Optional[DealType] = None
+
+    # Average prices across all buy / sell trades in the deal
+    avg_buy_price: Optional[PRICE_TYPE] = None
+    avg_sell_price: Optional[PRICE_TYPE] = None
+
+    # Current position quantity in symbol units; becomes 0 when fully closed
+    quantity: VOLUME_TYPE = 0.0
+
+    # Aggregated fees and realized profit for the deal
+    fee: PRICE_TYPE = 0.0
+    profit: Optional[PRICE_TYPE] = None
+
+    # Internal accumulators for efficient incremental updates
+    buy_quantity: VOLUME_TYPE = 0.0
+    buy_cost: PRICE_TYPE = 0.0
+    sell_quantity: VOLUME_TYPE = 0.0
+    sell_proceeds: PRICE_TYPE = 0.0
+
+    def add_trade(self, trade: Trade) -> None:
+        """
+        Add trade to the deal and update aggregates incrementally.
+
+        - Sets trade.deal_id to this deal_id.
+        - Sets deal type (long/short) based on first trade if not set.
+        - Updates quantity, avg_buy_price, avg_sell_price, fee and profit.
+        """
+
+        trade.deal_id = self.deal_id
+        self.trades.append(trade)
+
+        # Set deal type based on first trade
+        if self.type is None:
+            if trade.side == OrderSide.BUY:
+                self.type = DealType.LONG
+            else:
+                self.type = DealType.SHORT
+
+        self.fee += trade.fee
+
+        if trade.side == OrderSide.BUY:
+            self.buy_quantity += trade.quantity
+            self.buy_cost += trade.sum
+            self.quantity += trade.quantity
+        else:
+            self.sell_quantity += trade.quantity
+            self.sell_proceeds += trade.sum
+            self.quantity -= trade.quantity
+
+        self.avg_buy_price = (
+            self.buy_cost / self.buy_quantity if self.buy_quantity > 0 else None
+        )
+        self.avg_sell_price = (
+            self.sell_proceeds / self.sell_quantity if self.sell_quantity > 0 else None
+        )
+
+        # Calculate profit when deal is closed (quantity == 0)
+        if self.quantity == 0:
+            self.profit = self.sell_proceeds - self.buy_cost - self.fee
+        else:
+            self.profit = None
+
+    @property
+    def is_closed(self) -> bool:
+        """
+        Check if deal is closed (quantity == 0).
+        """
+        return self.quantity == 0
+
+    def get_unrealized_profit(self, current_price: PRICE_TYPE) -> Optional[PRICE_TYPE]:
+        """
+        Calculate unrealized profit for an open position at the given price.
+
+        For closed positions, the result matches the realized profit.
+        """
+        # Value of current open position at market price
+        current_value = self.quantity * current_price
+
+        # Hypothetical total PnL if we closed the position now:
+        # (all sells done + value of remaining position) - all buys - all fees
+        return self.sell_proceeds + current_value - self.buy_cost - self.fee
 
 
 class TradingStats(BaseModel):
@@ -109,7 +275,7 @@ class TradingStats(BaseModel):
     date_start: str  # Start date (ISO format)
     date_end: str  # End date (ISO format)
     
-    def add_trade(self, trade: 'Broker.Trade') -> None:
+    def add_trade(self, trade: Trade) -> None:
         """
         Add trade to statistics.
         
@@ -154,7 +320,7 @@ class TradingStats(BaseModel):
         if current_drawdown > self.drawdown_max:
             self.drawdown_max = current_drawdown
     
-    def add_deal(self, deal: 'Broker.Deal') -> None:
+    def add_deal(self, deal: Deal) -> None:
         """
         Add deal to statistics.
         
@@ -209,121 +375,6 @@ class Broker(ABC):
     Generic broker base class.
     """
     
-    class Trade(BaseModel):
-        """
-        Represents a single trade (buy or sell operation).
-        """
-        
-        model_config = ConfigDict(arbitrary_types_allowed=True)
-
-        trade_id: int = Field(gt=0)
-        deal_id: int = 0  # Will be set when trade is added to deal
-        order_id: int
-        time: np.datetime64
-        side: OrderSide
-        price: PRICE_TYPE
-        quantity: VOLUME_TYPE
-        fee: PRICE_TYPE
-        sum: PRICE_TYPE
-
-    class Deal(BaseModel):
-        """
-        Trading deal that groups multiple trades and orders.
-
-        - Accumulates trades belonging to a single logical deal.
-        - Accumulates orders (entry and exit) belonging to a single logical deal.
-        - Tracks average buy and sell prices across all trades.
-        - Tracks current position quantity, total fees and profit.
-        """
-
-        deal_id: int = Field(gt=0)
-        trades: List['Broker.Trade'] = Field(default_factory=list)
-        orders: List['Order'] = Field(default_factory=list)  # List of orders (entry and exit) associated with this deal
-
-        # Deal type (long/short) - determined by first trade
-        type: Optional['DealType'] = None
-
-        # Average prices across all buy / sell trades in the deal
-        avg_buy_price: Optional[PRICE_TYPE] = None
-        avg_sell_price: Optional[PRICE_TYPE] = None
-
-        # Current position quantity in symbol units; becomes 0 when fully closed
-        quantity: VOLUME_TYPE = 0.0
-
-        # Aggregated fees and realized profit for the deal
-        fee: PRICE_TYPE = 0.0
-        profit: Optional[PRICE_TYPE] = None
-
-        # Internal accumulators for efficient incremental updates
-        buy_quantity: VOLUME_TYPE = 0.0
-        buy_cost: PRICE_TYPE = 0.0
-        sell_quantity: VOLUME_TYPE = 0.0
-        sell_proceeds: PRICE_TYPE = 0.0
-
-        def add_trade(self, trade: 'Broker.Trade') -> None:
-            """
-            Add trade to the deal and update aggregates incrementally.
-
-            - Sets trade.deal_id to this deal_id.
-            - Sets deal type (long/short) based on first trade if not set.
-            - Updates quantity, avg_buy_price, avg_sell_price, fee and profit.
-            """
-
-            trade.deal_id = self.deal_id
-            self.trades.append(trade)
-
-            # Set deal type based on first trade
-            if self.type is None:
-                if trade.side == OrderSide.BUY:
-                    self.type = DealType.LONG
-                else:
-                    self.type = DealType.SHORT
-
-            self.fee += trade.fee
-
-            if trade.side == OrderSide.BUY:
-                self.buy_quantity += trade.quantity
-                self.buy_cost += trade.sum
-                self.quantity += trade.quantity
-            else:
-                self.sell_quantity += trade.quantity
-                self.sell_proceeds += trade.sum
-                self.quantity -= trade.quantity
-
-            self.avg_buy_price = (
-                self.buy_cost / self.buy_quantity if self.buy_quantity > 0 else None
-            )
-            self.avg_sell_price = (
-                self.sell_proceeds / self.sell_quantity if self.sell_quantity > 0 else None
-            )
-
-            # Realized profit only when position is fully closed
-            if self.is_closed:
-                self.profit = self.sell_proceeds - self.buy_cost - self.fee
-            else:
-                self.profit = None
-
-        @property
-        def is_closed(self) -> bool:
-            """
-            Deal is closed when there was at least one trade and
-            total bought quantity equals total sold quantity.
-            """
-            return (self.buy_quantity > 0 or self.sell_quantity > 0) and self.buy_quantity == self.sell_quantity
-
-        def get_unrealized_profit(self, current_price: PRICE_TYPE) -> Optional[PRICE_TYPE]:
-            """
-            Calculate unrealized profit for an open position at the given price.
-
-            For closed positions, the result matches the realized profit.
-            """
-            # Value of current open position at market price
-            current_value = self.quantity * current_price
-
-            # Hypothetical total PnL if we closed the position now:
-            # (all sells done + value of remaining position) - all buys - all fees
-            return self.sell_proceeds + current_value - self.buy_cost - self.fee
-
     def __init__(self, result_id: str):
         """
         Initialize broker.
@@ -331,8 +382,8 @@ class Broker(ABC):
         Args:
             result_id: Unique ID for this backtesting run
         """
-        self.deals: Optional[List['Broker.Deal']] = None
-        self.trades: List['Broker.Trade'] = []
+        self.deals: Optional[List[Deal]] = None
+        self.trades: List[Trade] = []
         self.result_id = result_id
         self.last_auto_deal_id: Optional[int] = None
 
@@ -495,7 +546,7 @@ class Broker(ABC):
         return errors
 
 
-    def get_deal_by_id(self, deal_id: int) -> 'Broker.Deal':
+    def get_deal_by_id(self, deal_id: int) -> Deal:
         """
         Get deal by deal_id (deal_id = index + 1).
         Raises IndexError if deal with such deal_id does not exist.
@@ -517,11 +568,11 @@ class Broker(ABC):
             deal_id: Unique deal identifier
         """
         new_deal_id = len(self.deals) + 1
-        new_deal = Broker.Deal(deal_id=new_deal_id)
+        new_deal = Deal(deal_id=new_deal_id)
         self.deals.append(new_deal)
         return new_deal_id
     
-    def get_last_open_auto_deal(self) -> Optional['Broker.Deal']:
+    def get_last_open_auto_deal(self) -> Optional[Deal]:
         """
         Return last not-closed automatic deal or None.
         Automatic deals are tracked via last_auto_deal_id.
@@ -537,7 +588,7 @@ class Broker(ABC):
             self.last_auto_deal_id = None
             return None
     
-    def _add_trade_to_deal(self, deal: 'Broker.Deal', trade: 'Broker.Trade') -> None:
+    def _add_trade_to_deal(self, deal: Deal, trade: Trade) -> None:
         """
         Add trade to deal and update statistics.
         
@@ -635,7 +686,7 @@ class Broker(ABC):
         fee: PRICE_TYPE,
         time: np.datetime64,
         order_id: Optional[int] = None,
-    ) -> 'Broker.Trade':
+    ) -> Trade:
         """
         Create Trade object from quantity, price, fee and time.
         Assigns trade_id based on trades list size and adds trade to the list.
@@ -651,7 +702,7 @@ class Broker(ABC):
         trade_id = len(self.trades) + 1
         trade_amount = quantity * price
 
-        trade = Broker.Trade(
+        trade = Trade(
             trade_id=trade_id,
             deal_id=0,  # Will be set by deal
             order_id=order_id if order_id is not None else 0,
@@ -666,7 +717,7 @@ class Broker(ABC):
         self.trades.append(trade)
         return trade
 
-    def _create_auto_deal(self) -> 'Broker.Deal':
+    def _create_auto_deal(self) -> Deal:
         """
         Create a new automatic deal and update last_auto_deal_id.
         
@@ -674,12 +725,12 @@ class Broker(ABC):
             Newly created Deal instance
         """
         new_deal_id = len(self.deals) + 1
-        new_deal = Broker.Deal(deal_id=new_deal_id)
+        new_deal = Deal(deal_id=new_deal_id)
         self.deals.append(new_deal)
         self.last_auto_deal_id = new_deal_id
         return new_deal
 
-    def register_trade(self, trade: 'Broker.Trade', deal_id: Optional[int]) -> Dict[str, List[int]]:
+    def register_trade(self, trade: Trade, deal_id: Optional[int]) -> Dict[str, List[int]]:
         """
         Core logic for registering trade in deals with flip handling.
         
@@ -687,7 +738,7 @@ class Broker(ABC):
             Dictionary with 'trades' and 'deals' lists containing IDs of created/affected trades and deals
         """
         # Explicit deal_id: just add to that deal, no flip-logic
-        if deal_id is not None:
+        if deal_id > 0:
             deal = self.get_deal_by_id(deal_id)
             self._add_trade_to_deal(deal, trade)
             return {

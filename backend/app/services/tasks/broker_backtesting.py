@@ -4,12 +4,12 @@ Broker class for handling trading operations and backtesting execution.
 from typing import Optional, Dict, Callable, List, Tuple, TYPE_CHECKING
 import numpy as np
 import time
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
-from app.services.tasks.broker import Broker, OrderSide, OrderType, OrderStatus, OrderGroup
+from app.services.tasks.broker import Broker, OrderSide, OrderType, OrderStatus, OrderGroup, Trade, Order, Deal
 from app.services.tasks.backtesting_result import BackTestingResults
 from app.core.logger import get_logger
 from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64, datetime64_to_iso
@@ -17,61 +17,8 @@ from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 from app.services.tasks.indicator_proxy import ta_proxy_talib
 
-if TYPE_CHECKING:
-    from app.services.tasks.broker import Deal
 
 logger = get_logger(__name__)
-
-
-class Order(BaseModel):
-    """
-    Represents an order.
-    
-    Can be a limit order or a conditional order (stop order):
-    - Limit order: only `price` is set. Executes when market price reaches limit price.
-    - Stop order: `trigger_price` is set. Executes when market price reaches trigger price.
-    - Stop-limit order: both `price` and `trigger_price` are set. When trigger_price is reached,
-      a limit order at `price` is placed.
-    
-    The `modify_time` field is updated whenever the order is modified (executed, cancelled, etc.).
-    This allows filtering orders by modification time for efficient retrieval.
-    
-    The `fraction` field is used for stop loss and take profit orders to specify what fraction
-    of the position should be closed when the order executes. For entry orders, this field is None.
-    """
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    
-    order_id: int = Field(description="Order ID (assigned when order is added to orders list)")
-    deal_id: Optional[int] = None
-    order_type: OrderType  # Type of order: limit or stop (market orders are not stored as Order objects)
-    create_time: np.datetime64
-    modify_time: np.datetime64
-    side: OrderSide
-    price: Optional[PRICE_TYPE] = None
-    trigger_price: Optional[PRICE_TYPE] = None
-    volume: VOLUME_TYPE
-    filled_volume: VOLUME_TYPE = 0.0
-    status: OrderStatus = OrderStatus.NEW
-    order_group: OrderGroup = OrderGroup.NONE  # Order group: 0 - none, 1 - stop loss, 2 - take profit
-    fraction: Optional[float] = None  # Fraction of position to close (for stop loss and take profit orders)
-    errors: List[str] = Field(default_factory=list)  # List of validation/execution errors
-    
-    @model_validator(mode='after')
-    def validate_order(self):
-        """Validate order fields.
-        
-        - order_id must be greater than 0 if order is not in NEW or ERROR status.
-        - fraction must be set (not None) for orders with order_group != NONE.
-        """
-        # Validate order_id
-        if self.order_id <= 0 and self.status not in (OrderStatus.NEW, OrderStatus.ERROR):
-            raise ValueError(f"order_id must be greater than 0 for orders with status {self.status}")
-        
-        # Validate fraction for exit orders
-        if self.order_group != OrderGroup.NONE and self.fraction is None:
-            raise ValueError(f"fraction must be set for orders with order_group={self.order_group}")
-        
-        return self
 
 
 class BrokerBacktesting(Broker):
@@ -342,6 +289,30 @@ class BrokerBacktesting(Broker):
         
         return orders, error_count
     
+    def _add_order(self, order: Order) -> int:
+        """
+        Add order to orders list and assign order_id.
+        If order has deal_id set, also adds order to the deal's orders list.
+        
+        Args:
+            order: Order to add
+            
+        Returns:
+            int: Assigned order_id
+        """
+        # Assign order_id
+        order.order_id = len(self.orders) + 1
+        
+        # If deal_id is set, add order to deal's orders list
+        if order.deal_id != 0:
+            deal = self.get_deal_by_id(order.deal_id)
+            deal.orders.append(order)
+        
+        # Add order to orders list
+        self.orders.append(order)
+        
+        return order.order_id
+    
     def execute_orders(self, orders: List[Order]) -> List[Order]:
         """
         Execute or place orders from the list.
@@ -374,8 +345,7 @@ class BrokerBacktesting(Broker):
                     order.modify_time = self.current_time
                     
                     # Add to orders list for history (before execution)
-                    order.order_id = len(self.orders) + 1
-                    self.orders.append(order)
+                    self._add_order(order)
                     
                     # Execute trade (slippage will be applied in _execute_trade for market orders)
                     self._execute_trade(
@@ -397,17 +367,15 @@ class BrokerBacktesting(Broker):
                     
                 elif order.order_type == OrderType.LIMIT:
                     # Limit order: place it
-                    order.order_id = len(self.orders) + 1
                     order.status = OrderStatus.ACTIVE
-                    self.orders.append(order)
-                    self._add_order_to_arrays(order)
+                    self._add_order(order)
+                    self._add_order_to_np_arrays(order)
                     
                 elif order.order_type == OrderType.STOP:
                     # Stop order: place it
-                    order.order_id = len(self.orders) + 1
                     order.status = OrderStatus.ACTIVE
-                    self.orders.append(order)
-                    self._add_order_to_arrays(order)
+                    self._add_order(order)
+                    self._add_order_to_np_arrays(order)
                 
                 # Create a copy of the order for return
                 executed_orders.append(order.model_copy(deep=True))
@@ -451,7 +419,7 @@ class BrokerBacktesting(Broker):
                 filled_volume=0.0,
                 status=OrderStatus.NEW,
                 side=OrderSide.BUY,
-                deal_id=None,
+                deal_id=0,
                 trigger_price=trigger_price,
                 order_type=OrderType.STOP,
                 errors=[]
@@ -467,7 +435,7 @@ class BrokerBacktesting(Broker):
                 filled_volume=0.0,
                 status=OrderStatus.NEW,
                 side=OrderSide.BUY,
-                deal_id=None,
+                deal_id=0,
                 trigger_price=None,
                 order_type=OrderType.LIMIT,
                 errors=[]
@@ -483,7 +451,7 @@ class BrokerBacktesting(Broker):
                 filled_volume=0.0,
                 status=OrderStatus.NEW,
                 side=OrderSide.BUY,
-                deal_id=None,
+                deal_id=0,
                 trigger_price=None,
                 order_type=OrderType.MARKET,
                 errors=[]
@@ -529,7 +497,7 @@ class BrokerBacktesting(Broker):
                 filled_volume=0.0,
                 status=OrderStatus.NEW,
                 side=OrderSide.SELL,
-                deal_id=None,
+                deal_id=0,
                 trigger_price=trigger_price,
                 order_type=OrderType.STOP,
                 errors=[]
@@ -545,7 +513,7 @@ class BrokerBacktesting(Broker):
                 filled_volume=0.0,
                 status=OrderStatus.NEW,
                 side=OrderSide.SELL,
-                deal_id=None,
+                deal_id=0,
                 trigger_price=None,
                 order_type=OrderType.LIMIT,
                 errors=[]
@@ -561,7 +529,7 @@ class BrokerBacktesting(Broker):
                 filled_volume=0.0,
                 status=OrderStatus.NEW,
                 side=OrderSide.SELL,
-                deal_id=None,
+                deal_id=0,
                 trigger_price=None,
                 order_type=OrderType.MARKET,
                 errors=[]
@@ -583,7 +551,7 @@ class BrokerBacktesting(Broker):
         entries: List[Tuple[VOLUME_TYPE, Optional[PRICE_TYPE]]],
         stop_losses: List[Tuple[Optional[float], PRICE_TYPE]],
         take_profits: List[Tuple[Optional[float], PRICE_TYPE]]
-    ) -> Tuple[List[Order], Optional['Broker.Deal']]:
+    ) -> Optional[Deal]:
         """
         Execute a deal with entry orders, stop losses, and take profits.
         
@@ -606,9 +574,8 @@ class BrokerBacktesting(Broker):
                          For SELL: farthest = minimum price.
         
         Returns:
-            Tuple of (List[Order], Optional[Deal]):
-            - List[Order]: List of copies of all created orders (entry + exit if specified)
-            - Optional[Deal]: Copy of the deal that groups all orders, or None if deal was not created
+            Optional[Deal]: Copy of the deal that groups all orders (orders are in deal.orders),
+                          or None if deal was not created
         
         Note:
             This is a stub implementation. Full implementation will be added later.
@@ -616,9 +583,9 @@ class BrokerBacktesting(Broker):
         # TODO: Implement full logic
         # TODO: Check that if entries contains market order (price=None), list has only one element
         # For now, return empty result as stub
-        return [], None
+        return None
     
-    def _add_order_to_arrays(self, order: Order) -> None:
+    def _add_order_to_np_arrays(self, order: Order) -> None:
         """
         Add order to numpy arrays for fast lookup.
         
@@ -648,7 +615,7 @@ class BrokerBacktesting(Broker):
         else:
             raise ValueError(f"Invalid order type: {order.order_type} in _add_order_to_arrays: {order.order_id}")
     
-    def _remove_order_from_arrays(self, order: Order) -> None:
+    def _remove_order_from_np_arrays(self, order: Order) -> None:
         """
         Remove order from numpy arrays.
         
@@ -719,7 +686,7 @@ class BrokerBacktesting(Broker):
         order.modify_time = self.current_time
         
         # Remove order from arrays (no longer active)
-        self._remove_order_from_arrays(order)
+        self._remove_order_from_np_arrays(order)
     
     def _check_and_execute_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
         """
@@ -806,7 +773,7 @@ class BrokerBacktesting(Broker):
                     order.modify_time = order.create_time
                 
                 # Remove from numpy arrays
-                self._remove_order_from_arrays(order)
+                self._remove_order_from_np_arrays(order)
             
             # Add copy to result (whether it was ACTIVE and canceled, or already non-ACTIVE)
             canceled_orders.append(order.model_copy(deep=True))

@@ -9,7 +9,8 @@ from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime, timedelta
 from typing import Dict, Any
 
-from app.services.tasks.broker_backtesting import BrokerBacktesting, Order
+from app.services.tasks.broker_backtesting import BrokerBacktesting
+from app.services.tasks.broker import Order
 from app.services.tasks.tasks import Task
 from app.services.tasks.broker import OrderSide, OrderType, OrderStatus
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
