@@ -703,7 +703,7 @@ class BackTestingResults:
                 }
                 trades.append(trade_dict)
                 deal_ids.add(int(parts[1]))
-        
+            
         return trades, deal_ids
     
     def _load_deals(self, client, result_key_prefix: str, result_id: str, deal_ids: set) -> List[Dict]:
@@ -752,7 +752,7 @@ class BackTestingResults:
                         'is_closed': parts[7] == '1' if parts[7] else False
                     }
                     deals.append(deal_dict)
-        
+            
         return deals
     
     def _load_orders(self, client, result_key_prefix: str, result_id: str, time_begin_score: int) -> List[Dict]:
@@ -871,7 +871,7 @@ class BackTestingResults:
                 return json.loads(stats_data)
         except Exception as e:
             logger.warning(f"Failed to load statistics from {stats_key}: {e}")
-        
+            
         return None
     
     def get_results(

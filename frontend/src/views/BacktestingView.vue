@@ -2184,60 +2184,60 @@ function prepareTaskData() {
   if (!currentTaskId.value || !navFormRef.value) {
     return null
   }
-  
-  // Get general parameters from form
-  const formData = navFormRef.value.formData
-  
-  // Get custom parameters from StrategyParameters component
-  let customParameters = {}
-  if (strategyParametersRef.value) {
-    // Get raw parameter values
-    const rawValues = strategyParametersRef.value.parameterValues || {}
-    // Convert values to proper types based on parameter descriptions
-    const parametersDesc = strategyParametersDescription.value || {}
-    customParameters = {}
-    for (const paramName in rawValues) {
-      const value = rawValues[paramName]
-      if (parametersDesc[paramName]) {
-        const paramDesc = parametersDesc[paramName]
-        const typeLower = paramDesc.type?.toLowerCase() || 'string'
-        // Convert to proper type
-        if (typeLower === 'int' || typeLower === 'integer') {
-          const parsed = parseInt(value, 10)
-          customParameters[paramName] = isNaN(parsed) ? value : parsed
-        } else if (typeLower === 'float' || typeLower === 'double') {
-          const parsed = parseFloat(value)
-          customParameters[paramName] = isNaN(parsed) ? value : parsed
-        } else if (typeLower === 'bool' || typeLower === 'boolean') {
-          customParameters[paramName] = Boolean(value)
-        } else {
-          customParameters[paramName] = String(value)
-        }
-      } else {
-        // If no description, keep as is
-        customParameters[paramName] = value
-      }
-    }
-  } else {
-    // Fallback: use currentTaskParameters if component ref not available
-    customParameters = currentTaskParameters.value || {}
-  }
 
-  // Prepare task data
-  // file_name is relative path (from STRATEGIES_DIR, with .py extension)
+    // Get general parameters from form
+    const formData = navFormRef.value.formData
+    
+    // Get custom parameters from StrategyParameters component
+    let customParameters = {}
+    if (strategyParametersRef.value) {
+      // Get raw parameter values
+      const rawValues = strategyParametersRef.value.parameterValues || {}
+      // Convert values to proper types based on parameter descriptions
+      const parametersDesc = strategyParametersDescription.value || {}
+      customParameters = {}
+      for (const paramName in rawValues) {
+        const value = rawValues[paramName]
+        if (parametersDesc[paramName]) {
+          const paramDesc = parametersDesc[paramName]
+          const typeLower = paramDesc.type?.toLowerCase() || 'string'
+          // Convert to proper type
+          if (typeLower === 'int' || typeLower === 'integer') {
+            const parsed = parseInt(value, 10)
+            customParameters[paramName] = isNaN(parsed) ? value : parsed
+          } else if (typeLower === 'float' || typeLower === 'double') {
+            const parsed = parseFloat(value)
+            customParameters[paramName] = isNaN(parsed) ? value : parsed
+          } else if (typeLower === 'bool' || typeLower === 'boolean') {
+            customParameters[paramName] = Boolean(value)
+          } else {
+            customParameters[paramName] = String(value)
+          }
+        } else {
+          // If no description, keep as is
+          customParameters[paramName] = value
+        }
+      }
+    } else {
+      // Fallback: use currentTaskParameters if component ref not available
+      customParameters = currentTaskParameters.value || {}
+    }
+
+    // Prepare task data
+    // file_name is relative path (from STRATEGIES_DIR, with .py extension)
   return {
-    file_name: currentStrategyFilePath.value || '',
-    name: currentTask.value?.name || '',
-    source: formData.source || '',
-    symbol: formData.symbol || '',
-    timeframe: formData.timeframe ? formData.timeframe.toString() : '',
-    dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
-    dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
+      file_name: currentStrategyFilePath.value || '',
+      name: currentTask.value?.name || '',
+      source: formData.source || '',
+      symbol: formData.symbol || '',
+      timeframe: formData.timeframe ? formData.timeframe.toString() : '',
+      dateStart: formData.dateFrom ? new Date(formData.dateFrom).toISOString() : '',
+      dateEnd: formData.dateTo ? new Date(formData.dateTo).toISOString() : '',
     fee_taker: formData.feeTaker !== undefined ? formData.feeTaker : 0.0,
     fee_maker: formData.feeMaker !== undefined ? formData.feeMaker : 0.0,
     price_step: formData.priceStep !== undefined ? formData.priceStep : 0.0,
     slippage_in_steps: formData.slippageInSteps !== undefined ? formData.slippageInSteps : 1.0,
-    parameters: customParameters
+      parameters: customParameters
   }
 }
 
@@ -2294,25 +2294,25 @@ async function saveAllSync() {
   try {
     // Save strategy if available
     if (currentStrategyFilePath.value && isStrategyLoaded.value) {
-      const strategyData = JSON.stringify({
-        file_path: currentStrategyFilePath.value,
-        text: strategyCode.value
-      })
-      
-      if (navigator.sendBeacon) {
-        const blob = new Blob([strategyData], { type: 'application/json' })
-        const url = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`
-        navigator.sendBeacon(url, blob)
-      } else {
-        try {
-          const xhr = new XMLHttpRequest()
-          xhr.open('POST', `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`, false)
-          xhr.setRequestHeader('Content-Type', 'application/json')
-          xhr.send(strategyData)
-        } catch (error) {
-          console.error('Failed to save strategy on page unload:', error)
-        }
+    const strategyData = JSON.stringify({
+      file_path: currentStrategyFilePath.value,
+      text: strategyCode.value
+    })
+    
+    if (navigator.sendBeacon) {
+      const blob = new Blob([strategyData], { type: 'application/json' })
+      const url = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`
+      navigator.sendBeacon(url, blob)
+    } else {
+      try {
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8202'}/api/v1/strategies/save`, false)
+        xhr.setRequestHeader('Content-Type', 'application/json')
+        xhr.send(strategyData)
+      } catch (error) {
+        console.error('Failed to save strategy on page unload:', error)
       }
+    }
     }
 
     // Save task if available (even if strategy is not loaded)

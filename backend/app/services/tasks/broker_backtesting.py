@@ -1,7 +1,7 @@
 """
 Broker class for handling trading operations and backtesting execution.
 """
-from typing import Optional, Dict, Callable, List, Tuple
+from typing import Optional, Dict, Callable, List, Tuple, TYPE_CHECKING
 import numpy as np
 import time
 from pydantic import BaseModel, Field, ConfigDict, model_validator
@@ -9,13 +9,16 @@ from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
-from app.services.tasks.broker import Broker, OrderSide, OrderType, OrderStatus
+from app.services.tasks.broker import Broker, OrderSide, OrderType, OrderStatus, OrderGroup
 from app.services.tasks.backtesting_result import BackTestingResults
 from app.core.logger import get_logger
 from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64, datetime64_to_iso
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 from app.services.tasks.indicator_proxy import ta_proxy_talib
+
+if TYPE_CHECKING:
+    from app.services.tasks.broker import Deal
 
 logger = get_logger(__name__)
 
@@ -32,6 +35,9 @@ class Order(BaseModel):
     
     The `modify_time` field is updated whenever the order is modified (executed, cancelled, etc.).
     This allows filtering orders by modification time for efficient retrieval.
+    
+    The `fraction` field is used for stop loss and take profit orders to specify what fraction
+    of the position should be closed when the order executes. For entry orders, this field is None.
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
@@ -46,17 +52,25 @@ class Order(BaseModel):
     volume: VOLUME_TYPE
     filled_volume: VOLUME_TYPE = 0.0
     status: OrderStatus = OrderStatus.NEW
+    order_group: OrderGroup = OrderGroup.NONE  # Order group: 0 - none, 1 - stop loss, 2 - take profit
+    fraction: Optional[float] = None  # Fraction of position to close (for stop loss and take profit orders)
     errors: List[str] = Field(default_factory=list)  # List of validation/execution errors
     
     @model_validator(mode='after')
-    def validate_order_id(self):
-        """Validate that order_id is greater than 0 if order is not in NEW or ERROR status.
+    def validate_order(self):
+        """Validate order fields.
         
-        Orders with ERROR status may have order_id=0 if they failed validation before being added to orders list.
-        Orders with NEW status have order_id=0 until they are processed in execute_orders().
+        - order_id must be greater than 0 if order is not in NEW or ERROR status.
+        - fraction must be set (not None) for orders with order_group != NONE.
         """
+        # Validate order_id
         if self.order_id <= 0 and self.status not in (OrderStatus.NEW, OrderStatus.ERROR):
             raise ValueError(f"order_id must be greater than 0 for orders with status {self.status}")
+        
+        # Validate fraction for exit orders
+        if self.order_group != OrderGroup.NONE and self.fraction is None:
+            raise ValueError(f"fraction must be set for orders with order_group={self.order_group}")
+        
         return self
 
 
@@ -562,6 +576,47 @@ class BrokerBacktesting(Broker):
         
         # Execute/place orders
         return self.execute_orders(orders)
+    
+    def execute_deal(
+        self,
+        side: OrderSide,
+        entries: List[Tuple[VOLUME_TYPE, Optional[PRICE_TYPE]]],
+        stop_losses: List[Tuple[Optional[float], PRICE_TYPE]],
+        take_profits: List[Tuple[Optional[float], PRICE_TYPE]]
+    ) -> Tuple[List[Order], Optional['Broker.Deal']]:
+        """
+        Execute a deal with entry orders, stop losses, and take profits.
+        
+        This is an internal method used by buy_sltp() and sell_sltp() methods.
+        
+        Args:
+            side: Order side (BUY or SELL)
+            entries: List of entry orders as (volume, price) tuples.
+                    Price can be None for market orders. If price is None (market order),
+                    the list must contain only one element.
+            stop_losses: List of stop loss orders as (fraction, price) tuples.
+                        Fraction can be None for "all remaining" - this should be
+                        the order with the farthest price from entry points.
+                        For BUY: farthest = minimum price.
+                        For SELL: farthest = maximum price.
+            take_profits: List of take profit orders as (fraction, price) tuples.
+                         Fraction can be None for "all remaining" - this should be
+                         the order with the farthest price from entry points.
+                         For BUY: farthest = maximum price.
+                         For SELL: farthest = minimum price.
+        
+        Returns:
+            Tuple of (List[Order], Optional[Deal]):
+            - List[Order]: List of copies of all created orders (entry + exit if specified)
+            - Optional[Deal]: Copy of the deal that groups all orders, or None if deal was not created
+        
+        Note:
+            This is a stub implementation. Full implementation will be added later.
+        """
+        # TODO: Implement full logic
+        # TODO: Check that if entries contains market order (price=None), list has only one element
+        # For now, return empty result as stub
+        return [], None
     
     def _add_order_to_arrays(self, order: Order) -> None:
         """

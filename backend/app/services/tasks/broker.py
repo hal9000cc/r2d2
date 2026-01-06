@@ -13,6 +13,7 @@ from app.core.logger import get_logger
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
+    from app.services.tasks.broker_backtesting import Order
 
 logger = get_logger(__name__)
 
@@ -34,6 +35,12 @@ class OrderStatus(Enum):
     EXECUTED = 2  # Executed (market immediately, limit/stop after execution)
     CANCELED = 3  # Was active, canceled (in real trading may be partially executed)
     ERROR = 4  # Failed validation (in real trading may be other reasons)
+
+
+class OrderGroup(Enum):
+    NONE = 0  # Outside of group (default)
+    STOP_LOSS = 1  # Stop loss order
+    TAKE_PROFIT = 2  # Take profit order
 
 
 class DealType(Enum):
@@ -221,15 +228,17 @@ class Broker(ABC):
 
     class Deal(BaseModel):
         """
-        Trading deal that groups multiple trades.
+        Trading deal that groups multiple trades and orders.
 
         - Accumulates trades belonging to a single logical deal.
+        - Accumulates orders (entry and exit) belonging to a single logical deal.
         - Tracks average buy and sell prices across all trades.
         - Tracks current position quantity, total fees and profit.
         """
 
         deal_id: int = Field(gt=0)
         trades: List['Broker.Trade'] = Field(default_factory=list)
+        orders: List['Order'] = Field(default_factory=list)  # List of orders (entry and exit) associated with this deal
 
         # Deal type (long/short) - determined by first trade
         type: Optional['DealType'] = None
