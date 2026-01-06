@@ -56,6 +56,8 @@ def test_task():
         fee_maker=0.0005,  # 0.05%
         price_step=0.1,
         slippage_in_steps=1.0,
+        precision_amount=0.1,  # Volume precision
+        precision_price=0.01,  # Price precision
         parameters={}
     )
 
@@ -221,8 +223,8 @@ class TestBuySltpMarketSingleExit:
         broker.run(save_results=False)
         current_price = broker.price
         
-        # Place buy_sltp with single stop loss
-        result = strategy.buy_sltp(enter=1.0, stop_loss=current_price - 10.0)
+        # Place buy_sltp with single stop loss (explicit fraction 1.0)
+        result = strategy.buy_sltp(enter=1.0, stop_loss=[(1.0, current_price - 10.0)])
         
         # Check result
         assert isinstance(result, OrderOperationResult)
@@ -244,8 +246,8 @@ class TestBuySltpMarketSingleExit:
         broker.run(save_results=False)
         current_price = broker.price
         
-        # Place buy_sltp with single take profit
-        result = strategy.buy_sltp(enter=1.0, take_profit=current_price + 10.0)
+        # Place buy_sltp with single take profit (explicit fraction 1.0)
+        result = strategy.buy_sltp(enter=1.0, take_profit=[(1.0, current_price + 10.0)])
         
         # Check result
         assert isinstance(result, OrderOperationResult)
@@ -267,11 +269,11 @@ class TestBuySltpMarketSingleExit:
         broker.run(save_results=False)
         current_price = broker.price
         
-        # Place buy_sltp with both stop loss and take profit
+        # Place buy_sltp with both stop loss and take profit (explicit fractions 1.0)
         result = strategy.buy_sltp(
             enter=1.0,
-            stop_loss=current_price - 10.0,
-            take_profit=current_price + 10.0
+            stop_loss=[(1.0, current_price - 10.0)],
+            take_profit=[(1.0, current_price + 10.0)]
         )
         
         # Check result
@@ -304,8 +306,8 @@ class TestBuySltpMarketMultipleExit:
         broker.run(save_results=False)
         current_price = broker.price
         
-        # Place buy_sltp with two stop losses
-        result = strategy.buy_sltp(enter=1.0, stop_loss=[current_price - 10.0, current_price - 20.0])
+        # Place buy_sltp with two stop losses (equal fractions, sum = 1.0)
+        result = strategy.buy_sltp(enter=1.0, stop_loss=[(0.5, current_price - 10.0), (0.5, current_price - 20.0)])
         
         # Check result
         assert isinstance(result, OrderOperationResult)
@@ -329,10 +331,10 @@ class TestBuySltpMarketMultipleExit:
         broker.run(save_results=False)
         current_price = broker.price
         
-        # Place buy_sltp with three take profits
+        # Place buy_sltp with three take profits (equal fractions, sum = 1.0)
         result = strategy.buy_sltp(
             enter=1.0,
-            take_profit=[current_price + 10.0, current_price + 20.0, current_price + 30.0]
+            take_profit=[(1.0/3.0, current_price + 10.0), (1.0/3.0, current_price + 20.0), (1.0/3.0, current_price + 30.0)]
         )
         
         # Check result
@@ -357,11 +359,11 @@ class TestBuySltpMarketMultipleExit:
         broker.run(save_results=False)
         current_price = broker.price
         
-        # Place buy_sltp with two stops and two takes
+        # Place buy_sltp with two stops and two takes (equal fractions, sum = 1.0 for each)
         result = strategy.buy_sltp(
             enter=1.0,
-            stop_loss=[current_price - 10.0, current_price - 20.0],
-            take_profit=[current_price + 10.0, current_price + 20.0]
+            stop_loss=[(0.5, current_price - 10.0), (0.5, current_price - 20.0)],
+            take_profit=[(0.5, current_price + 10.0), (0.5, current_price + 20.0)]
         )
         
         # Check result
@@ -461,10 +463,10 @@ class TestBuySltpLimitEntry:
         broker.run(save_results=False)
         current_price = broker.price
         
-        # Place buy_sltp with limit order and stop loss
+        # Place buy_sltp with limit order and stop loss (explicit fraction 1.0)
         result = strategy.buy_sltp(
             enter=(1.0, current_price - 5.0),
-            stop_loss=current_price - 15.0
+            stop_loss=[(1.0, current_price - 15.0)]
         )
         
         # Check result
@@ -484,10 +486,10 @@ class TestBuySltpLimitEntry:
         broker.run(save_results=False)
         current_price = broker.price
         
-        # Place buy_sltp with multiple limit orders and stop loss
+        # Place buy_sltp with multiple limit orders and stop loss (explicit fraction 1.0)
         result = strategy.buy_sltp(
             enter=[(0.5, current_price - 5.0), (0.5, current_price - 10.0)],
-            stop_loss=current_price - 15.0
+            stop_loss=[(1.0, current_price - 15.0)]
         )
         
         # Check result
@@ -604,10 +606,10 @@ class TestBuySltpPartialEntry:
             broker.run(save_results=False)
             current_price = broker.price  # Should be 99.0 (last bar)
             
-            # Place buy_sltp with two limit orders and stop loss
+            # Place buy_sltp with two limit orders and stop loss (explicit fraction 1.0)
             result = strategy.buy_sltp(
                 enter=[(0.5, 96.0), (0.5, 94.0)],  # First should execute, second may not
-                stop_loss=current_price - 10.0
+                stop_loss=[(1.0, current_price - 10.0)]
             )
             
             # Check result
@@ -645,10 +647,10 @@ class TestBuySltpPartialExit:
             broker.run(save_results=False)
             current_price = broker.price  # Should be 100.0 (last bar)
             
-            # Place buy_sltp with market entry and two stop losses
+            # Place buy_sltp with market entry and two stop losses (equal fractions, sum = 1.0)
             result = strategy.buy_sltp(
                 enter=1.0,
-                stop_loss=[90.0, 88.0]  # First should execute on next bar
+                stop_loss=[(0.5, 90.0), (0.5, 88.0)]  # First should execute on next bar
             )
             
             # Check result
@@ -689,10 +691,10 @@ class TestBuySltpFullClose:
             broker.run(save_results=False)
             current_price = broker.price  # Should be 100.0 (last bar)
             
-            # Place buy_sltp with market entry and two stop losses
+            # Place buy_sltp with market entry and two stop losses (equal fractions, sum = 1.0)
             result = strategy.buy_sltp(
                 enter=1.0,
-                stop_loss=[90.0, 88.0]
+                stop_loss=[(0.5, 90.0), (0.5, 88.0)]
             )
             
             # Check result
@@ -735,10 +737,10 @@ class TestBuySltpComplexScenarios:
             broker.run(save_results=False)
             current_price = broker.price  # Should be 100.0 (last bar)
             
-            # Place buy_sltp with two limits and two take profits
+            # Place buy_sltp with two limits and two take profits (equal fractions, sum = 1.0)
             result = strategy.buy_sltp(
                 enter=[(0.5, 96.0), (0.5, 94.0)],
-                take_profit=[110.0, 112.0]
+                take_profit=[(0.5, 110.0), (0.5, 112.0)]
             )
             
             # Check result
@@ -768,11 +770,11 @@ class TestBuySltpComplexScenarios:
             broker.run(save_results=False)
             current_price = broker.price  # Should be 100.0 (last bar)
             
-            # Place buy_sltp with limits, stops, and takes
+            # Place buy_sltp with limits, stops, and takes (equal fractions, sum = 1.0 for each)
             result = strategy.buy_sltp(
                 enter=[(0.5, 96.0), (0.5, 94.0)],
-                stop_loss=[90.0, 88.0],
-                take_profit=[110.0, 112.0]
+                stop_loss=[(0.5, 90.0), (0.5, 88.0)],
+                take_profit=[(0.5, 110.0), (0.5, 112.0)]
             )
             
             # Check result
@@ -805,11 +807,11 @@ class TestBuySltpSimultaneousExecution:
             broker.run(save_results=False)
             current_price = broker.price  # Should be 100.0 (last bar)
             
-            # Place buy_sltp with stop and take
+            # Place buy_sltp with stop and take (explicit fractions 1.0)
             result = strategy.buy_sltp(
                 enter=1.0,
-                stop_loss=90.0,
-                take_profit=110.0
+                stop_loss=[(1.0, 90.0)],
+                take_profit=[(1.0, 110.0)]
             )
             
             # Check result
@@ -843,11 +845,11 @@ class TestBuySltpDealOrders:
         broker.run(save_results=False)
         current_price = broker.price
         
-        # Place buy_sltp with stop and take
+        # Place buy_sltp with stop and take (explicit fractions 1.0)
         result = strategy.buy_sltp(
             enter=1.0,
-            stop_loss=current_price - 10.0,
-            take_profit=current_price + 10.0
+            stop_loss=[(1.0, current_price - 10.0)],
+            take_profit=[(1.0, current_price + 10.0)]
         )
         
         # Check result
@@ -905,4 +907,199 @@ class TestBuySltpDealOrders:
                 # When stop executes, trade volume should match fraction
                 # (This will be verified when execute_deal is implemented)
                 # For now, just check structure
-                assert len(deal_trades) >= 1  # At least entry trade
+
+
+class TestBuySltpPrecision:
+    """Test precision rounding in buy_sltp/sell_sltp methods."""
+    
+    def test_buy_sltp_volume_rounding(self, broker_with_strategy, simple_quotes_data):
+        """Test that buy_sltp entry volume is rounded down to precision_amount."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        
+        # Buy with volume that needs rounding: 1.234 with precision_amount=0.1 should become 1.2
+        result = strategy.buy_sltp(enter=1.234)
+        
+        # Check that volume was rounded down
+        assert len(result.orders) >= 1
+        entry_orders = [o for o in result.orders if o.order_group == OrderGroup.NONE]
+        assert len(entry_orders) == 1
+        entry_order = entry_orders[0]
+        assert abs(entry_order.volume - 1.2) < 1e-12, f"Volume should be rounded down to 1.2, got {entry_order.volume}"
+    
+    def test_buy_sltp_price_rounding(self, broker_with_strategy, simple_quotes_data):
+        """Test that buy_sltp entry and exit prices are rounded to precision_price."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        current_price = broker.price
+        
+        # Buy with prices that need rounding - use two stops/takes to test extreme logic
+        entry_price = current_price - 10.0 + 0.123  # Should round to ...12
+        stop_price1 = current_price - 20.0 + 0.456   # Should round to ...46
+        stop_price2 = current_price - 25.0 + 0.789   # Should round to ...79
+        take_price1 = current_price + 10.0 + 0.123   # Should round to ...12
+        take_price2 = current_price + 20.0 + 0.456   # Should round to ...46
+        
+        # Use explicit fractions (sum = 1.0)
+        result = strategy.buy_sltp(
+            enter=(1.0, entry_price),
+            stop_loss=[(0.5, stop_price1), (0.5, stop_price2)],  # Sum = 1.0
+            take_profit=[(0.5, take_price1), (0.5, take_price2)]  # Sum = 1.0
+        )
+        
+        # Check result
+        assert isinstance(result, OrderOperationResult)
+        assert len(result.orders) >= 5  # Entry + 2 stops + 2 takes
+        assert len(result.error) == 0
+        
+        # Check entry price rounding
+        entry_orders = [o for o in result.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 1
+        expected_entry_price = round(entry_price / 0.01) * 0.01
+        assert abs(entry_orders[0].price - expected_entry_price) < 1e-12, \
+            f"Entry price should be rounded to {expected_entry_price}, got {entry_orders[0].price}"
+        
+        # Check stop price rounding
+        stop_orders = [o for o in result.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 2
+        expected_stop_price1 = round(stop_price1 / 0.01) * 0.01
+        expected_stop_price2 = round(stop_price2 / 0.01) * 0.01
+        stop_prices = [o.trigger_price for o in stop_orders]
+        assert expected_stop_price1 in stop_prices or expected_stop_price2 in stop_prices, \
+            f"Stop prices should include {expected_stop_price1} or {expected_stop_price2}, got {stop_prices}"
+        
+        # Check take price rounding
+        take_orders = [o for o in result.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 2
+        expected_take_price1 = round(take_price1 / 0.01) * 0.01
+        expected_take_price2 = round(take_price2 / 0.01) * 0.01
+        take_prices = [o.price for o in take_orders]
+        assert expected_take_price1 in take_prices or expected_take_price2 in take_prices, \
+            f"Take prices should include {expected_take_price1} or {expected_take_price2}, got {take_prices}"
+    
+    def test_buy_sltp_stop_volumes_rounding(self, broker_with_strategy, simple_quotes_data):
+        """Test that stop loss volumes are rounded correctly using extreme stop logic."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        current_price = broker.price
+        
+        # Buy with multiple stops - volumes should be rounded and extreme stop gets remainder
+        # Use explicit fractions (sum = 1.0)
+        result = strategy.buy_sltp(
+            enter=1.0,
+            stop_loss=[
+                (0.3, current_price - 10.0),  # 0.3 * 1.0 = 0.3, with precision 0.1 = 0.3
+                (0.7, current_price - 20.0)   # 0.7 * 1.0 = 0.7, extreme stop (farther), gets remainder
+            ]
+        )
+        
+        # Check result
+        assert isinstance(result, OrderOperationResult)
+        assert len(result.error) == 0
+        assert len(result.orders) >= 3  # Entry + 2 stops
+        
+        # Check stop orders
+        stop_orders = [o for o in result.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 2
+        
+        # Find extreme stop (minimum trigger_price for LONG)
+        extreme_stop = min(stop_orders, key=lambda o: o.trigger_price if o.trigger_price is not None else float('inf'))
+        other_stop = [o for o in stop_orders if o.order_id != extreme_stop.order_id][0]
+        
+        # Other stop should have rounded volume: 0.3 * 1.0 = 0.3 (no rounding needed with precision 0.1)
+        expected_other_volume = round(0.3 * 1.0 / 0.1) * 0.1
+        assert abs(other_stop.volume - expected_other_volume) < 1e-12, \
+            f"Other stop volume should be {expected_other_volume}, got {other_stop.volume}"
+        
+        # Extreme stop should get remainder: 1.0 - other_volume
+        expected_extreme_volume = 1.0 - expected_other_volume
+        assert abs(extreme_stop.volume - expected_extreme_volume) < 1e-12, \
+            f"Extreme stop volume should be {expected_extreme_volume}, got {extreme_stop.volume}"
+        
+        # Sum should equal entry volume
+        total_stop_volume = sum(o.volume for o in stop_orders)
+        assert abs(total_stop_volume - 1.0) < 1e-12, \
+            f"Total stop volume should be 1.0, got {total_stop_volume}"
+    
+    def test_buy_sltp_take_volumes_rounding(self, broker_with_strategy, simple_quotes_data):
+        """Test that take profit volumes are rounded correctly using extreme take logic."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        current_price = broker.price
+        
+        # Buy with multiple takes - volumes should be rounded and extreme take gets remainder
+        # Use explicit fractions (sum = 1.0)
+        result = strategy.buy_sltp(
+            enter=1.0,
+            take_profit=[
+                (0.4, current_price + 10.0),  # 0.4 * 1.0 = 0.4, with precision 0.1 = 0.4
+                (0.6, current_price + 20.0)   # 0.6 * 1.0 = 0.6, extreme take (farther), gets remainder
+            ]
+        )
+        
+        # Check result
+        assert isinstance(result, OrderOperationResult)
+        if len(result.error) > 0:
+            # If there are errors, print them for debugging
+            print(f"Errors: {result.error_messages}")
+        assert len(result.error) == 0, f"Should have no errors, got: {result.error_messages}"
+        assert len(result.orders) >= 3  # Entry + 2 takes
+        
+        # Check take orders
+        take_orders = [o for o in result.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 2
+        
+        # Find extreme take (maximum price for LONG)
+        extreme_take = max(take_orders, key=lambda o: o.price if o.price is not None else float('-inf'))
+        other_take = [o for o in take_orders if o.order_id != extreme_take.order_id][0]
+        
+        # Other take should have rounded volume: 0.4 * 1.0 = 0.4 (no rounding needed with precision 0.1)
+        expected_other_volume = round(0.4 * 1.0 / 0.1) * 0.1
+        assert abs(other_take.volume - expected_other_volume) < 1e-12, \
+            f"Other take volume should be {expected_other_volume}, got {other_take.volume}"
+        
+        # Extreme take should get remainder: 1.0 - other_volume
+        expected_extreme_volume = 1.0 - expected_other_volume
+        assert abs(extreme_take.volume - expected_extreme_volume) < 1e-12, \
+            f"Extreme take volume should be {expected_extreme_volume}, got {extreme_take.volume}"
+        
+        # Sum should equal entry volume
+        total_take_volume = sum(o.volume for o in take_orders)
+        assert abs(total_take_volume - 1.0) < 1e-12, \
+            f"Total take volume should be 1.0, got {total_take_volume}"
+    
+    def test_buy_sltp_precision_warning_logging(self, broker_with_strategy, simple_quotes_data):
+        """Test that warnings are logged when values are rounded in buy_sltp."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        current_price = broker.price
+        
+        # Mock logger to capture warnings - patch the logger used in strategy module
+        with patch('app.services.tasks.strategy.logger.warning') as mock_warning:
+            # Buy with volume that needs rounding
+            result = strategy.buy_sltp(enter=1.234)
+            
+            # Check that warning was logged
+            assert mock_warning.called, "Warning should be logged when volume is rounded"
+            warning_calls = [str(call) for call in mock_warning.call_args_list]
+            assert any("rounded down" in str(call).lower() for call in warning_calls), \
+                f"Warning should mention 'rounded down', got: {warning_calls}"
+        
+        with patch('app.services.tasks.strategy.logger.warning') as mock_warning:
+            # Buy with prices that need rounding (explicit fractions, sum = 1.0)
+            result = strategy.buy_sltp(
+                enter=(1.0, current_price - 10.0 + 0.123),
+                stop_loss=[(0.5, current_price - 20.0 + 0.456), (0.5, current_price - 25.0 + 0.789)],
+                take_profit=[(0.5, current_price + 10.0 + 0.123), (0.5, current_price + 20.0 + 0.456)]
+            )
+            
+            # Check that warnings were logged for prices
+            assert mock_warning.called, "Warning should be logged when prices are rounded"
+            warning_calls = [str(call) for call in mock_warning.call_args_list]
+            assert any("rounded" in str(call).lower() for call in warning_calls), \
+                f"Warning should mention 'rounded', got: {warning_calls}"

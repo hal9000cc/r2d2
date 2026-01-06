@@ -154,6 +154,8 @@ def test_task():
         fee_maker=0.0005,  # 0.05%
         price_step=0.1,
         slippage_in_steps=1.0,
+        precision_amount=0.1,  # Volume precision
+        precision_price=0.01,  # Price precision
         parameters={}
     )
 
@@ -633,4 +635,138 @@ class TestStrategyStatistics:
         assert broker.stats.total_trades >= 2  # At least 2 trades
         # Deal is closed (buy + sell), so total_deals should be at least 1
         assert broker.stats.total_deals >= 1
+
+
+class TestStrategyPrecision:
+    """Test precision rounding in Strategy methods."""
+    
+    def test_buy_volume_rounding_down(self, broker_with_strategy, simple_quotes_data):
+        """Test that buy volume is rounded down to precision_amount."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        
+        # Buy with volume that needs rounding: 1.234 with precision_amount=0.1 should become 1.2
+        result = strategy.buy(quantity=1.234)
+        
+        # Check that volume was rounded down
+        assert len(result.orders) == 1
+        order = result.orders[0]
+        assert abs(order.volume - 1.2) < 1e-12, f"Volume should be rounded down to 1.2, got {order.volume}"
+    
+    def test_sell_volume_rounding_down(self, broker_with_strategy, simple_quotes_data):
+        """Test that sell volume is rounded down to precision_amount."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        
+        # First buy to have position
+        strategy.buy(quantity=2.0)
+        
+        # Sell with volume that needs rounding: 1.567 with precision_amount=0.1 should become 1.5
+        result = strategy.sell(quantity=1.567)
+        
+        # Check that volume was rounded down
+        assert len(result.orders) == 1
+        order = result.orders[0]
+        assert abs(order.volume - 1.5) < 1e-12, f"Volume should be rounded down to 1.5, got {order.volume}"
+        assert order.volume == 1.5
+    
+    def test_buy_price_rounding(self, broker_with_strategy, simple_quotes_data):
+        """Test that buy limit price is rounded to precision_price."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        current_price = broker.price
+        
+        # Buy with price that needs rounding: 100.123 with precision_price=0.01 should become 100.12
+        result = strategy.buy(quantity=1.0, price=current_price - 10.0 + 0.123)
+        
+        # Check that price was rounded
+        assert len(result.orders) == 1
+        order = result.orders[0]
+        expected_price = round((current_price - 10.0 + 0.123) / 0.01) * 0.01
+        assert abs(order.price - expected_price) < 1e-12, f"Price should be rounded to {expected_price}, got {order.price}"
+    
+    def test_sell_price_rounding(self, broker_with_strategy, simple_quotes_data):
+        """Test that sell limit price is rounded to precision_price."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        current_price = broker.price
+        
+        # First buy to have position
+        strategy.buy(quantity=2.0)
+        
+        # Sell with price that needs rounding: 100.789 with precision_price=0.01 should become 100.79
+        result = strategy.sell(quantity=1.0, price=current_price + 10.0 + 0.789)
+        
+        # Check that price was rounded
+        assert len(result.orders) == 1
+        order = result.orders[0]
+        expected_price = round((current_price + 10.0 + 0.789) / 0.01) * 0.01
+        assert abs(order.price - expected_price) < 1e-12, f"Price should be rounded to {expected_price}, got {order.price}"
+    
+    def test_buy_trigger_price_rounding(self, broker_with_strategy, simple_quotes_data):
+        """Test that buy stop trigger price is rounded to precision_price."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        current_price = broker.price
+        
+        # Buy with trigger price that needs rounding: 100.456 with precision_price=0.01 should become 100.46
+        result = strategy.buy(quantity=1.0, trigger_price=current_price + 10.0 + 0.456)
+        
+        # Check that trigger price was rounded
+        assert len(result.orders) == 1
+        order = result.orders[0]
+        expected_trigger = round((current_price + 10.0 + 0.456) / 0.01) * 0.01
+        assert abs(order.trigger_price - expected_trigger) < 1e-12, f"Trigger price should be rounded to {expected_trigger}, got {order.trigger_price}"
+    
+    def test_sell_trigger_price_rounding(self, broker_with_strategy, simple_quotes_data):
+        """Test that sell stop trigger price is rounded to precision_price."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        current_price = broker.price
+        
+        # First buy to have position
+        strategy.buy(quantity=2.0)
+        
+        # Sell with trigger price that needs rounding: 100.234 with precision_price=0.01 should become 100.23
+        result = strategy.sell(quantity=1.0, trigger_price=current_price - 10.0 + 0.234)
+        
+        # Check that trigger price was rounded
+        assert len(result.orders) == 1
+        order = result.orders[0]
+        expected_trigger = round((current_price - 10.0 + 0.234) / 0.01) * 0.01
+        assert abs(order.trigger_price - expected_trigger) < 1e-12, f"Trigger price should be rounded to {expected_trigger}, got {order.trigger_price}"
+    
+    def test_precision_warning_logging(self, broker_with_strategy, simple_quotes_data):
+        """Test that warnings are logged when values are rounded."""
+        broker, strategy = broker_with_strategy
+        
+        broker.run(save_results=False)
+        
+        # Mock logger to capture warnings - patch the logger used in strategy module
+        with patch('app.services.tasks.strategy.logger.warning') as mock_warning:
+            # Buy with volume that needs rounding
+            result = strategy.buy(quantity=1.234)
+            
+            # Check that warning was logged
+            assert mock_warning.called, "Warning should be logged when volume is rounded"
+            warning_calls = [str(call) for call in mock_warning.call_args_list]
+            assert any("rounded down" in str(call).lower() for call in warning_calls), \
+                f"Warning should mention 'rounded down', got: {warning_calls}"
+        
+        with patch('app.services.tasks.strategy.logger.warning') as mock_warning:
+            # Buy with price that needs rounding
+            current_price = broker.price
+            result = strategy.buy(quantity=1.0, price=current_price - 10.0 + 0.123)
+            
+            # Check that warning was logged
+            assert mock_warning.called, "Warning should be logged when price is rounded"
+            warning_calls = [str(call) for call in mock_warning.call_args_list]
+            assert any("rounded" in str(call).lower() for call in warning_calls), \
+                f"Warning should mention 'rounded', got: {warning_calls}"
 

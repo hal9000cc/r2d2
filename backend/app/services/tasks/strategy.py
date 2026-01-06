@@ -86,7 +86,39 @@ class Strategy(ABC):
         Default implementation does nothing.
         """
         pass
-
+    
+    def round_to_precision(self, value: float, precision: float) -> float:
+        """
+        Round value to nearest multiple of precision.
+        Delegates to broker's round_to_precision method.
+        
+        Args:
+            value: Value to round
+            precision: Precision step (e.g., 0.01, 0.001)
+        
+        Returns:
+            Rounded value
+        """
+        if self.broker is None:
+            return value
+        return self.broker.round_to_precision(value, precision)
+    
+    def floor_to_precision(self, value: float, precision: float) -> float:
+        """
+        Round value down to nearest multiple of precision.
+        Delegates to broker's floor_to_precision method.
+        
+        Args:
+            value: Value to round down
+            precision: Precision step (e.g., 0.01, 0.001)
+        
+        Returns:
+            Rounded down value
+        """
+        if self.broker is None:
+            return value
+        return self.broker.floor_to_precision(value, precision)
+    
     @staticmethod
     def get_parameters_description() -> Dict[str, Tuple[Any, str]]:
         """
