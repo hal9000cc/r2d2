@@ -112,6 +112,9 @@ class Order(BaseModel):
         # Validate fraction for exit orders
         if self.order_group != OrderGroup.NONE and self.fraction is None:
             raise ValueError(f"fraction must be set for orders with order_group={self.order_group}")
+
+        if self.volume < 0:
+            raise ValueError(f"volume must be greater than or equal to 0, got {self.volume}")
         
         return self
 
@@ -192,6 +195,7 @@ class Deal(BaseModel):
             self.profit = self.sell_proceeds - self.buy_cost - self.fee
         else:
             self.profit = None
+
 
     @property
     def is_closed(self) -> bool:
@@ -583,35 +587,45 @@ class Broker(ABC):
             recalc_profit = (recalc_sell_proceeds - recalc_buy_cost - recalc_fee) if deal.is_closed else None
             
             # Compare with stored values using tolerance for floating point
-            tolerance = 1e-10
-            comparisons = [
+            # Use 1/10 of precision as tolerance: precision_amount for volumes, precision_price for prices/sums
+            volume_tolerance = self.precision_amount / 10.0
+            price_tolerance = self._price_eps()  # precision_price / 10.0
+            
+            # Compare volumes (use volume_tolerance)
+            volume_comparisons = [
                     ('buy_quantity', deal.buy_quantity, recalc_buy_quantity),
-                    ('buy_cost', deal.buy_cost, recalc_buy_cost),
                     ('sell_quantity', deal.sell_quantity, recalc_sell_quantity),
+                ]
+            for field, stored, recalc in volume_comparisons:
+                if abs(stored - recalc) > volume_tolerance:
+                    errors.append(f"Deal {deal.deal_id}: {field} mismatch (stored={stored}, recalc={recalc})")
+            
+            # Compare prices/sums (use price_tolerance)
+            price_comparisons = [
+                    ('buy_cost', deal.buy_cost, recalc_buy_cost),
                     ('sell_proceeds', deal.sell_proceeds, recalc_sell_proceeds),
                     ('fee', deal.fee, recalc_fee),
                 ]
-            
-            for field, stored, recalc in comparisons:
-                if abs(stored - recalc) > tolerance:
+            for field, stored, recalc in price_comparisons:
+                if abs(stored - recalc) > price_tolerance:
                     errors.append(f"Deal {deal.deal_id}: {field} mismatch (stored={stored}, recalc={recalc})")
             
             # Compare prices with tolerance for floating point
             if recalc_avg_buy_price is not None and deal.avg_buy_price is not None:
-                if abs(recalc_avg_buy_price - deal.avg_buy_price) > 1e-10:
+                if abs(recalc_avg_buy_price - deal.avg_buy_price) > price_tolerance:
                     errors.append(f"Deal {deal.deal_id}: avg_buy_price mismatch (stored={deal.avg_buy_price}, recalc={recalc_avg_buy_price})")
             elif recalc_avg_buy_price != deal.avg_buy_price:
                 errors.append(f"Deal {deal.deal_id}: avg_buy_price mismatch (stored={deal.avg_buy_price}, recalc={recalc_avg_buy_price})")
             
             if recalc_avg_sell_price is not None and deal.avg_sell_price is not None:
-                if abs(recalc_avg_sell_price - deal.avg_sell_price) > 1e-10:
+                if abs(recalc_avg_sell_price - deal.avg_sell_price) > price_tolerance:
                     errors.append(f"Deal {deal.deal_id}: avg_sell_price mismatch (stored={deal.avg_sell_price}, recalc={recalc_avg_sell_price})")
             elif recalc_avg_sell_price != deal.avg_sell_price:
                 errors.append(f"Deal {deal.deal_id}: avg_sell_price mismatch (stored={deal.avg_sell_price}, recalc={recalc_avg_sell_price})")
             
             # Compare profit for closed deals
             if deal.is_closed and recalc_profit is not None and deal.profit is not None:
-                if abs(recalc_profit - deal.profit) > 1e-10:
+                if abs(recalc_profit - deal.profit) > price_tolerance:
                     errors.append(f"Deal {deal.deal_id}: profit mismatch (stored={deal.profit}, recalc={recalc_profit})")
             elif deal.is_closed and recalc_profit != deal.profit:
                 errors.append(f"Deal {deal.deal_id}: profit mismatch (stored={deal.profit}, recalc={recalc_profit})")

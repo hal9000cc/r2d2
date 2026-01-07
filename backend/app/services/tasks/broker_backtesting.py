@@ -1084,6 +1084,7 @@ class BrokerBacktesting(Broker):
         
         # Update all stop orders
         for order, volume in zip(stop_orders, stop_volumes):
+            assert volume >= 0, f"Order volume must be >= 0, got {volume} for order {order.order_id}"
             order.volume = volume
             order.modify_time = self.current_time
     
@@ -1131,6 +1132,7 @@ class BrokerBacktesting(Broker):
         
         # Update all take orders
         for order, volume in zip(take_orders, take_volumes):
+            assert volume >= 0, f"Order volume must be >= 0, got {volume} for order {order.order_id}"
             order.volume = volume
             order.modify_time = self.current_time
         
@@ -1164,12 +1166,14 @@ class BrokerBacktesting(Broker):
                         deal, self.price, extreme_stop_price
                     )
                     # Target volume = current position + unexecuted entry limits
-                    target_volume = deal.quantity + unexecuted_entry_volume
+                    # Use abs() because deal.quantity can be negative for SHORT positions
+                    target_volume = abs(deal.quantity) + unexecuted_entry_volume
                     self._update_stop_loss_volumes(deal, target_volume)
             
             # 2. Update take profit volumes (only if deal has position)
             if abs(deal.quantity) > 0:
-                new_takes = self._update_take_profit_volumes(deal, deal.quantity)
+                # Use abs() because deal.quantity can be negative for SHORT positions
+                new_takes = self._update_take_profit_volumes(deal, abs(deal.quantity))
                 
                 # 3. Activate take profit orders in NEW status
                 if new_takes:
@@ -1253,7 +1257,8 @@ class BrokerBacktesting(Broker):
                 self._remove_order_from_np_arrays(order)
         
         # Close position if there is any
-        if abs(deal.quantity) > 1e-10:  # Use tolerance for floating point comparison
+        # Use 1/10 of volume precision as tolerance for floating point comparison
+        if abs(deal.quantity) > self.precision_amount / 10.0:
             # Determine closing side based on deal type
             if deal.type is None:
                 # If deal type is not set, determine from quantity sign
@@ -1291,13 +1296,15 @@ class BrokerBacktesting(Broker):
     
     def close_deals(self):
         """
-        Close all open positions by executing opposite trades.
-        If equity_symbol > 0, sell it. If equity_symbol < 0, buy it.
+        Close all open deals by executing market orders.
+        Iterates through all active deals and closes each one.
         """
-        if self.equity_symbol > 0:
-            self.sell(self.equity_symbol)
-        elif self.equity_symbol < 0:
-            self.buy(abs(self.equity_symbol))
+        # Get copy of active deals list (it may change during iteration)
+        active_deal_ids = list(self.active_deals)
+        
+        # Close each open deal
+        for deal_id in active_deal_ids:
+            self.close_deal(deal_id)
     
     def update_state(self, results: Optional[BackTestingResults], is_finish: bool = False) -> None:
         """
@@ -1497,6 +1504,7 @@ class BrokerBacktesting(Broker):
         # Close all open positions
         self.close_deals()
         assert self.equity_symbol == 0.0, "Equity symbol is not 0 after closing deals"
+        assert len(self.active_deals) == 0, f"Active deals set is not empty after closing: {self.active_deals}"
         
         # Check trading results for consistency (only in debug mode)
         if __debug__:
