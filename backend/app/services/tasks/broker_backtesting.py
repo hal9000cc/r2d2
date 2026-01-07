@@ -921,7 +921,7 @@ class BrokerBacktesting(Broker):
         """
         # Check long limit orders (BUY): triggered if low <= price
         if len(self.long_order_ids) > 0:
-            triggered_mask = low <= self.long_order_prices
+            triggered_mask = low < self.long_order_prices
             triggered_order_ids = self.long_order_ids[triggered_mask]
             
             if len(triggered_order_ids) > 0:
@@ -1092,6 +1092,7 @@ class BrokerBacktesting(Broker):
         """
         Update volumes of all take profit orders in a deal.
         
+        Processes only take profit orders with status NEW or ACTIVE.
         All takes except extreme one get rounded volumes based on fraction.
         Extreme take gets remainder to ensure sum equals target_volume.
         
@@ -1110,7 +1111,7 @@ class BrokerBacktesting(Broker):
         if extreme_take is None:
             return []
         
-        # Separate into NEW and ACTIVE
+        # Extract NEW orders for activation
         new_takes = [order for order in take_orders if order.status == OrderStatus.NEW]
         
         # Calculate volumes for all takes except extreme
@@ -1130,7 +1131,7 @@ class BrokerBacktesting(Broker):
         extreme_volume = target_volume - sum(take_volumes)
         take_volumes[extreme_index] = extreme_volume
         
-        # Update all take orders
+        # Update volumes for all NEW and ACTIVE take orders
         for order, volume in zip(take_orders, take_volumes):
             assert volume >= 0, f"Order volume must be >= 0, got {volume} for order {order.order_id}"
             order.volume = volume
