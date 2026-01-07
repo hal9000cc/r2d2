@@ -1,414 +1,414 @@
-# План тестов для buy_sltp/sell_sltp
+# Test Plan for buy_sltp/sell_sltp
 
-## 1. СПИСОК ВАРИАНТОВ ТЕСТОВ
+## 1. TEST SCENARIOS LIST
 
-### Группа A: Базовые варианты постановки ордеров
+### Group A: Basic Order Placement
 
-#### A1. Простые варианты входа
-- **A1.1**: Вход по рынку, один стоп, один тейк
-- **A1.2**: Вход лимиткой (один ордер), один стоп, один тейк
-- **A1.3**: Вход несколькими лимитками, один стоп, один тейк
+#### A1. Simple Entry Variants
+- **A1.1**: Market entry, one stop, one take profit
+- **A1.2**: Limit entry (single order), one stop, one take profit
+- **A1.3**: Multiple limit entries, one stop, one take profit
 
-#### A2. Множественные стопы/тейки
-- **A2.1**: Вход по рынку, несколько стопов (равные доли), несколько тейков (равные доли)
-- **A2.2**: Вход по рынку, несколько стопов (кастомные доли), несколько тейков (кастомные доли)
-- **A2.3**: Вход лимиткой, несколько стопов, несколько тейков
-- **A2.4**: Вход несколькими лимитками, несколько стопов, несколько тейков
+#### A2. Multiple Stops/Takes
+- **A2.1**: Market entry, multiple stops (equal shares), multiple takes (equal shares)
+- **A2.2**: Market entry, multiple stops (custom shares), multiple takes (custom shares)
+- **A2.3**: Limit entry, multiple stops, multiple takes
+- **A2.4**: Multiple limit entries, multiple stops, multiple takes
 
-#### A3. Варианты без стопов или тейков
-- **A3.1**: Вход по рынку, только стопы (без тейков)
-- **A3.2**: Вход по рынку, только тейки (без стопов)
-- **A3.3**: Вход лимиткой, только стопы
-- **A3.4**: Вход лимиткой, только тейки
-- **A3.5**: Вход несколькими лимитками, только стопы
-- **A3.6**: Вход несколькими лимитками, только тейки
-
----
-
-### Группа B: Отработка ордеров - простые случаи
-
-#### B1. Отработка одного ордера
-- **B1.1**: Вход по рынку → стоп срабатывает (цена задевает только стоп)
-- **B1.2**: Вход по рынку → тейк срабатывает (цена задевает только тейк)
-- **B1.3**: Вход лимиткой → вход срабатывает → стоп срабатывает
-- **B1.4**: Вход лимиткой → вход срабатывает → тейк срабатывает
-
-#### B2. Отработка нескольких однотипных ордеров одной свечой
-- **B2.1**: Вход по рынку → несколько стопов срабатывают одновременно (цена задевает все стопы)
-- **B2.2**: Вход по рынку → несколько тейков срабатывают одновременно (цена задевает все тейки)
-- **B2.3**: Несколько входных лимиток → все срабатывают одновременно
-- **B2.4**: Вход по рынку → несколько стопов срабатывают последовательно (на разных барах)
-- **B2.5**: Вход по рынку → несколько тейков срабатывают последовательно (на разных барах)
-
-#### B3. Частичная отработка однотипных ордеров
-- **B3.1**: Вход по рынку → несколько стопов, срабатывает только один (цена задевает один стоп)
-- **B3.2**: Вход по рынку → несколько стопов, срабатывает часть (цена задевает часть стопов)
-- **B3.3**: Вход по рынку → несколько тейков, срабатывает только один
-- **B3.4**: Вход по рынку → несколько тейков, срабатывает часть
-- **B3.5**: Несколько входных лимиток → срабатывает только одна
-- **B3.6**: Несколько входных лимиток → срабатывает часть
+#### A3. Variants Without Stops or Takes
+- **A3.1**: Market entry, only stops (no take profits)
+- **A3.2**: Market entry, only take profits (no stops)
+- **A3.3**: Limit entry, only stops
+- **A3.4**: Limit entry, only take profits
+- **A3.5**: Multiple limit entries, only stops
+- **A3.6**: Multiple limit entries, only take profits
 
 ---
 
-### Группа C: Отработка ордеров - сложные случаи (входы + стопы одновременно)
+### Group B: Order Execution - Simple Cases
 
-#### C1. Один вход, один стоп
-- **C1.1**: Вход лимиткой и стоп задеваются одновременно → оба срабатывают
-- **C1.2**: Вход по рынку → на следующем баре вход и стоп задеваются одновременно
+#### B1. Single Order Execution
+- **B1.1**: Market entry → stop triggers (price hits only stop)
+- **B1.2**: Market entry → take profit triggers (price hits only take profit)
+- **B1.3**: Limit entry → entry triggers → stop triggers
+- **B1.4**: Limit entry → entry triggers → take profit triggers
 
-#### C2. Один вход, несколько стопов
-- **C2.1**: Вход лимиткой и все стопы задеваются одновременно → вход + все стопы срабатывают
-- **C2.2**: Вход лимиткой и часть стопов задеваются одновременно → вход + часть стопов срабатывают
-- **C2.3**: Вход по рынку → на следующем баре вход (уже выполнен) и все стопы задеваются одновременно
+#### B2. Multiple Same-Type Orders Execution on Same Bar
+- **B2.1**: Market entry → multiple stops trigger simultaneously (price hits all stops)
+- **B2.2**: Market entry → multiple take profits trigger simultaneously (price hits all takes)
+- **B2.3**: Multiple limit entries → all trigger simultaneously
+- **B2.4**: Market entry → multiple stops trigger sequentially (on different bars)
+- **B2.5**: Market entry → multiple take profits trigger sequentially (on different bars)
 
-#### C3. Несколько входов, все стопы
-- **C3.1**: Несколько входных лимиток и все стопы задеваются одновременно → все входы + все стопы срабатывают
-- **C3.2**: Несколько входных лимиток и все стопы задеваются одновременно → часть входов + все стопы срабатывают
-
-#### C4. Несколько входов, часть стопов
-- **C4.1**: Несколько входных лимиток и часть стопов задеваются одновременно → все входы + часть стопов
-- **C4.2**: Несколько входных лимиток и часть стопов задеваются одновременно → часть входов + часть стопов
-
----
-
-### Группа D: Отработка ордеров - сложные случаи (входы + тейки одновременно)
-
-#### D1. Один вход, один тейк
-- **D1.1**: Вход лимиткой и тейк задеваются одновременно → оба срабатывают
-
-#### D2. Один вход, несколько тейков
-- **D2.1**: Вход лимиткой и все тейки задеваются одновременно → вход + все тейки срабатывают
-- **D2.2**: Вход лимиткой и часть тейков задеваются одновременно → вход + часть тейков срабатывают
-
-#### D3. Несколько входов, все тейки
-- **D3.1**: Несколько входных лимиток и все тейки задеваются одновременно → все входы + все тейки
-
-#### D4. Несколько входов, часть тейков
-- **D4.1**: Несколько входных лимиток и часть тейков задеваются одновременно → все входы + часть тейков
-- **D4.2**: Несколько входных лимиток и часть тейков задеваются одновременно → часть входов + часть тейков
+#### B3. Partial Execution of Same-Type Orders
+- **B3.1**: Market entry → multiple stops, only one triggers (price hits one stop)
+- **B3.2**: Market entry → multiple stops, part triggers (price hits part of stops)
+- **B3.3**: Market entry → multiple take profits, only one triggers
+- **B3.4**: Market entry → multiple take profits, part triggers
+- **B3.5**: Multiple limit entries → only one triggers
+- **B3.6**: Multiple limit entries → part triggers
 
 ---
 
-### Группа E: Отработка ордеров - самые сложные случаи (входы + стопы + тейки одновременно)
+### Group C: Order Execution - Complex Cases (Entries + Stops Simultaneously)
 
-**ВАЖНОЕ ПРАВИЛО**: Когда цена задевает и стопы, и тейки одновременно, считаются только стопы. Тейки могут сработать на следующих барах, если сделка закроется не вся.
+#### C1. One Entry, One Stop
+- **C1.1**: Limit entry and stop hit simultaneously → both trigger
+- **C1.2**: Market entry → on next bar entry and stop hit simultaneously
 
-#### E1. Один вход, один стоп, один тейк
-- **E1.1**: Вход лимиткой, стоп и тейк задеваются одновременно → вход + стоп срабатывают, тейк НЕ срабатывает
-- **E1.2**: Вход лимиткой, стоп и тейк задеваются одновременно → вход + стоп срабатывают, тейк срабатывает на следующем баре (если сделка не закрылась полностью)
+#### C2. One Entry, Multiple Stops
+- **C2.1**: Limit entry and all stops hit simultaneously → entry + all stops trigger
+- **C2.2**: Limit entry and part of stops hit simultaneously → entry + part of stops trigger
+- **C2.3**: Market entry → on next bar entry (already executed) and all stops hit simultaneously
 
-#### E2. Один вход, несколько стопов, один тейк
-- **E2.1**: Вход лимиткой, все стопы и тейк задеваются одновременно → вход + все стопы срабатывают, тейк НЕ срабатывает
-- **E2.2**: Вход лимиткой, часть стопов и тейк задеваются одновременно → вход + часть стопов срабатывают, тейк НЕ срабатывает
+#### C3. Multiple Entries, All Stops
+- **C3.1**: Multiple limit entries and all stops hit simultaneously → all entries + all stops trigger
+- **C3.2**: Multiple limit entries and all stops hit simultaneously → part of entries + all stops trigger
 
-#### E3. Один вход, один стоп, несколько тейков
-- **E3.1**: Вход лимиткой, стоп и все тейки задеваются одновременно → вход + стоп срабатывают, все тейки НЕ срабатывают
-- **E3.2**: Вход лимиткой, стоп и все тейки задеваются одновременно → вход + стоп срабатывают, часть тейков срабатывает на следующем баре (если сделка не закрылась полностью)
-
-#### E4. Один вход, несколько стопов, несколько тейков
-- **E4.1**: Вход лимиткой, все стопы и все тейки задеваются одновременно → вход + все стопы срабатывают, все тейки НЕ срабатывают
-- **E4.2**: Вход лимиткой, все стопы и часть тейков задеваются одновременно → вход + все стопы срабатывают, часть тейков НЕ срабатывает
-- **E4.3**: Вход лимиткой, часть стопов и все тейки задеваются одновременно → вход + часть стопов срабатывают, все тейки НЕ срабатывают
-- **E4.4**: Вход лимиткой, часть стопов и часть тейков задеваются одновременно → вход + часть стопов срабатывают, часть тейков НЕ срабатывает
-
-#### E5. Несколько входов, стопы, тейки
-- **E5.1**: Несколько входных лимиток, все стопы и все тейки задеваются одновременно → все входы + все стопы срабатывают, все тейки НЕ срабатывают
-- **E5.2**: Несколько входных лимиток, все стопы и часть тейков задеваются одновременно → все входы + все стопы срабатывают, часть тейков НЕ срабатывает
-- **E5.3**: Несколько входных лимиток, часть стопов и все тейки задеваются одновременно → все входы + часть стопов срабатывают, все тейки НЕ срабатывают
-- **E5.4**: Несколько входных лимиток, часть стопов и часть тейков задеваются одновременно → все входы + часть стопов срабатывают, часть тейков НЕ срабатывает
+#### C4. Multiple Entries, Part of Stops
+- **C4.1**: Multiple limit entries and part of stops hit simultaneously → all entries + part of stops
+- **C4.2**: Multiple limit entries and part of stops hit simultaneously → part of entries + part of stops
 
 ---
 
-### Группа F: Валидация и ошибки
+### Group D: Order Execution - Complex Cases (Entries + Takes Simultaneously)
 
-#### F1. Валидация цен
-- **F1.1**: BUY stop loss выше текущей цены → ошибка валидации
-- **F1.2**: BUY take profit ниже текущей цены → ошибка валидации
-- **F1.3**: SELL stop loss ниже текущей цены → ошибка валидации
-- **F1.4**: SELL take profit выше текущей цены → ошибка валидации
-- **F1.5**: BUY limit entry выше текущей цены → ошибка валидации
-- **F1.6**: SELL limit entry ниже текущей цены → ошибка валидации
+#### D1. One Entry, One Take Profit
+- **D1.1**: Limit entry and take profit hit simultaneously → both trigger
 
-#### F2. Валидация структуры
-- **F2.1**: Сумма долей стопов != 1.0 → ошибка валидации
-- **F2.2**: Сумма долей тейков != 1.0 → ошибка валидации
-- **F2.3**: Сумма долей входных ордеров != 1.0 → ошибка валидации
-- **F2.4**: Отрицательные доли → ошибка валидации
-- **F2.5**: Доли > 1.0 → ошибка валидации
+#### D2. One Entry, Multiple Take Profits
+- **D2.1**: Limit entry and all take profits hit simultaneously → entry + all takes trigger
+- **D2.2**: Limit entry and part of take profits hit simultaneously → entry + part of takes trigger
 
----
+#### D3. Multiple Entries, All Take Profits
+- **D3.1**: Multiple limit entries and all take profits hit simultaneously → all entries + all takes
 
-### Группа G: Граничные случаи
-
-#### G1. Полное закрытие позиции
-- **G1.1**: Вход по рынку → все стопы срабатывают → сделка полностью закрыта
-- **G1.2**: Вход по рынку → все тейки срабатывают → сделка полностью закрыта
-- **G1.3**: Вход по рынку → часть стопов срабатывает → оставшаяся часть закрывается последним стопом
-- **G1.4**: Вход по рынку → часть тейков срабатывает → оставшаяся часть закрывается последним тейком
-
-#### G2. Частичное закрытие позиции
-- **G2.1**: Вход по рынку → один стоп из нескольких срабатывает → позиция частично закрыта, остальные стопы активны
-- **G2.2**: Вход по рынку → один тейк из нескольких срабатывает → позиция частично закрыта, остальные тейки активны
-
-#### G4. Незакрытые сделки в конце теста
-- **G4.1**: Вход по рынку, только стопы → стопы не срабатывают → сделка остается открытой → автоматическое закрытие в конце тестирования
-- **G4.2**: Вход по рынку, только тейки → тейки не срабатывают → сделка остается открытой → автоматическое закрытие в конце тестирования
-- **G4.3**: Вход по рынку, стопы и тейки → часть стопов срабатывает, часть тейков не срабатывает → сделка частично закрыта → автоматическое закрытие остатка в конце тестирования
-
-**ВАЖНО**: В тестах, где сделка может остаться открытой (например, тесты без тейков, где стопы не срабатывают), бэктестер автоматически закроет сделку в конце тестирования. Это важно учитывать при проверке результатов - нужно проверить, что автоматическое закрытие произошло корректно.
-
-#### G3. Отмена ордеров
-- **G3.1**: Вход по рынку → стопы/тейки установлены → вход выполнен → отмена стопов/тейков → проверка отмены
-- **G3.2**: Вход лимиткой → вход не выполнен → отмена входного ордера → проверка отмены
+#### D4. Multiple Entries, Part of Take Profits
+- **D4.1**: Multiple limit entries and part of take profits hit simultaneously → all entries + part of takes
+- **D4.2**: Multiple limit entries and part of take profits hit simultaneously → part of entries + part of takes
 
 ---
 
-## 2. СПИСОК ДАННЫХ ДЛЯ ПРОВЕРКИ
+### Group E: Order Execution - Most Complex Cases (Entries + Stops + Takes Simultaneously)
 
-### 2.1. Проверка результата установки ордеров (OrderOperationResult)
+**IMPORTANT RULE**: When price hits both stops and take profits simultaneously, only stops are considered. Take profits may trigger on subsequent bars if the deal is not fully closed.
 
-#### Структура результата
-- `orders`: список всех созданных ордеров (входные + выходные)
-  - Проверить количество ордеров
-  - Проверить типы ордеров (MARKET, LIMIT, STOP)
-  - Проверить стороны ордеров (BUY, SELL)
-  - Проверить параметры каждого ордера (quantity, price, trigger_price)
-- `error_messages`: список сообщений об ошибках
-  - Проверить отсутствие ошибок в успешных случаях
-  - Проверить наличие и содержание ошибок в случаях валидации
-- `active`: список ID активных ордеров
-  - Проверить соответствие ожидаемым активным ордерам
-- `executed`: список ID выполненных ордеров
-  - Проверить отсутствие выполненных ордеров при установке (кроме market entry)
-- `canceled`: список ID отмененных ордеров
-  - Проверить отсутствие отмененных ордеров при установке
-- `error`: список ID ордеров с ошибками
-  - Проверить отсутствие ошибок в успешных случаях
-- `deal_id`: ID сделки
-  - Проверить, что deal_id > 0
-  - Проверить, что все ордера связаны с одной сделкой
-- `volume`: объем позиции в сделке
-  - Проверить, что volume = 0 при установке (до выполнения входных ордеров)
+#### E1. One Entry, One Stop, One Take Profit
+- **E1.1**: Limit entry, stop and take profit hit simultaneously → entry + stop trigger, take profit does NOT trigger
+- **E1.2**: Limit entry, stop and take profit hit simultaneously → entry + stop trigger, take profit triggers on next bar (if deal didn't close completely)
 
-#### Детальная проверка ордеров
-- **Входные ордера**:
-  - Тип: MARKET или LIMIT
-  - Сторона: BUY для buy_sltp, SELL для sell_sltp
-  - Quantity: соответствует переданному объему
-  - Price: для LIMIT - соответствует переданной цене, для MARKET - None
-  - Trigger_price: None для входных ордеров
-  - Status: ACTIVE (для LIMIT) или EXECUTED (для MARKET)
-  - Deal_id: соответствует deal_id из результата
+#### E2. One Entry, Multiple Stops, One Take Profit
+- **E2.1**: Limit entry, all stops and take profit hit simultaneously → entry + all stops trigger, take profit does NOT trigger
+- **E2.2**: Limit entry, part of stops and take profit hit simultaneously → entry + part of stops trigger, take profit does NOT trigger
 
-- **Выходные ордера (стопы)**:
-  - Тип: STOP
-  - Сторона: SELL для buy_sltp (закрытие BUY позиции), BUY для sell_sltp (закрытие SELL позиции)
-  - Quantity: соответствует доле от входа (проверить после выполнения входа)
-  - Price: None для STOP ордеров
-  - Trigger_price: соответствует переданной цене стопа
-  - Status: ACTIVE (стопы устанавливаются после выполнения входа)
-  - Deal_id: соответствует deal_id из результата
+#### E3. One Entry, One Stop, Multiple Take Profits
+- **E3.1**: Limit entry, stop and all take profits hit simultaneously → entry + stop trigger, all takes do NOT trigger
+- **E3.2**: Limit entry, stop and all take profits hit simultaneously → entry + stop trigger, part of takes trigger on next bar (if deal didn't close completely)
 
-- **Выходные ордера (тейки)**:
-  - Тип: LIMIT
-  - Сторона: SELL для buy_sltp, BUY для sell_sltp
-  - Quantity: соответствует доле от входа (проверить после выполнения входа)
-  - Price: соответствует переданной цене тейка
-  - Trigger_price: None для LIMIT ордеров
-  - Status: ACTIVE (тейки устанавливаются после выполнения входа)
-  - Deal_id: соответствует deal_id из результата
+#### E4. One Entry, Multiple Stops, Multiple Take Profits
+- **E4.1**: Limit entry, all stops and all take profits hit simultaneously → entry + all stops trigger, all takes do NOT trigger
+- **E4.2**: Limit entry, all stops and part of take profits hit simultaneously → entry + all stops trigger, part of takes do NOT trigger
+- **E4.3**: Limit entry, part of stops and all take profits hit simultaneously → entry + part of stops trigger, all takes do NOT trigger
+- **E4.4**: Limit entry, part of stops and part of take profits hit simultaneously → entry + part of stops trigger, part of takes do NOT trigger
+
+#### E5. Multiple Entries, Stops, Take Profits
+- **E5.1**: Multiple limit entries, all stops and all take profits hit simultaneously → all entries + all stops trigger, all takes do NOT trigger
+- **E5.2**: Multiple limit entries, all stops and part of take profits hit simultaneously → all entries + all stops trigger, part of takes do NOT trigger
+- **E5.3**: Multiple limit entries, part of stops and all take profits hit simultaneously → all entries + part of stops trigger, all takes do NOT trigger
+- **E5.4**: Multiple limit entries, part of stops and part of take profits hit simultaneously → all entries + part of stops trigger, part of takes do NOT trigger
 
 ---
 
-### 2.2. Проверка отработки ордеров
+### Group F: Validation and Errors
 
-#### Временные метки
-- Проверить время выполнения каждого ордера (должно соответствовать бару, на котором он сработал)
-- Проверить порядок выполнения ордеров (входные должны выполниться раньше выходных)
+#### F1. Price Validation
+- **F1.1**: BUY stop loss above current price → validation error
+- **F1.2**: BUY take profit below current price → validation error
+- **F1.3**: SELL stop loss below current price → validation error
+- **F1.4**: SELL take profit above current price → validation error
+- **F1.5**: BUY limit entry above current price → validation error
+- **F1.6**: SELL limit entry below current price → validation error
 
-#### Цены выполнения
-- **Market ордера**: 
-  - Для BUY: цена выполнения = текущая цена + slippage
-  - Для SELL: цена выполнения = текущая цена - slippage
-- **Limit ордера**: цена выполнения = цена ордера (если цена задела ордер)
-- **Stop ордера**: 
-  - Выполняются как market ордера при срабатывании trigger_price
-  - Для BUY stop (SELL side): цена выполнения = trigger_price - slippage
-  - Для SELL stop (BUY side): цена выполнения = trigger_price + slippage
-- Проверить, что цены соответствуют ожидаемым с учетом slippage
-
-#### Объемы выполнения
-- Проверить, что объемы выполнения соответствуют объемам ордеров
-- Проверить частичные выполнения (если применимо)
-- Проверить, что сумма объемов всех выходных ордеров не превышает объем входа
-
-#### Статусы ордеров
-- После выполнения: статус = EXECUTED
-- Не выполненные: статус = ACTIVE или CANCELED
-- Проверить переходы статусов
+#### F2. Structure Validation
+- **F2.1**: Sum of stop shares != 1.0 → validation error
+- **F2.2**: Sum of take profit shares != 1.0 → validation error
+- **F2.3**: Sum of entry order shares != 1.0 → validation error
+- **F2.4**: Negative shares → validation error
+- **F2.5**: Shares > 1.0 → validation error
 
 ---
 
-### 2.3. Проверка сделок (Trades)
+### Group G: Edge Cases
 
-#### Структура сделки
-- `side`: BUY или SELL
-- `price`: цена выполнения
-- `quantity`: объем
-- `sum`: сумма сделки (price * quantity)
-- `fee`: комиссия
-- `order_id`: ID ордера, который создал сделку
-- `deal_id`: ID сделки (deal)
+#### G1. Full Position Closure
+- **G1.1**: Market entry → all stops trigger → deal fully closed
+- **G1.2**: Market entry → all take profits trigger → deal fully closed
+- **G1.3**: Market entry → part of stops trigger → remaining part closed by last stop
+- **G1.4**: Market entry → part of take profits trigger → remaining part closed by last take profit
 
-#### Проверка сделок
-- Количество сделок должно соответствовать количеству выполненных ордеров
-- Для закрытой позиции: сумма объемов BUY сделок должна равняться сумме объемов SELL сделок (по модулю)
-- Комиссии должны рассчитываться правильно:
-  - `fee_taker` для market ордеров и stop ордеров (которые выполняются как market)
-  - `fee_maker` для limit ордеров
-- Цены должны учитывать slippage:
-  - Для BUY market ордеров: цена_исполнения = цена_рынка + slippage
-  - Для SELL market ордеров: цена_исполнения = цена_рынка - slippage
-  - Для stop ордеров: применяется slippage как для market ордеров
-- Каждая сделка должна быть связана с соответствующим ордером через `order_id`
-- Каждая сделка должна быть связана с deal через `deal_id`
+#### G2. Partial Position Closure
+- **G2.1**: Market entry → one stop out of several triggers → position partially closed, other stops remain active
+- **G2.2**: Market entry → one take profit out of several triggers → position partially closed, other takes remain active
+
+#### G4. Unclosed Deals at End of Test
+- **G4.1**: Market entry, only stops → stops don't trigger → deal remains open → automatic closure at end of testing
+- **G4.2**: Market entry, only take profits → takes don't trigger → deal remains open → automatic closure at end of testing
+- **G4.3**: Market entry, stops and take profits → part of stops trigger, part of takes don't trigger → deal partially closed → automatic closure of remainder at end of testing
+
+**IMPORTANT**: In tests where a deal may remain open (e.g., tests without take profits where stops don't trigger), the backtester will automatically close the deal at the end of testing. This is important to consider when checking results - need to verify that automatic closure occurred correctly.
+
+#### G3. Order Cancellation
+- **G3.1**: Market entry → stops/takes set → entry executed → cancel stops/takes → verify cancellation
+- **G3.2**: Limit entry → entry not executed → cancel entry order → verify cancellation
 
 ---
 
-### 2.4. Проверка Deal (сделки-позиции)
+## 2. DATA TO CHECK
 
-#### Структура Deal
-- `deal_id`: уникальный ID
-- `type`: DealType.LONG или DealType.SHORT (тип сделки)
-- `quantity`: текущий объем позиции (положительный для LONG, отрицательный для SHORT)
-- `avg_buy_price`: средняя цена покупки
-- `avg_sell_price`: средняя цена продажи
-- `buy_quantity`: суммарный объем покупок
-- `buy_cost`: суммарная стоимость покупок
-- `sell_quantity`: суммарный объем продаж
-- `sell_proceeds`: суммарная выручка от продаж
-- `fee`: суммарные комиссии
-- `profit`: прибыль/убыток (рассчитывается только для закрытых сделок)
-- `orders`: список всех ордеров сделки
-- `trades`: список всех сделок (trades) в рамках этой позиции
+### 2.1. Order Placement Result Check (OrderOperationResult)
 
-#### Проверка Deal
-- **При открытии позиции**:
-  - `quantity` = сумма объемов входных ордеров (положительное для LONG, отрицательное для SHORT)
-  - `avg_buy_price` = средневзвешенная цена покупок (если есть BUY сделки)
-  - `avg_sell_price` = средневзвешенная цена продаж (если есть SELL сделки)
-  - `buy_quantity` = сумма объемов всех BUY сделок
-  - `buy_cost` = сумма (price * quantity) всех BUY сделок
-  - `sell_quantity` = сумма объемов всех SELL сделок
-  - `sell_proceeds` = сумма (price * quantity) всех SELL сделок
-  - `fee` = сумма комиссий всех сделок
-  - `profit` = None (сделка еще не закрыта)
+#### Result Structure
+- `orders`: list of all created orders (entry + exit)
+  - Check order count
+  - Check order types (MARKET, LIMIT, STOP)
+  - Check order sides (BUY, SELL)
+  - Check each order's parameters (quantity, price, trigger_price)
+- `error_messages`: list of error messages
+  - Check absence of errors in successful cases
+  - Check presence and content of errors in validation cases
+- `active`: list of active order IDs
+  - Check match with expected active orders
+- `executed`: list of executed order IDs
+  - Check absence of executed orders at placement (except market entry)
+- `canceled`: list of canceled order IDs
+  - Check absence of canceled orders at placement
+- `error`: list of order IDs with errors
+  - Check absence of errors in successful cases
+- `deal_id`: Deal ID
+  - Check that deal_id > 0
+  - Check that all orders are linked to the same deal
+- `volume`: position volume in the deal
+  - Check that volume = 0 at placement (before entry orders execute)
+
+#### Detailed Order Check
+- **Entry Orders**:
+  - Type: MARKET or LIMIT
+  - Side: BUY for buy_sltp, SELL for sell_sltp
+  - Quantity: matches passed volume
+  - Price: for LIMIT - matches passed price, for MARKET - None
+  - Trigger_price: None for entry orders
+  - Status: ACTIVE (for LIMIT) or EXECUTED (for MARKET)
+  - Deal_id: matches deal_id from result
+
+- **Exit Orders (Stops)**:
+  - Type: STOP
+  - Side: SELL for buy_sltp (closing BUY position), BUY for sell_sltp (closing SELL position)
+  - Quantity: matches share of entry (check after entry execution)
+  - Price: None for STOP orders
+  - Trigger_price: matches passed stop price
+  - Status: ACTIVE (stops are set after entry execution)
+  - Deal_id: matches deal_id from result
+
+- **Exit Orders (Take Profits)**:
+  - Type: LIMIT
+  - Side: SELL for buy_sltp, BUY for sell_sltp
+  - Quantity: matches share of entry (check after entry execution)
+  - Price: matches passed take profit price
+  - Trigger_price: None for LIMIT orders
+  - Status: ACTIVE (take profits are set after entry execution)
+  - Deal_id: matches deal_id from result
+
+---
+
+### 2.2. Order Execution Check
+
+#### Timestamps
+- Check execution time of each order (should match the bar on which it triggered)
+- Check order execution sequence (entry orders should execute before exit orders)
+
+#### Execution Prices
+- **Market Orders**: 
+  - For BUY: execution price = current price + slippage
+  - For SELL: execution price = current price - slippage
+- **Limit Orders**: execution price = order price (if price hit the order)
+- **Stop Orders**: 
+  - Execute as market orders when trigger_price is hit
+  - For BUY stop (SELL side): execution price = trigger_price - slippage
+  - For SELL stop (BUY side): execution price = trigger_price + slippage
+- Check that prices match expected values considering slippage
+
+#### Execution Volumes
+- Check that execution volumes match order volumes
+- Check partial executions (if applicable)
+- Check that sum of all exit order volumes does not exceed entry volume
+
+#### Order Statuses
+- After execution: status = EXECUTED
+- Not executed: status = ACTIVE or CANCELED
+- Check status transitions
+
+---
+
+### 2.3. Trades Check
+
+#### Trade Structure
+- `side`: BUY or SELL
+- `price`: execution price
+- `quantity`: volume
+- `sum`: trade amount (price * quantity)
+- `fee`: commission
+- `order_id`: ID of order that created the trade
+- `deal_id`: Deal ID
+
+#### Trades Check
+- Number of trades should match number of executed orders
+- For closed position: sum of BUY trade volumes should equal sum of SELL trade volumes (by absolute value)
+- Commissions should be calculated correctly:
+  - `fee_taker` for market orders and stop orders (which execute as market)
+  - `fee_maker` for limit orders
+- Prices should account for slippage:
+  - For BUY market orders: execution_price = market_price + slippage
+  - For SELL market orders: execution_price = market_price - slippage
+  - For stop orders: slippage is applied as for market orders
+- Each trade should be linked to corresponding order via `order_id`
+- Each trade should be linked to deal via `deal_id`
+
+---
+
+### 2.4. Deal Check (Position-Deal)
+
+#### Deal Structure
+- `deal_id`: unique ID
+- `type`: DealType.LONG or DealType.SHORT (deal type)
+- `quantity`: current position volume (positive for LONG, negative for SHORT)
+- `avg_buy_price`: average buy price
+- `avg_sell_price`: average sell price
+- `buy_quantity`: total buy volume
+- `buy_cost`: total buy cost
+- `sell_quantity`: total sell volume
+- `sell_proceeds`: total sell proceeds
+- `fee`: total commissions
+- `profit`: profit/loss (calculated only for closed deals)
+- `orders`: list of all deal orders
+- `trades`: list of all trades in this position
+
+#### Deal Check
+- **When Opening Position**:
+  - `quantity` = sum of entry order volumes (positive for LONG, negative for SHORT)
+  - `avg_buy_price` = weighted average of buy prices (if there are BUY trades)
+  - `avg_sell_price` = weighted average of sell prices (if there are SELL trades)
+  - `buy_quantity` = sum of volumes of all BUY trades
+  - `buy_cost` = sum of (price * quantity) of all BUY trades
+  - `sell_quantity` = sum of volumes of all SELL trades
+  - `sell_proceeds` = sum of (price * quantity) of all SELL trades
+  - `fee` = sum of commissions of all trades
+  - `profit` = None (deal not yet closed)
   - `is_closed` = False
 
-- **При частичном закрытии**:
-  - `quantity` изменяется на объем закрытых выходных ордеров (уменьшается по модулю)
-  - `avg_sell_price` обновляется (средневзвешенная цена всех SELL сделок)
-  - `sell_quantity` увеличивается на объем закрытых выходных ордеров
-  - `sell_proceeds` увеличивается на сумму закрытых выходных сделок
-  - `fee` увеличивается на комиссии выходных сделок
-  - `profit` = None (сделка еще не закрыта полностью)
+- **On Partial Closure**:
+  - `quantity` changes by volume of closed exit orders (decreases by absolute value)
+  - `avg_sell_price` updates (weighted average of all SELL trades)
+  - `sell_quantity` increases by volume of closed exit orders
+  - `sell_proceeds` increases by sum of closed exit trades
+  - `fee` increases by commissions of exit trades
+  - `profit` = None (deal not yet fully closed)
   - `is_closed` = False
 
-- **При полном закрытии**:
+- **On Full Closure**:
   - `quantity` = 0.0
   - `is_closed` = True
-  - `profit` = sell_proceeds - buy_cost - fee (рассчитывается автоматически)
-  - **ВАЖНО**: Проверить, что `profit` соответствует ожидаемому расчету:
-    - Для BUY позиции: profit = (цена_выхода * объем) - комиссии_выхода - (цена_входа * объем + комиссии_входа)
-    - Для SELL позиции: profit = (цена_входа * объем - комиссии_входа) - (цена_выхода * объем + комиссии_выхода)
-    - Учесть slippage для market ордеров и stop ордеров (которые выполняются как market)
-    - Учесть fee_taker для market/stop ордеров и fee_maker для limit ордеров
-  - Все выходные ордера должны быть выполнены или отменены
+  - `profit` = sell_proceeds - buy_cost - fee (calculated automatically)
+  - **IMPORTANT**: Check that `profit` matches expected calculation:
+    - For BUY position: profit = (exit_price * volume) - exit_fees - (entry_price * volume + entry_fees)
+    - For SELL position: profit = (entry_price * volume - entry_fees) - (exit_price * volume + exit_fees)
+    - Account for slippage for market orders and stop orders (which execute as market)
+    - Account for fee_taker for market/stop orders and fee_maker for limit orders
+  - All exit orders should be executed or canceled
 
-- **Связь ордеров**:
-  - Все ордера (входные + выходные) должны иметь одинаковый `deal_id`
-  - Проверить через `broker.get_deal_by_id(deal_id)`
+- **Order Links**:
+  - All orders (entry + exit) should have the same `deal_id`
+  - Check via `broker.get_deal_by_id(deal_id)`
 
 ---
 
-### 2.5. Проверка общего результата стратегии
+### 2.5. Overall Strategy Result Check
 
 #### Equity
-- `equity_symbol`: объем позиции в базовой валюте
-  - После полного закрытия = 0.0
-  - При открытой LONG позиции = положительное значение (сумма объемов входных ордеров - сумма объемов выходных ордеров)
-  - При открытой SHORT позиции = отрицательное значение
-- `equity_usd`: баланс в USD
-  - Изменяется при каждой сделке
-  - Для BUY: уменьшается на (price * quantity + fee)
-  - Для SELL: увеличивается на (price * quantity - fee)
+- `equity_symbol`: position volume in base currency
+  - After full closure = 0.0
+  - For open LONG position = positive value (sum of entry order volumes - sum of exit order volumes)
+  - For open SHORT position = negative value
+- `equity_usd`: balance in USD
+  - Changes on each trade
+  - For BUY: decreases by (price * quantity + fee)
+  - For SELL: increases by (price * quantity - fee)
 
-#### Статистика
-- Количество сделок (trades)
-- Количество открытых/закрытых deals
-- Общая прибыль/убыток (сумма `profit` всех закрытых deals)
-- Максимальная просадка (drawdown)
-- Проверить, что статистика корректно учитывает все сделки и deals
-
----
-
-### 2.6. Проверка специфических сценариев
-
-#### Одновременное срабатывание нескольких ордеров
-- Проверить порядок выполнения (входные → выходные)
-- Проверить, что все задетые ордера сработали
-- Проверить цены выполнения (должны быть одинаковыми для всех ордеров, сработавших на одном баре)
-
-#### Приоритет стопов над тейками
-- Когда цена задевает и стопы, и тейки одновременно:
-  - Стопы должны сработать
-  - Тейки НЕ должны сработать на этом баре
-  - Тейки могут сработать на следующих барах, если позиция не закрыта полностью
-
-#### Частичное закрытие позиции
-- После частичного закрытия:
-  - Оставшиеся стопы/тейки должны остаться активными
-  - Объемы оставшихся стопов/тейков должны быть пересчитаны пропорционально оставшейся позиции
-  - Проверить, что последний стоп/тейк закрывает всю оставшуюся позицию (независимо от доли)
-
-#### Отмена ордеров
-- После отмены:
-  - Статус ордеров = CANCELED
-  - Ордера не должны выполниться
-  - Позиция не должна измениться
+#### Statistics
+- Number of trades
+- Number of open/closed deals
+- Total profit/loss (sum of `profit` of all closed deals)
+- Maximum drawdown
+- Check that statistics correctly account for all trades and deals
 
 ---
 
-## 3. ПРИМЕРЫ ТЕСТОВЫХ ДАННЫХ (Quotes)
+### 2.6. Specific Scenario Checks
 
-**Принцип**: Между барами, где должны быть срабатывания, можно (но не обязательно) вставлять бары, где срабатываний быть не должно. Это делает тесты более реалистичными и проверяет, что ордера не срабатывают преждевременно.
+#### Simultaneous Multiple Order Triggering
+- Check execution order (entry → exit)
+- Check that all hit orders triggered
+- Check execution prices (should be the same for all orders triggered on the same bar)
 
-### Для простых случаев
-- Бар 1: цена 100.0 (установка ордеров)
-- Бар 2: цена 98.0 (без срабатываний)
-- Бар 3: цена 95.0 (срабатывание стопа)
-- Бар 4: цена 97.0 (без срабатываний)
-- Бар 5: цена 105.0 (срабатывание тейка)
+#### Stop Priority Over Take Profits
+- When price hits both stops and take profits simultaneously:
+  - Stops should trigger
+  - Take profits should NOT trigger on this bar
+  - Take profits may trigger on subsequent bars if position is not fully closed
 
-### Для одновременного срабатывания
-- Бар 1: цена 100.0 (установка ордеров)
-- Бар 2: цена 99.0 (без срабатываний)
-- Бар 3: high=110.0, low=90.0 (задевает и стоп, и тейк одновременно)
-- Бар 4: цена 100.0 (без срабатываний, проверка что тейки не сработали)
+#### Partial Position Closure
+- After partial closure:
+  - Remaining stops/takes should remain active
+  - Volumes of remaining stops/takes should be recalculated proportionally to remaining position
+  - Check that last stop/take closes entire remaining position (regardless of share)
 
-### Для последовательного срабатывания
-- Бар 1: цена 100.0 (установка ордеров)
-- Бар 2: цена 98.0 (без срабатываний)
-- Бар 3: low=95.0 (срабатывает первый стоп)
-- Бар 4: цена 94.0 (без срабатываний)
-- Бар 5: low=93.0 (срабатывает второй стоп)
+#### Order Cancellation
+- After cancellation:
+  - Order status = CANCELED
+  - Orders should not execute
+  - Position should not change
 
-### Для частичного срабатывания
-- Бар 1: цена 100.0 (установка ордеров)
-- Бар 2: цена 98.0 (без срабатываний)
-- Бар 3: low=94.0 (задевает только один стоп из двух, второй стоп на 92.0)
-- Бар 4: цена 93.0 (без срабатываний, второй стоп еще не задет)
-- Бар 5: low=91.0 (срабатывает второй стоп)
+---
+
+## 3. TEST DATA EXAMPLES (Quotes)
+
+**Principle**: Between bars where triggers should occur, bars where no triggers should occur can (but don't have to) be inserted. This makes tests more realistic and verifies that orders don't trigger prematurely.
+
+### For Simple Cases
+- Bar 1: price 100.0 (order placement)
+- Bar 2: price 98.0 (no triggers)
+- Bar 3: price 95.0 (stop trigger)
+- Bar 4: price 97.0 (no triggers)
+- Bar 5: price 105.0 (take profit trigger)
+
+### For Simultaneous Triggering
+- Bar 1: price 100.0 (order placement)
+- Bar 2: price 99.0 (no triggers)
+- Bar 3: high=110.0, low=90.0 (hits both stop and take profit simultaneously)
+- Bar 4: price 100.0 (no triggers, verify that take profits didn't trigger)
+
+### For Sequential Triggering
+- Bar 1: price 100.0 (order placement)
+- Bar 2: price 98.0 (no triggers)
+- Bar 3: low=95.0 (first stop triggers)
+- Bar 4: price 94.0 (no triggers)
+- Bar 5: low=93.0 (second stop triggers)
+
+### For Partial Triggering
+- Bar 1: price 100.0 (order placement)
+- Bar 2: price 98.0 (no triggers)
+- Bar 3: low=94.0 (hits only one stop out of two, second stop at 92.0)
+- Bar 4: price 93.0 (no triggers, second stop not yet hit)
+- Bar 5: low=91.0 (second stop triggers)
 
 ---
 
