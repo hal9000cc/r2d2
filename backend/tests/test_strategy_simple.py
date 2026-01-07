@@ -686,7 +686,8 @@ class TestStrategyPrecision:
         assert len(result.orders) == 1
         order = result.orders[0]
         expected_price = round((current_price - 10.0 + 0.123) / 0.01) * 0.01
-        assert abs(order.price - expected_price) < 1e-12, f"Price should be rounded to {expected_price}, got {order.price}"
+        assert strategy.eq(float(order.price), float(expected_price)), \
+            f"Price should be rounded to {expected_price}, got {order.price}"
     
     def test_sell_price_rounding(self, broker_with_strategy, simple_quotes_data):
         """Test that sell limit price is rounded to precision_price."""
@@ -705,7 +706,8 @@ class TestStrategyPrecision:
         assert len(result.orders) == 1
         order = result.orders[0]
         expected_price = round((current_price + 10.0 + 0.789) / 0.01) * 0.01
-        assert abs(order.price - expected_price) < 1e-12, f"Price should be rounded to {expected_price}, got {order.price}"
+        assert strategy.eq(float(order.price), float(expected_price)), \
+            f"Price should be rounded to {expected_price}, got {order.price}"
     
     def test_buy_trigger_price_rounding(self, broker_with_strategy, simple_quotes_data):
         """Test that buy stop trigger price is rounded to precision_price."""
@@ -721,7 +723,8 @@ class TestStrategyPrecision:
         assert len(result.orders) == 1
         order = result.orders[0]
         expected_trigger = round((current_price + 10.0 + 0.456) / 0.01) * 0.01
-        assert abs(order.trigger_price - expected_trigger) < 1e-12, f"Trigger price should be rounded to {expected_trigger}, got {order.trigger_price}"
+        assert strategy.eq(float(order.trigger_price), float(expected_trigger)), \
+            f"Trigger price should be rounded to {expected_trigger}, got {order.trigger_price}"
     
     def test_sell_trigger_price_rounding(self, broker_with_strategy, simple_quotes_data):
         """Test that sell stop trigger price is rounded to precision_price."""
@@ -740,7 +743,8 @@ class TestStrategyPrecision:
         assert len(result.orders) == 1
         order = result.orders[0]
         expected_trigger = round((current_price - 10.0 + 0.234) / 0.01) * 0.01
-        assert abs(order.trigger_price - expected_trigger) < 1e-12, f"Trigger price should be rounded to {expected_trigger}, got {order.trigger_price}"
+        assert strategy.eq(float(order.trigger_price), float(expected_trigger)), \
+            f"Trigger price should be rounded to {expected_trigger}, got {order.trigger_price}"
     
     def test_precision_warning_logging(self, broker_with_strategy, simple_quotes_data):
         """Test that warnings are logged when values are rounded."""

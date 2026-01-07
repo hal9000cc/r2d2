@@ -46,18 +46,7 @@ class BrokerBacktesting(Broker):
                 - 'on_finish': Callable with no arguments
             results_save_period: Period for saving results in seconds (default: TRADE_RESULTS_SAVE_PERIOD)
         """
-        super().__init__(result_id)
-        self.task = task
-        
-        # Validate precision values
-        if task.precision_amount == 0.0:
-            raise ValueError("precision_amount must be greater than 0")
-        if task.precision_price == 0.0:
-            raise ValueError("precision_price must be greater than 0")
-        
-        # Set precision values
-        self.precision_amount = task.precision_amount
-        self.precision_price = task.precision_price
+        super().__init__(task=task, result_id=result_id)
         
         # Get fee and slippage from task, with defaults
         self.fee_taker = task.fee_taker if task.fee_taker > 0 else 0.001  # Default to 0.1% if not set
@@ -250,7 +239,7 @@ class BrokerBacktesting(Broker):
                     # Check proper price placement relative to current price
                     if order.side == OrderSide.BUY:
                         # For BUY limit: current price must be >= limit price (limit below or equal to current)
-                        if self.price < order.price:
+                        if self.lt(self.price, order.price):
                             time_str = datetime64_to_iso(self.current_time)
                             order.errors.append(
                                 f"BUY limit order price ({order.price}) must be below or equal to current price ({self.price}) at time {time_str}"
@@ -259,7 +248,7 @@ class BrokerBacktesting(Broker):
                             error_count += 1
                     else:  # SELL
                         # For SELL limit: current price must be <= limit price (limit above or equal to current)
-                        if self.price > order.price:
+                        if self.gt(self.price, order.price):
                             time_str = datetime64_to_iso(self.current_time)
                             order.errors.append(
                                 f"SELL limit order price ({order.price}) must be above or equal to current price ({self.price}) at time {time_str}"
@@ -281,7 +270,7 @@ class BrokerBacktesting(Broker):
                     # Check proper trigger_price placement relative to current price
                     if order.side == OrderSide.BUY:
                         # For BUY stop: current price must be < trigger_price
-                        if self.price >= order.trigger_price:
+                        if self.gteq(self.price, order.trigger_price):
                             time_str = datetime64_to_iso(self.current_time)
                             order.errors.append(
                                 f"BUY stop order trigger_price ({order.trigger_price}) must be above current price ({self.price}) at time {time_str}"
@@ -290,7 +279,7 @@ class BrokerBacktesting(Broker):
                             error_count += 1
                     else:  # SELL
                         # For SELL stop: current price must be > trigger_price
-                        if self.price <= order.trigger_price:
+                        if self.lteq(self.price, order.trigger_price):
                             time_str = datetime64_to_iso(self.current_time)
                             order.errors.append(
                                 f"SELL stop order trigger_price ({order.trigger_price}) must be below current price ({self.price}) at time {time_str}"
@@ -888,26 +877,28 @@ class BrokerBacktesting(Broker):
         if order.status != OrderStatus.ACTIVE:
             return
         
-        # Determine execution price based on order type
+        # Determine execution price and market order flag based on order type
         if order.order_type == OrderType.STOP:
-            # Stop order: execute at trigger_price
+            # Stop order: execute at trigger_price as market order (with slippage, fee_taker)
             execution_price = order.trigger_price
+            is_market_order = True
         elif order.order_type == OrderType.LIMIT:
-            # Limit order: execute at limit price
+            # Limit order: execute at limit price (no slippage, fee_maker)
             execution_price = order.price
+            is_market_order = False
         else:
             # Should not happen for triggered orders, but handle gracefully
             logger.warning(f"Unexpected order type {order.order_type} in _execute_triggered_order {order.order_id}")
             return
         
-        # Execute order (limit/stop orders are not market orders, so no slippage, use fee_maker)
+        # Execute order
         self._execute_trade(
             order.side,
             order.volume,
             execution_price,
             deal_id=order.deal_id,
             order_id=order.order_id,
-            is_market_order=False
+            is_market_order=is_market_order
         )
         # Mark order as executed
         order.filled_volume = order.volume

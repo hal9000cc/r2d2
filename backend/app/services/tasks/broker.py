@@ -375,22 +375,33 @@ class Broker(ABC):
     Generic broker base class.
     """
     
-    def __init__(self, result_id: str):
+    def __init__(self, task: 'Task', result_id: str):
         """
         Initialize broker.
         
         Args:
+            task: Task instance (must contain precision_amount and precision_price > 0)
             result_id: Unique ID for this backtesting run
         """
+        if task.precision_amount <= 0.0:
+            raise ValueError("precision_amount must be greater than 0")
+        if task.precision_price <= 0.0:
+            raise ValueError("precision_price must be greater than 0")
+        
+        self.task: Task = task
         self.deals: Optional[List[Deal]] = None
         self.trades: List[Trade] = []
         self.result_id = result_id
         self.last_auto_deal_id: Optional[int] = None
         self.active_deals: Set[int] = set()  # Set of deal_id for active (open) deals
         
-        # Precision for amount and price (set in subclass)
-        self.precision_amount: float = 0.0
-        self.precision_price: float = 0.0
+        # Precision for amount and price
+        self.precision_amount: float = task.precision_amount
+        self.precision_price: float = task.precision_price
+    
+    # ------------------------------------------------------------------
+    # Precision-based rounding helpers
+    # ------------------------------------------------------------------
     
     def round_to_precision(self, value: float, precision: float) -> float:
         """
@@ -417,6 +428,36 @@ class Broker(ABC):
             Rounded down value
         """
         return math.floor(value / precision) * precision
+
+    # ------------------------------------------------------------------
+    # Price comparison helpers (with precision tolerance)
+    # ------------------------------------------------------------------
+    def _price_eps(self) -> float:
+        """
+        Get epsilon for price comparisons based on precision_price.
+        We treat prices as equal if they differ by no more than precision_price / 10.
+        """
+        return self.precision_price / 10.0
+
+    def eq(self, a: float, b: float) -> bool:
+        """Return True if prices a and b are equal within price epsilon."""
+        return abs(a - b) <= self._price_eps()
+
+    def gt(self, a: float, b: float) -> bool:
+        """Return True if price a is greater than price b beyond price epsilon."""
+        return (a - b) > self._price_eps()
+
+    def lt(self, a: float, b: float) -> bool:
+        """Return True if price a is less than price b beyond price epsilon."""
+        return (b - a) > self._price_eps()
+
+    def gteq(self, a: float, b: float) -> bool:
+        """Return True if price a is greater than or equal to price b within price epsilon."""
+        return self.gt(a, b) or self.eq(a, b)
+
+    def lteq(self, a: float, b: float) -> bool:
+        """Return True if price a is less than or equal to price b within price epsilon."""
+        return self.lt(a, b) or self.eq(a, b)
 
     @abstractmethod
     def buy(self, quantity: VOLUME_TYPE, deal_id: Optional[int] = None):

@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-
 class OrderOperationResult(BaseModel):
     """
     Result of order operation (buy/sell/cancel).
@@ -59,10 +58,50 @@ class Strategy(ABC):
 
         # TA proxy will be set when callbacks are created
         self.talib: Optional[ta_proxy] = None
-        
-        # Precision for amount and price (set from broker after broker is assigned)
-        self.precision_amount: float = 0.0
-        self.precision_price: float = 0.0
+    
+    @property
+    def precision_amount(self) -> float:
+        """
+        Read-only volume precision taken from broker.
+        """
+        assert self.broker is not None, "Broker is not set on strategy"
+        return self.broker.precision_amount
+
+    @property
+    def precision_price(self) -> float:
+        """
+        Read-only price precision taken from broker.
+        """
+        assert self.broker is not None, "Broker is not set on strategy"
+        return self.broker.precision_price
+
+    # ------------------------------------------------------------------
+    # Price comparison proxies (delegate to broker)
+    # ------------------------------------------------------------------
+    def eq(self, a: float, b: float) -> bool:
+        """Proxy for broker.eq(a, b) - price equality with precision tolerance."""
+        assert self.broker is not None, "Broker is not set on strategy"
+        return self.broker.eq(a, b)
+
+    def gt(self, a: float, b: float) -> bool:
+        """Proxy for broker.gt(a, b) - a > b with precision tolerance."""
+        assert self.broker is not None, "Broker is not set on strategy"
+        return self.broker.gt(a, b)
+
+    def lt(self, a: float, b: float) -> bool:
+        """Proxy for broker.lt(a, b) - a < b with precision tolerance."""
+        assert self.broker is not None, "Broker is not set on strategy"
+        return self.broker.lt(a, b)
+
+    def gteq(self, a: float, b: float) -> bool:
+        """Proxy for broker.gteq(a, b) - a >= b with precision tolerance."""
+        assert self.broker is not None, "Broker is not set on strategy"
+        return self.broker.gteq(a, b)
+
+    def lteq(self, a: float, b: float) -> bool:
+        """Proxy for broker.lteq(a, b) - a <= b with precision tolerance."""
+        assert self.broker is not None, "Broker is not set on strategy"
+        return self.broker.lteq(a, b)
 
     def on_start(self):
         """
@@ -153,15 +192,11 @@ class Strategy(ABC):
         Returns:
             OrderOperationResult with orders, error_messages, and categorized order IDs
         """
-        # Update precision from broker if available
-        if self.broker is not None:
-            self.precision_amount = self.broker.precision_amount
-            self.precision_price = self.broker.precision_price
-        
         # Round quantity down to precision_amount
         original_quantity = quantity
         quantity = self.floor_to_precision(quantity, self.precision_amount)
-        if abs(quantity - original_quantity) > 1e-10:
+        volume_eps = self.precision_amount * 1e-3
+        if abs(quantity - original_quantity) > volume_eps:
             msg = f"Volume {original_quantity} rounded down to {quantity} due to precision_amount={self.precision_amount}"
             logger.warning(msg)
             print(msg)
@@ -170,7 +205,8 @@ class Strategy(ABC):
         original_price = price
         if price is not None:
             price = self.round_to_precision(price, self.precision_price)
-            if abs(price - original_price) > 1e-10:
+            # Use price comparison helper to detect actual change
+            if not self.eq(float(price), float(original_price)):
                 msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
                 logger.warning(msg)
                 print(msg)
@@ -179,7 +215,7 @@ class Strategy(ABC):
         original_trigger_price = trigger_price
         if trigger_price is not None:
             trigger_price = self.round_to_precision(trigger_price, self.precision_price)
-            if abs(trigger_price - original_trigger_price) > 1e-10:
+            if not self.eq(float(trigger_price), float(original_trigger_price)):
                 msg = f"Trigger price {original_trigger_price} rounded to {trigger_price} due to precision_price={self.precision_price}"
                 logger.warning(msg)
                 print(msg)
@@ -232,15 +268,11 @@ class Strategy(ABC):
         Returns:
             OrderOperationResult with orders, error_messages, and categorized order IDs
         """
-        # Update precision from broker if available
-        if self.broker is not None:
-            self.precision_amount = self.broker.precision_amount
-            self.precision_price = self.broker.precision_price
-        
         # Round quantity down to precision_amount
         original_quantity = quantity
         quantity = self.floor_to_precision(quantity, self.precision_amount)
-        if abs(quantity - original_quantity) > 1e-10:
+        volume_eps = self.precision_amount * 1e-3
+        if abs(quantity - original_quantity) > volume_eps:
             msg = f"Volume {original_quantity} rounded down to {quantity} due to precision_amount={self.precision_amount}"
             logger.warning(msg)
             print(msg)
@@ -249,7 +281,7 @@ class Strategy(ABC):
         original_price = price
         if price is not None:
             price = self.round_to_precision(price, self.precision_price)
-            if abs(price - original_price) > 1e-10:
+            if not self.eq(float(price), float(original_price)):
                 msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
                 logger.warning(msg)
                 print(msg)
@@ -258,7 +290,7 @@ class Strategy(ABC):
         original_trigger_price = trigger_price
         if trigger_price is not None:
             trigger_price = self.round_to_precision(trigger_price, self.precision_price)
-            if abs(trigger_price - original_trigger_price) > 1e-10:
+            if not self.eq(float(trigger_price), float(original_trigger_price)):
                 msg = f"Trigger price {original_trigger_price} rounded to {trigger_price} due to precision_price={self.precision_price}"
                 logger.warning(msg)
                 print(msg)
@@ -313,16 +345,12 @@ class Strategy(ABC):
         Returns:
             List of (volume, price) tuples. Price is None for market orders.
         """
-        # Update precision from broker if available
-        if self.broker is not None:
-            self.precision_amount = self.broker.precision_amount
-            self.precision_price = self.broker.precision_price
-        
         if isinstance(enter, (int, float)):
             # Market order: volume only
             original_vol = enter
             vol = self.floor_to_precision(enter, self.precision_amount)
-            if abs(vol - original_vol) > 1e-10:
+            volume_eps = self.precision_amount * 1e-3
+            if abs(vol - original_vol) > volume_eps:
                 msg = f"Volume {original_vol} rounded down to {vol} due to precision_amount={self.precision_amount}"
                 logger.warning(msg)
                 print(msg)
@@ -333,11 +361,12 @@ class Strategy(ABC):
             original_price = enter[1]
             vol = self.floor_to_precision(enter[0], self.precision_amount)
             price = self.round_to_precision(enter[1], self.precision_price)
-            if abs(vol - original_vol) > 1e-10:
+            volume_eps = self.precision_amount * 1e-3
+            if abs(vol - original_vol) > volume_eps:
                 msg = f"Volume {original_vol} rounded down to {vol} due to precision_amount={self.precision_amount}"
                 logger.warning(msg)
                 print(msg)
-            if abs(price - original_price) > 1e-10:
+            if not self.eq(float(price), float(original_price)):
                 msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
                 logger.warning(msg)
                 print(msg)
@@ -350,11 +379,12 @@ class Strategy(ABC):
                 original_price = price
                 rounded_vol = self.floor_to_precision(vol, self.precision_amount)
                 rounded_price = self.round_to_precision(price, self.precision_price)
-                if abs(rounded_vol - original_vol) > 1e-10:
+                volume_eps = self.precision_amount * 1e-3
+                if abs(rounded_vol - original_vol) > volume_eps:
                     msg = f"Volume {original_vol} rounded down to {rounded_vol} due to precision_amount={self.precision_amount}"
                     logger.warning(msg)
                     print(msg)
-                if abs(rounded_price - original_price) > 1e-10:
+                if not self.eq(float(rounded_price), float(original_price)):
                     msg = f"Price {original_price} rounded to {rounded_price} due to precision_price={self.precision_price}"
                     logger.warning(msg)
                     print(msg)
@@ -368,9 +398,9 @@ class Strategy(ABC):
         exit_param: Optional[Union[
             PRICE_TYPE,
             List[PRICE_TYPE],
-            List[Tuple[Optional[float], PRICE_TYPE]]
+            List[Tuple[float, PRICE_TYPE]]
         ]]
-    ) -> List[Tuple[Optional[float], PRICE_TYPE]]:
+    ) -> List[Tuple[float, PRICE_TYPE]]:
         """
         Normalize stop_loss or take_profit parameter to list of (fraction, price) tuples.
         Applies precision rounding: prices rounded to nearest.
@@ -379,26 +409,23 @@ class Strategy(ABC):
             exit_param: Exit parameter - price, list of prices, or list of (fraction, price) tuples
         
         Returns:
-            List of (fraction, price) tuples. Fraction is None for "all remaining".
-            If input was list of prices, fractions are distributed equally, last one has None.
+            List of (fraction, price) tuples.
+            All fractions are explicit and must sum to 1.0.
+            For list of prices, fractions are distributed equally and adjusted on the last
+            element so that the total sum is exactly 1.0.
         """
-        # Update precision from broker if available
-        if self.broker is not None:
-            self.precision_amount = self.broker.precision_amount
-            self.precision_price = self.broker.precision_price
-        
         if exit_param is None:
             return []
         
+        # Single price: full position at this price (fraction = 1.0)
         if isinstance(exit_param, (int, float)):
-            # Single price: (None, price) - all remaining
             original_price = exit_param
             price = self.round_to_precision(exit_param, self.precision_price)
-            if abs(price - original_price) > 1e-10:
+            if not self.eq(float(price), float(original_price)):
                 msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
                 logger.warning(msg)
                 print(msg)
-            return [(None, PRICE_TYPE(price))]
+            return [(1.0, PRICE_TYPE(price))]
         
         if isinstance(exit_param, list):
             if not exit_param:
@@ -406,48 +433,52 @@ class Strategy(ABC):
             
             # Check if first element is a tuple (fraction, price) or just a price
             if isinstance(exit_param[0], tuple):
-                # List of (fraction, price) tuples
-                result = []
+                # List of (fraction, price) tuples - keep fractions as provided (explicit)
+                result: List[Tuple[float, PRICE_TYPE]] = []
                 for f, p in exit_param:
+                    if f is None:
+                        raise ValueError("Fractions must be explicit for SL/TP orders; None is not allowed")
                     original_price = p
                     rounded_price = self.round_to_precision(p, self.precision_price)
-                    if abs(rounded_price - original_price) > 1e-10:
+                    if not self.eq(float(rounded_price), float(original_price)):
                         msg = f"Price {original_price} rounded to {rounded_price} due to precision_price={self.precision_price}"
                         logger.warning(msg)
                         print(msg)
-                    result.append((f if f is None else float(f), PRICE_TYPE(rounded_price)))
+                    result.append((float(f), PRICE_TYPE(rounded_price)))
                 return result
             else:
-                # List of prices: distribute equally
+                # List of prices: distribute equally with explicit fractions summing to 1.0
                 num_prices = len(exit_param)
                 if num_prices == 1:
                     original_price = exit_param[0]
                     price = self.round_to_precision(exit_param[0], self.precision_price)
-                    if abs(price - original_price) > 1e-10:
+                    if not self.eq(float(price), float(original_price)):
                         msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
                         logger.warning(msg)
                         print(msg)
-                    return [(None, PRICE_TYPE(price))]
+                    return [(1.0, PRICE_TYPE(price))]
                 else:
-                    # Equal fractions, last one is None
-                    fraction = 1.0 / num_prices
-                    result = []
+                    base_fraction = 1.0 / num_prices
+                    result: List[Tuple[float, PRICE_TYPE]] = []
+                    # First n-1 prices get base_fraction, last gets the remainder to make sum exactly 1.0
                     for p in exit_param[:-1]:
                         original_price = p
                         rounded_price = self.round_to_precision(p, self.precision_price)
-                        if abs(rounded_price - original_price) > 1e-10:
+                        if not self.eq(float(rounded_price), float(original_price)):
                             msg = f"Price {original_price} rounded to {rounded_price} due to precision_price={self.precision_price}"
                             logger.warning(msg)
                             print(msg)
-                        result.append((fraction, PRICE_TYPE(rounded_price)))
+                        result.append((base_fraction, PRICE_TYPE(rounded_price)))
                     # Last price
                     original_price = exit_param[-1]
                     price = self.round_to_precision(exit_param[-1], self.precision_price)
-                    if abs(price - original_price) > 1e-10:
+                    if not self.eq(float(price), float(original_price)):
                         msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
                         logger.warning(msg)
                         print(msg)
-                    result.append((None, PRICE_TYPE(price)))
+                    used_fraction = base_fraction * (num_prices - 1)
+                    last_fraction = 1.0 - used_fraction
+                    result.append((last_fraction, PRICE_TYPE(price)))
                     return result
         
         raise ValueError(f"Invalid exit parameter type: {type(exit_param)}")
@@ -455,8 +486,8 @@ class Strategy(ABC):
     def _validate_sltp_structure(
         self,
         entries: List[Tuple[VOLUME_TYPE, Optional[PRICE_TYPE]]],
-        stop_losses: List[Tuple[Optional[float], PRICE_TYPE]],
-        take_profits: List[Tuple[Optional[float], PRICE_TYPE]]
+        stop_losses: List[Tuple[float, PRICE_TYPE]],
+        take_profits: List[Tuple[float, PRICE_TYPE]]
     ) -> List[str]:
         """
         Validate structure of SLTP parameters.
@@ -483,51 +514,38 @@ class Strategy(ABC):
             if price is not None and price <= 0:
                 errors.append(f"Entry {i}: price must be greater than 0, got {price}")
         
+        # Helper to validate fractions list (no None, sum ~ 1.0, each in (0, 1])
+        def _validate_fractions(name: str, items: List[Tuple[float, PRICE_TYPE]]) -> None:
+            if not items:
+                return
+            fractions = [f for f, _ in items]
+            # Check for invalid fractions
+            for i, f in enumerate(fractions):
+                if f is None:  # Defensive, should not happen after normalization
+                    errors.append(f"{name} {i}: fraction must be explicit, None is not allowed")
+                elif f <= 0.0 or f > 1.0:
+                    errors.append(f"{name} {i}: fraction must be in (0, 1], got {f}")
+            total = sum(float(f) for f in fractions)
+            if abs(total - 1.0) > 1e-3:
+                errors.append(f"{name}: sum of fractions ({total}) must be equal to 1.0")
+        
         # Validate stop_losses
         if stop_losses:
-            # Check that exactly one has fraction=None
-            none_count = sum(1 for f, _ in stop_losses if f is None)
-            if none_count == 0:
-                errors.append("stop_loss: exactly one order must have fraction=None (for 'all remaining')")
-            elif none_count > 1:
-                errors.append("stop_loss: only one order can have fraction=None")
-            
-            # Check sum of fractions < 1.0
-            fractions = [f for f, _ in stop_losses if f is not None]
-            if fractions:
-                total = sum(fractions)
-                if total >= 1.0:
-                    errors.append(f"stop_loss: sum of fractions ({total}) must be less than 1.0")
+            _validate_fractions("stop_loss", stop_losses)
             
             # Validate prices
             for i, (fraction, price) in enumerate(stop_losses):
                 if price <= 0:
                     errors.append(f"stop_loss {i}: price must be greater than 0, got {price}")
-                if fraction is not None and (fraction <= 0 or fraction >= 1.0):
-                    errors.append(f"stop_loss {i}: fraction must be between 0 and 1, got {fraction}")
         
         # Validate take_profits
         if take_profits:
-            # Check that exactly one has fraction=None
-            none_count = sum(1 for f, _ in take_profits if f is None)
-            if none_count == 0:
-                errors.append("take_profit: exactly one order must have fraction=None (for 'all remaining')")
-            elif none_count > 1:
-                errors.append("take_profit: only one order can have fraction=None")
-            
-            # Check sum of fractions < 1.0
-            fractions = [f for f, _ in take_profits if f is not None]
-            if fractions:
-                total = sum(fractions)
-                if total >= 1.0:
-                    errors.append(f"take_profit: sum of fractions ({total}) must be less than 1.0")
+            _validate_fractions("take_profit", take_profits)
             
             # Validate prices
             for i, (fraction, price) in enumerate(take_profits):
                 if price <= 0:
                     errors.append(f"take_profit {i}: price must be greater than 0, got {price}")
-                if fraction is not None and (fraction <= 0 or fraction >= 1.0):
-                    errors.append(f"take_profit {i}: fraction must be between 0 and 1, got {fraction}")
         
         return errors
     
@@ -600,14 +618,14 @@ class Strategy(ABC):
         for i, (vol, price) in enumerate(entries):
             if price is not None:  # Limit order
                 if side == OrderSide.BUY:
-                    # BUY limit: price must be < current price
-                    if price >= current_price:
+                    # BUY limit: price must be < current price (with precision tolerance)
+                    if self.gteq(price, current_price):
                         errors.append(
                             f"Entry {i}: BUY limit order price ({price}) must be below current price ({current_price})"
                         )
                 else:  # SELL
-                    # SELL limit: price must be > current price
-                    if price <= current_price:
+                    # SELL limit: price must be > current price (with precision tolerance)
+                    if self.lteq(price, current_price):
                         errors.append(
                             f"Entry {i}: SELL limit order price ({price}) must be above current price ({current_price})"
                         )
@@ -616,13 +634,13 @@ class Strategy(ABC):
         for i, (fraction, price) in enumerate(stop_losses):
             if side == OrderSide.BUY:
                 # BUY position: stop loss is SELL stop, trigger_price must be < current price
-                if price >= current_price:
+                if self.gteq(price, current_price):
                     errors.append(
                         f"stop_loss {i}: BUY stop loss trigger price ({price}) must be below current price ({current_price})"
                     )
             else:  # SELL
                 # SELL position: stop loss is BUY stop, trigger_price must be > current price
-                if price <= current_price:
+                if self.lteq(price, current_price):
                     errors.append(
                         f"stop_loss {i}: SELL stop loss trigger price ({price}) must be above current price ({current_price})"
                     )
@@ -631,13 +649,13 @@ class Strategy(ABC):
         for i, (fraction, price) in enumerate(take_profits):
             if side == OrderSide.BUY:
                 # BUY position: take profit is SELL limit, price must be > current price
-                if price <= current_price:
+                if self.lteq(price, current_price):
                     errors.append(
                         f"take_profit {i}: BUY take profit price ({price}) must be above current price ({current_price})"
                     )
             else:  # SELL
                 # SELL position: take profit is BUY limit, price must be < current price
-                if price >= current_price:
+                if self.gteq(price, current_price):
                     errors.append(
                         f"take_profit {i}: SELL take profit price ({price}) must be below current price ({current_price})"
                     )

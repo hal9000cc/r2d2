@@ -2,12 +2,13 @@
 Tests for Strategy class - buy_sltp/sell_sltp methods.
 
 Tests for buy_sltp() and sell_sltp() methods with stop loss and take profit functionality.
+Uses universal test strategy with protocol-based approach.
 """
 import pytest
 import numpy as np
 from unittest.mock import Mock, patch
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable, Any, Tuple
 
 from app.services.tasks.strategy import Strategy, OrderOperationResult
 from app.services.tasks.broker_backtesting import BrokerBacktesting
@@ -15,6 +16,7 @@ from app.services.tasks.broker import Order
 from app.services.tasks.tasks import Task
 from app.services.tasks.broker import OrderSide, OrderType, OrderStatus, OrderGroup
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
+from app.core.objects2redis import MessageType
 
 # Import helper functions from broker tests
 import sys
@@ -22,17 +24,311 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from tests.test_broker_backtesting import (
     create_test_quotes_data,
+    assert_order_executed,
+    assert_order_active,
+    assert_order_error
 )
 
 
 # ============================================================================
-# Test Strategy Classes
+# Universal Test Strategy
 # ============================================================================
 
-class SimpleTestStrategy(Strategy):
-    """Simple strategy for basic tests."""
+class TestStrategy(Strategy):
+    """
+    Universal test strategy that executes actions based on a protocol.
+    
+    Protocol is a list of dictionaries with:
+    - 'bar_index': int - bar index when to execute action (0-based)
+    - 'method': str - method name to call (e.g., 'buy_sltp', 'sell_sltp')
+    - 'args': dict - method arguments (kwargs)
+    
+    Callback function is called on every bar with:
+    - strategy: TestStrategy instance
+    - bar_index: int - current bar index
+    - current_price: float - current price
+    - method_result: Optional[OrderOperationResult] - result of method call if method was called on this bar
+    """
+    
+    def on_start(self):
+        """Initialize test strategy."""
+        # Get protocol and callback from parameters
+        self.test_protocol = self.parameters.get('test_protocol', [])
+        self.test_callback = self.parameters.get('test_callback', None)
+        
+        # Initialize bar index counter
+        self.bar_index = -1
+        
+        # Initialize data collection
+        self.test_data = []
+    
     def on_bar(self):
-        pass
+        """Execute protocol actions and call callback."""
+        # Increment bar index (starts at 0 for first bar)
+        self.bar_index += 1
+        
+        # Get current price
+        current_price = self.close[-1] if len(self.close) > 0 else 0.0
+        
+        # Check if there's an action for this bar
+        method_result = None
+        action = None
+        
+        for protocol_action in self.test_protocol:
+            if protocol_action.get('bar_index') == self.bar_index:
+                action = protocol_action
+                break
+        
+        # Execute action if found
+        if action and 'method' in action:
+            method_name = action['method']
+            method_args = action.get('args', {})
+            
+            # Get method from strategy
+            method = getattr(self, method_name, None)
+            if method:
+                try:
+                    method_result = method(**method_args)
+                except Exception as e:
+                    # Create error result
+                    method_result = OrderOperationResult(
+                        orders=[],
+                        error_messages=[f"Exception calling {method_name}: {str(e)}"],
+                        active=[],
+                        executed=[],
+                        canceled=[],
+                        error=[],
+                        deal_id=0,
+                        volume=0.0
+                    )
+        
+        # Call callback if provided
+        if self.test_callback:
+            self.test_callback(
+                strategy=self,
+                bar_index=self.bar_index,
+                current_price=current_price,
+                method_result=method_result
+            )
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def calculate_expected_profit(
+    side: OrderSide,
+    quantity: VOLUME_TYPE,
+    enter_price: PRICE_TYPE,
+    exit_price: PRICE_TYPE,
+    enter_is_market: bool,
+    exit_is_market: bool,
+    fee_taker: PRICE_TYPE,
+    fee_maker: PRICE_TYPE,
+    slippage: PRICE_TYPE,
+    current_price: Optional[PRICE_TYPE] = None
+) -> Dict[str, PRICE_TYPE]:
+    """
+    Calculate expected profit for a deal.
+    
+    Args:
+        side: OrderSide.BUY or OrderSide.SELL
+        quantity: Trade quantity
+        enter_price: Entry price (limit price or current price for market)
+        exit_price: Exit price (stop/take profit price)
+        enter_is_market: True if entry is market order
+        exit_is_market: True if exit is market order (usually False for stop/limit)
+        fee_taker: Taker fee rate
+        fee_maker: Maker fee rate
+        slippage: Slippage value
+        current_price: Current price (required if enter_is_market is True)
+    
+    Returns:
+        Dictionary with:
+        - 'enter_execution_price': Actual entry execution price
+        - 'exit_execution_price': Actual exit execution price
+        - 'fee_enter': Entry fee
+        - 'fee_exit': Exit fee
+        - 'buy_cost': Total buy cost (for BUY) or sell proceeds (for SELL)
+        - 'sell_proceeds': Total sell proceeds (for BUY) or buy cost (for SELL)
+        - 'profit': Expected profit
+    """
+    # Calculate entry execution price
+    if enter_is_market:
+        if current_price is None:
+            raise ValueError("current_price is required for market entry")
+        if side == OrderSide.BUY:
+            enter_execution_price = current_price + slippage
+        else:  # SELL
+            enter_execution_price = current_price - slippage
+        enter_fee_rate = fee_taker
+    else:
+        enter_execution_price = enter_price
+        enter_fee_rate = fee_maker
+    
+    # Calculate exit execution price
+    if exit_is_market:
+        if side == OrderSide.BUY:
+            exit_execution_price = exit_price - slippage  # SELL exit
+        else:  # SELL
+            exit_execution_price = exit_price + slippage  # BUY exit
+        exit_fee_rate = fee_taker
+    else:
+        exit_execution_price = exit_price
+        exit_fee_rate = fee_maker
+    
+    # Calculate fees
+    enter_amount = enter_execution_price * quantity
+    exit_amount = exit_execution_price * quantity
+    fee_enter = enter_amount * enter_fee_rate
+    fee_exit = exit_amount * exit_fee_rate
+    
+    # Calculate buy cost and sell proceeds
+    if side == OrderSide.BUY:
+        buy_cost = enter_amount + fee_enter
+        sell_proceeds = exit_amount - fee_exit
+    else:  # SELL
+        buy_cost = exit_amount + fee_exit  # Buy to close SELL position
+        sell_proceeds = enter_amount - fee_enter  # Sell proceeds from entry
+    
+    # Calculate profit
+    profit = sell_proceeds - buy_cost
+    
+    return {
+        'enter_execution_price': enter_execution_price,
+        'exit_execution_price': exit_execution_price,
+        'fee_enter': fee_enter,
+        'fee_exit': fee_exit,
+        'buy_cost': buy_cost,
+        'sell_proceeds': sell_proceeds,
+        'profit': profit
+    }
+
+def create_broker_and_strategy(
+    test_task: Task,
+    quotes_data: Dict[str, np.ndarray],
+    test_name: str = "test"
+) -> Tuple[BrokerBacktesting, TestStrategy]:
+    """
+    Helper function to create BrokerBacktesting with TestStrategy.
+    Should be called inside a patch context.
+    
+    Args:
+        test_task: Task instance (should have parameters set with protocol and callback)
+        quotes_data: Quotes data dictionary
+        test_name: Test name for result_id
+    
+    Returns:
+        Tuple of (broker, strategy)
+    """
+    # Create strategy instance
+    strategy = TestStrategy()
+    
+    # Create callbacks
+    callbacks = Strategy.create_strategy_callbacks(strategy)
+    
+    # Create broker
+    result_id = f"test_{test_name}"
+    broker = BrokerBacktesting(
+        task=test_task,
+        result_id=result_id,
+        callbacks_dict=callbacks,
+        results_save_period=1.0
+    )
+    
+    # Set broker reference in strategy
+    strategy.broker = broker
+    
+    # Mock logging to avoid Task.send_message errors
+    broker.logging = Mock()
+    
+    # Mock task._list.send_message to raise exception with message info instead of failing silently
+    # This helps catch backtesting errors in tests with informative error messages
+    mock_list = Mock()
+    def send_message_side_effect(obj_id, msg_type, data):
+        """Side effect for mocked send_message that raises exception with message info."""
+        if msg_type == MessageType.MESSAGE:
+            # For error messages, raise exception with the actual error message
+            if data.get('level') == 'error':
+                error_msg = data.get('message', 'Unknown error')
+                raise RuntimeError(f"Backtesting error: {error_msg}")
+            else:
+                # For non-error messages, just log (don't raise)
+                return
+        elif msg_type == MessageType.EVENT:
+            # For backtesting_error events, wait for the MESSAGE call which will have the actual error
+            if data.get('event') == 'backtesting_error':
+                # Don't raise here, the actual error message comes in the next MESSAGE call
+                return
+            else:
+                # For other events, just return (don't raise)
+                return
+        else:
+            error_msg = f"Task tried to send message: type={msg_type}, data={data}"
+            raise RuntimeError(error_msg)
+    mock_list.send_message = Mock(side_effect=send_message_side_effect)
+    test_task._list = mock_list
+    
+    return broker, strategy
+
+def create_custom_quotes_data(
+    prices: List[PRICE_TYPE], 
+    highs: Optional[List[PRICE_TYPE]] = None,
+    lows: Optional[List[PRICE_TYPE]] = None,
+    times: Optional[List[np.datetime64]] = None
+) -> Dict[str, np.ndarray]:
+    """
+    Create custom quotes data with specified prices.
+    
+    Args:
+        prices: List of close prices for each bar
+        highs: Optional list of high prices. If None, calculated from close with spread.
+        lows: Optional list of low prices. If None, calculated from close with spread.
+        times: Optional list of times. If None, generates sequential times.
+    
+    Returns:
+        Dictionary with 'time', 'open', 'high', 'low', 'close', 'volume' arrays
+    """
+    n_bars = len(prices)
+    if times is None:
+        base_time = np.datetime64('2024-01-01T00:00:00', 'ms')
+        time_array = np.array([base_time + np.timedelta64(i, 'h') for i in range(n_bars)], dtype='datetime64[ms]')
+    else:
+        time_array = np.array(times, dtype='datetime64[ms]')
+    
+    close_prices = np.array(prices, dtype=PRICE_TYPE)
+    
+    # Generate OHLC from close prices
+    open_prices = np.roll(close_prices, 1)
+    open_prices[0] = close_prices[0]
+    
+    # High and low with spread
+    if highs is None:
+        spread = close_prices * 0.01  # 1% spread
+        high_prices = close_prices + spread
+    else:
+        high_prices = np.array(highs, dtype=PRICE_TYPE)
+    
+    if lows is None:
+        spread = close_prices * 0.01  # 1% spread
+        low_prices = close_prices - spread
+    else:
+        low_prices = np.array(lows, dtype=PRICE_TYPE)
+    
+    # Ensure high >= close >= low
+    high_prices = np.maximum(high_prices, close_prices)
+    low_prices = np.minimum(low_prices, close_prices)
+    
+    volume = np.full(n_bars, 1000.0, dtype=VOLUME_TYPE)
+    
+    return {
+        'time': time_array,
+        'open': open_prices.astype(PRICE_TYPE),
+        'high': high_prices.astype(PRICE_TYPE),
+        'low': low_prices.astype(PRICE_TYPE),
+        'close': close_prices.astype(PRICE_TYPE),
+        'volume': volume
+    }
 
 
 # ============================================================================
@@ -63,1043 +359,1368 @@ def test_task():
 
 
 @pytest.fixture
-def simple_quotes_data():
-    """Simple upward trend quotes data."""
-    return create_test_quotes_data(n_bars=10, start_price=100.0, trend='up')
-
-
-@pytest.fixture
-def broker_with_strategy(test_task, simple_quotes_data, request):
-    """Create a BrokerBacktesting instance with a strategy."""
-    strategy_class = SimpleTestStrategy
+def broker_with_test_strategy(test_task, request):
+    """
+    Create a BrokerBacktesting instance with TestStrategy.
+    
+    Protocol and callback should be set in test_task.parameters before calling.
+    Quotes data should be passed via indirect parametrization or created in test.
+    """
+    # Get quotes_data from request.param if provided, otherwise use default
+    if hasattr(request, 'param') and isinstance(request.param, dict) and 'quotes_data' in request.param:
+        quotes_data = request.param['quotes_data']
+    else:
+        # Default quotes data
+        quotes_data = create_test_quotes_data(n_bars=10, start_price=100.0, trend='up')
     
     # Create strategy instance
-    strategy = strategy_class()
+    strategy = TestStrategy()
     
     # Create callbacks
     callbacks = Strategy.create_strategy_callbacks(strategy)
     
-    # Mock quotes client
-    with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
-        mock_client = Mock()
-        mock_client.get_quotes.return_value = simple_quotes_data
-        mock_client_class.return_value = mock_client
-        
-        # Create broker
-        result_id = f"test_{request.node.name}"
-        broker = BrokerBacktesting(
-            task=test_task,
-            result_id=result_id,
-            callbacks_dict=callbacks,
-            results_save_period=1.0
+    # Mock quotes client - use context manager that stays active
+    patch_obj = patch('app.services.tasks.broker_backtesting.QuotesClient')
+    mock_client_class = patch_obj.start()
+    mock_client = Mock()
+    mock_client.get_quotes.return_value = quotes_data
+    mock_client_class.return_value = mock_client
+    
+    # Create broker
+    result_id = f"test_{request.node.name}"
+    broker = BrokerBacktesting(
+        task=test_task,
+        result_id=result_id,
+        callbacks_dict=callbacks,
+        results_save_period=1.0
+    )
+    
+    # Set broker reference in strategy
+    strategy.broker = broker
+    
+    # Mock logging to avoid Task.send_message errors
+    broker.logging = Mock()
+    
+    yield broker, strategy
+    
+    # Cleanup
+    patch_obj.stop()
+
+
+# ============================================================================
+# Group A: Basic Order Placement Tests
+# ============================================================================
+
+class TestBuySltpBasicPlacement:
+    """Test basic buy_sltp order placement scenarios."""
+    
+    def test_buy_sltp_market_one_stop_one_take(self, test_task):
+        """Test A1.1: Market entry, one stop, one take profit."""
+        # Prepare quotes data: price 100.0, then drops to trigger stop
+        # Bar 2: low should be <= 90.0 to trigger stop
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 98.0, 90.0, 95.0],
+            lows=[99.0, 97.0, 89.0, 94.0]  # Bar 2 low=89.0 triggers stop at 90.0
         )
         
-        # Set broker reference in strategy
-        strategy.broker = broker
-        
-        # Mock logging to avoid Task.send_message errors
-        broker.logging = Mock()
-        
-        yield broker, strategy
+        # Protocol: On bar 0, enter market with stop loss 90.0 and take profit 110.0
+        # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
+        # Expected stop trigger: bar 2 at price 90.0 (stop executes as market, with slippage -0.1 = 89.9)
+        # Expected profit calculation:
+        entry_price = 100.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity = 1.0
+        stop_trigger = 90.0
+        entry_execution = entry_price + slippage  # 100.1
+        entry_fee = entry_execution * quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
+        exit_execution = stop_trigger - slippage  # 90.0 - 0.1 = 89.9 (SELL stop, slippage decreases price)
+        exit_fee = exit_execution * quantity * test_task.fee_taker  # 89.9 * 1.0 * 0.001 = 0.0899
+        expected_profit = exit_execution * quantity - exit_fee - (entry_execution * quantity + entry_fee)  # = -10.29
 
-
-# ============================================================================
-# Helper Functions for SLTP Tests
-# ============================================================================
-
-def create_custom_quotes_data(prices: List[PRICE_TYPE], times: Optional[List[np.datetime64]] = None) -> Dict[str, np.ndarray]:
-    """
-    Create custom quotes data with specified prices.
-    
-    Args:
-        prices: List of close prices for each bar
-        times: Optional list of times. If None, generates sequential times.
-    
-    Returns:
-        Dictionary with 'time', 'open', 'high', 'low', 'close', 'volume' arrays
-    """
-    n_bars = len(prices)
-    if times is None:
-        base_time = np.datetime64('2024-01-01T00:00:00', 'ms')
-        time_array = np.array([base_time + np.timedelta64(i, 'h') for i in range(n_bars)], dtype='datetime64[ms]')
-    else:
-        time_array = np.array(times, dtype='datetime64[ms]')
-    
-    close_prices = np.array(prices, dtype=PRICE_TYPE)
-    
-    # Generate OHLC from close prices
-    open_prices = np.roll(close_prices, 1)
-    open_prices[0] = close_prices[0]
-    
-    # High and low with spread
-    spread = close_prices * 0.01  # 1% spread
-    high_prices = close_prices + spread
-    low_prices = close_prices - spread
-    
-    volume = np.full(n_bars, 1000.0, dtype=VOLUME_TYPE)
-    
-    return {
-        'time': time_array,
-        'open': open_prices.astype(PRICE_TYPE),
-        'high': high_prices.astype(PRICE_TYPE),
-        'low': low_prices.astype(PRICE_TYPE),
-        'close': close_prices.astype(PRICE_TYPE),
-        'volume': volume
-    }
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Basic (without stops/takes)
-# ============================================================================
-
-class TestBuySltpBasic:
-    """Test buy_sltp basic functionality (without stops/takes, similar to buy)."""
-    
-    def test_buy_sltp_market_no_exit(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with market order, no stop loss or take profit."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        
-        # Place buy_sltp order without stops/takes
-        result = strategy.buy_sltp(enter=1.0)
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 1
-        assert len(result.executed) >= 1
-        assert len(result.error) == 0
-        assert len(result.error_messages) == 0
-        assert result.deal_id > 0
-        assert result.volume >= 0.0
-    
-    def test_buy_sltp_limit_no_exit(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with limit order, no stop loss or take profit."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp limit order without stops/takes
-        result = strategy.buy_sltp(enter=(1.0, current_price - 5.0))
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 1
-        assert len(result.active) >= 1  # Limit order should be active
-        assert len(result.error) == 0
-        assert result.deal_id > 0
-    
-    def test_sell_sltp_market_no_exit(self, broker_with_strategy, simple_quotes_data):
-        """Test sell_sltp with market order, no stop loss or take profit."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        # First buy to have position
-        strategy.buy(quantity=2.0)
-        
-        # Place sell_sltp order without stops/takes
-        result = strategy.sell_sltp(enter=1.0)
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 1
-        assert len(result.executed) >= 1
-        assert len(result.error) == 0
-        assert result.deal_id > 0
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Market Entry with Single Stop/Take
-# ============================================================================
-
-class TestBuySltpMarketSingleExit:
-    """Test buy_sltp with market entry and single stop loss or take profit."""
-    
-    def test_buy_sltp_market_single_stop(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with market order and single stop loss."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with single stop loss (explicit fraction 1.0)
-        result = strategy.buy_sltp(enter=1.0, stop_loss=[(1.0, current_price - 10.0)])
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 2  # Entry + stop loss
-        assert len(result.error) == 0
-        
-        # Check that stop loss order was created
-        stop_orders = [o for o in result.orders if o.order_group == OrderGroup.STOP_LOSS]
-        assert len(stop_orders) == 1
-        stop_order = stop_orders[0]
-        assert stop_order.fraction == 1.0
-        assert stop_order.trigger_price == current_price - 10.0
-        assert stop_order.side == OrderSide.SELL  # Stop loss for BUY is SELL
-    
-    def test_buy_sltp_market_single_take(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with market order and single take profit."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with single take profit (explicit fraction 1.0)
-        result = strategy.buy_sltp(enter=1.0, take_profit=[(1.0, current_price + 10.0)])
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 2  # Entry + take profit
-        assert len(result.error) == 0
-        
-        # Check that take profit order was created
-        take_orders = [o for o in result.orders if o.order_group == OrderGroup.TAKE_PROFIT]
-        assert len(take_orders) == 1
-        take_order = take_orders[0]
-        assert take_order.fraction == 1.0
-        assert take_order.price == current_price + 10.0
-        assert take_order.side == OrderSide.SELL  # Take profit for BUY is SELL
-    
-    def test_buy_sltp_market_stop_and_take(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with market order, stop loss and take profit."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with both stop loss and take profit (explicit fractions 1.0)
-        result = strategy.buy_sltp(
-            enter=1.0,
-            stop_loss=[(1.0, current_price - 10.0)],
-            take_profit=[(1.0, current_price + 10.0)]
-        )
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 3  # Entry + stop loss + take profit
-        assert len(result.error) == 0
-        
-        # Check stop loss order
-        stop_orders = [o for o in result.orders if o.order_group == OrderGroup.STOP_LOSS]
-        assert len(stop_orders) == 1
-        assert stop_orders[0].fraction == 1.0
-        
-        # Check take profit order
-        take_orders = [o for o in result.orders if o.order_group == OrderGroup.TAKE_PROFIT]
-        assert len(take_orders) == 1
-        assert take_orders[0].fraction == 1.0
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Market Entry with Multiple Stops/Takes (Equal Fractions)
-# ============================================================================
-
-class TestBuySltpMarketMultipleExit:
-    """Test buy_sltp with market entry and multiple stop losses or take profits."""
-    
-    def test_buy_sltp_market_two_stops_equal(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with market order and two stop losses (equal fractions)."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with two stop losses (equal fractions, sum = 1.0)
-        result = strategy.buy_sltp(enter=1.0, stop_loss=[(0.5, current_price - 10.0), (0.5, current_price - 20.0)])
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 3  # Entry + 2 stop losses
-        assert len(result.error) == 0
-        
-        # Check stop loss orders
-        stop_orders = [o for o in result.orders if o.order_group == OrderGroup.STOP_LOSS]
-        assert len(stop_orders) == 2
-        
-        # Check fractions sum to 1.0
-        fractions = [o.fraction for o in stop_orders]
-        assert abs(sum(fractions) - 1.0) < 1e-6
-        # Each should be approximately 0.5
-        assert all(abs(f - 0.5) < 1e-6 for f in fractions)
-    
-    def test_buy_sltp_market_three_takes_equal(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with market order and three take profits (equal fractions)."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with three take profits (equal fractions, sum = 1.0)
-        result = strategy.buy_sltp(
-            enter=1.0,
-            take_profit=[(1.0/3.0, current_price + 10.0), (1.0/3.0, current_price + 20.0), (1.0/3.0, current_price + 30.0)]
-        )
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 4  # Entry + 3 take profits
-        assert len(result.error) == 0
-        
-        # Check take profit orders
-        take_orders = [o for o in result.orders if o.order_group == OrderGroup.TAKE_PROFIT]
-        assert len(take_orders) == 3
-        
-        # Check fractions sum to 1.0
-        fractions = [o.fraction for o in take_orders]
-        assert abs(sum(fractions) - 1.0) < 1e-6
-        # Each should be approximately 1/3
-        assert all(abs(f - 1.0/3.0) < 1e-6 for f in fractions)
-    
-    def test_buy_sltp_market_stops_and_takes_equal(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with market order, multiple stops and takes (equal fractions)."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with two stops and two takes (equal fractions, sum = 1.0 for each)
-        result = strategy.buy_sltp(
-            enter=1.0,
-            stop_loss=[(0.5, current_price - 10.0), (0.5, current_price - 20.0)],
-            take_profit=[(0.5, current_price + 10.0), (0.5, current_price + 20.0)]
-        )
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 5  # Entry + 2 stops + 2 takes
-        assert len(result.error) == 0
-        
-        # Check stop loss orders
-        stop_orders = [o for o in result.orders if o.order_group == OrderGroup.STOP_LOSS]
-        assert len(stop_orders) == 2
-        stop_fractions = [o.fraction for o in stop_orders]
-        assert abs(sum(stop_fractions) - 1.0) < 1e-6
-        
-        # Check take profit orders
-        take_orders = [o for o in result.orders if o.order_group == OrderGroup.TAKE_PROFIT]
-        assert len(take_orders) == 2
-        take_fractions = [o.fraction for o in take_orders]
-        assert abs(sum(take_fractions) - 1.0) < 1e-6
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Market Entry with Custom Fractions
-# ============================================================================
-
-class TestBuySltpMarketCustomFractions:
-    """Test buy_sltp with market entry and custom fractions for stops/takes."""
-    
-    def test_buy_sltp_market_custom_stops(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with market order and custom stop loss fractions."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with custom stop loss fractions
-        result = strategy.buy_sltp(
-            enter=1.0,
-            stop_loss=[(0.3, current_price - 10.0), (0.7, current_price - 20.0)]
-        )
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 3  # Entry + 2 stop losses
-        assert len(result.error) == 0
-        
-        # Check stop loss orders
-        stop_orders = [o for o in result.orders if o.order_group == OrderGroup.STOP_LOSS]
-        assert len(stop_orders) == 2
-        
-        # Check fractions
-        fractions = sorted([o.fraction for o in stop_orders])
-        assert abs(fractions[0] - 0.3) < 1e-6
-        assert abs(fractions[1] - 0.7) < 1e-6
-        assert abs(sum(fractions) - 1.0) < 1e-6
-    
-    def test_buy_sltp_market_custom_takes(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with market order and custom take profit fractions."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with custom take profit fractions
-        result = strategy.buy_sltp(
-            enter=1.0,
-            take_profit=[(0.2, current_price + 10.0), (0.3, current_price + 20.0), (0.5, current_price + 30.0)]
-        )
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 4  # Entry + 3 take profits
-        assert len(result.error) == 0
-        
-        # Check take profit orders
-        take_orders = [o for o in result.orders if o.order_group == OrderGroup.TAKE_PROFIT]
-        assert len(take_orders) == 3
-        
-        # Check fractions
-        fractions = sorted([o.fraction for o in take_orders])
-        assert abs(fractions[0] - 0.2) < 1e-6
-        assert abs(fractions[1] - 0.3) < 1e-6
-        assert abs(fractions[2] - 0.5) < 1e-6
-        assert abs(sum(fractions) - 1.0) < 1e-6
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Limit Entry with Stops/Takes
-# ============================================================================
-
-class TestBuySltpLimitEntry:
-    """Test buy_sltp with limit entry orders and stops/takes."""
-    
-    def test_buy_sltp_limit_single_stop(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with single limit order and stop loss."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with limit order and stop loss (explicit fraction 1.0)
-        result = strategy.buy_sltp(
-            enter=(1.0, current_price - 5.0),
-            stop_loss=[(1.0, current_price - 15.0)]
-        )
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 1  # At least entry order
-        assert len(result.error) == 0
-        
-        # Entry order should be active (limit)
-        entry_orders = [o for o in result.orders if o.order_group == OrderGroup.NONE]
-        assert len(entry_orders) >= 1
-        assert entry_orders[0].status == OrderStatus.ACTIVE
-    
-    def test_buy_sltp_multiple_limits_stop(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with multiple limit orders and stop loss."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with multiple limit orders and stop loss (explicit fraction 1.0)
-        result = strategy.buy_sltp(
-            enter=[(0.5, current_price - 5.0), (0.5, current_price - 10.0)],
-            stop_loss=[(1.0, current_price - 15.0)]
-        )
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 2  # At least 2 entry orders
-        assert len(result.error) == 0
-        
-        # Entry orders should be active
-        entry_orders = [o for o in result.orders if o.order_group == OrderGroup.NONE]
-        assert len(entry_orders) >= 2
-        assert all(o.status == OrderStatus.ACTIVE for o in entry_orders)
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Validation
-# ============================================================================
-
-class TestBuySltpValidation:
-    """Test buy_sltp parameter validation."""
-    
-    def test_buy_sltp_invalid_fraction_sum(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with invalid fraction sum (not equal to 1.0)."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Try to place buy_sltp with fractions that don't sum to 1.0
-        result = strategy.buy_sltp(
-            enter=1.0,
-            stop_loss=[(0.3, current_price - 10.0), (0.5, current_price - 20.0)]  # Sum = 0.8, not 1.0
-        )
-        
-        # Check result - should have errors
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.error_messages) > 0
-        assert any("sum of fractions" in msg.lower() for msg in result.error_messages)
-    
-    def test_buy_sltp_invalid_price_limit(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with invalid limit price (above current for BUY)."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Try to place buy_sltp with limit price above current
-        result = strategy.buy_sltp(
-            enter=(1.0, current_price + 10.0)  # Invalid: BUY limit must be below current
-        )
-        
-        # Check result - should have errors
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.error_messages) > 0
-        assert any("must be below" in msg.lower() for msg in result.error_messages)
-    
-    def test_buy_sltp_invalid_stop_price(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with invalid stop loss price (above current for BUY)."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Try to place buy_sltp with stop loss above current price
-        result = strategy.buy_sltp(
-            enter=1.0,
-            stop_loss=current_price + 10.0  # Invalid: BUY stop loss must be below current
-        )
-        
-        # Check result - should have errors
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.error_messages) > 0
-        assert any("must be below" in msg.lower() for msg in result.error_messages)
-    
-    def test_buy_sltp_invalid_take_price(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp with invalid take profit price (below current for BUY)."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Try to place buy_sltp with take profit below current price
-        result = strategy.buy_sltp(
-            enter=1.0,
-            take_profit=current_price - 10.0  # Invalid: BUY take profit must be above current
-        )
-        
-        # Check result - should have errors
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.error_messages) > 0
-        assert any("must be above" in msg.lower() for msg in result.error_messages)
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Partial Entry Execution
-# ============================================================================
-
-class TestBuySltpPartialEntry:
-    """Test buy_sltp with partial execution of limit entry orders."""
-    
-    def test_buy_sltp_two_limits_one_executed(self, broker_with_strategy):
-        """Test buy_sltp with two limit orders, one executed - stops/takes should be placed."""
-        broker, strategy = broker_with_strategy
-        
-        # Create quotes data where one limit will execute
-        # Bar 0: price 100, Bar 1: low goes to 95 (triggers limit at 96), Bar 2: price 98
-        quotes_data = create_custom_quotes_data([100.0, 98.0, 99.0])
-        quotes_data['low'][1] = 94.0  # Low enough to trigger limit at 96
-        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': 90.0,
+                    'take_profit': 110.0
+                }
+            }
+        ]
+        
+        # Collect data from callback
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
         with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
             mock_client = Mock()
             mock_client.get_quotes.return_value = quotes_data
             mock_client_class.return_value = mock_client
             
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_market_stop_take")
             broker.run(save_results=False)
-            current_price = broker.price  # Should be 99.0 (last bar)
-            
-            # Place buy_sltp with two limit orders and stop loss (explicit fraction 1.0)
-            result = strategy.buy_sltp(
-                enter=[(0.5, 96.0), (0.5, 94.0)],  # First should execute, second may not
-                stop_loss=[(1.0, current_price - 10.0)]
-            )
-            
-            # Check result
-            assert isinstance(result, OrderOperationResult)
-            assert len(result.orders) >= 2  # At least 2 entry orders
-            assert len(result.error) == 0
-            
-            # After first limit executes, stop loss should be placed
-            # (This will be checked when execute_deal is implemented)
-            entry_orders = [o for o in result.orders if o.order_group == OrderGroup.NONE]
-            assert len(entry_orders) >= 2
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Partial Exit Execution
-# ============================================================================
-
-class TestBuySltpPartialExit:
-    """Test buy_sltp with partial execution of stop loss or take profit orders."""
+        
+        # Check results
+        assert len(collected_data) == 4, f"Expected 4 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check orders: 1 entry (market) + 1 stop + 1 take profit = 3 orders
+        # But market order executes immediately, so we should have 1 executed entry + 2 active exit orders
+        assert len(method_result.orders) == 3, f"Expected 3 orders, got {len(method_result.orders)}"
+        
+        # Check entry order (market, should be executed)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.MARKET]
+        assert len(entry_orders) == 1, "Should have one market entry order"
+        assert entry_orders[0].status == OrderStatus.EXECUTED, "Market entry should be executed"
+        
+        # Check exit orders (stop and take profit, should be active initially)
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.MARKET]
+        assert len(exit_orders) == 2, "Should have two exit orders (stop + take profit)"
+        
+        # Check that stop loss order is SELL STOP
+        stop_orders = [o for o in exit_orders if o.order_type == OrderType.STOP]
+        assert len(stop_orders) == 1, "Should have one stop order"
+        assert stop_orders[0].side == OrderSide.SELL, "Stop order for BUY position should be SELL"
+        assert stop_orders[0].trigger_price == 90.0, "Stop trigger price should be 90.0"
+        
+        # Check that take profit order is SELL LIMIT
+        take_orders = [o for o in exit_orders if o.order_type == OrderType.LIMIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        assert take_orders[0].side == OrderSide.SELL, "Take profit for BUY position should be SELL"
+        assert take_orders[0].price == 110.0, "Take profit price should be 110.0"
+        
+        # Check that stop was triggered on bar 2 (price 90.0)
+        # After broker.run(), we should check if stop was executed
+        # The stop should trigger when low <= trigger_price (90.0)
+        # Bar 2 has low around 90.0 (with spread), so stop should trigger
+        
+        # Check final state: deal should be closed (stop triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        # Deal should be closed after stop triggers
+        assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
     
-    def test_buy_sltp_market_two_stops_one_executed(self, broker_with_strategy):
-        """Test buy_sltp with market entry, two stops, one executed."""
-        broker, strategy = broker_with_strategy
-        
-        # Create quotes data where one stop will execute
-        # Bar 0: price 100 (entry), Bar 1: low goes to 88 (triggers stop at 90)
-        quotes_data = create_custom_quotes_data([100.0, 92.0])
-        quotes_data['low'][1] = 87.0  # Low enough to trigger stop at 90
-        
-        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
-            mock_client = Mock()
-            mock_client.get_quotes.return_value = quotes_data
-            mock_client_class.return_value = mock_client
-            
-            broker.run(save_results=False)
-            current_price = broker.price  # Should be 100.0 (last bar)
-            
-            # Place buy_sltp with market entry and two stop losses (equal fractions, sum = 1.0)
-            result = strategy.buy_sltp(
-                enter=1.0,
-                stop_loss=[(0.5, 90.0), (0.5, 88.0)]  # First should execute on next bar
-            )
-            
-            # Check result
-            assert isinstance(result, OrderOperationResult)
-            assert len(result.orders) >= 3  # Entry + 2 stops
-            assert len(result.error) == 0
-            
-            # Check stop orders were created
-            stop_orders = [o for o in result.orders if o.order_group == OrderGroup.STOP_LOSS]
-            assert len(stop_orders) == 2
-            
-            # Check fractions
-            fractions = [o.fraction for o in stop_orders]
-            assert abs(sum(fractions) - 1.0) < 1e-6
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Full Position Close
-# ============================================================================
-
-class TestBuySltpFullClose:
-    """Test buy_sltp with full position closure."""
-    
-    def test_buy_sltp_market_last_stop_closes_all(self, broker_with_strategy):
-        """Test buy_sltp with market entry, two stops, last one closes position."""
-        broker, strategy = broker_with_strategy
-        
-        # Create quotes data where both stops execute
-        quotes_data = create_custom_quotes_data([100.0, 92.0, 85.0])
-        quotes_data['low'][1] = 87.0  # Triggers first stop at 90
-        quotes_data['low'][2] = 83.0  # Triggers second stop at 88
-        
-        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
-            mock_client = Mock()
-            mock_client.get_quotes.return_value = quotes_data
-            mock_client_class.return_value = mock_client
-            
-            broker.run(save_results=False)
-            current_price = broker.price  # Should be 100.0 (last bar)
-            
-            # Place buy_sltp with market entry and two stop losses (equal fractions, sum = 1.0)
-            result = strategy.buy_sltp(
-                enter=1.0,
-                stop_loss=[(0.5, 90.0), (0.5, 88.0)]
-            )
-            
-            # Check result
-            assert isinstance(result, OrderOperationResult)
-            assert len(result.orders) >= 3  # Entry + 2 stops
-            assert len(result.error) == 0
-            
-            # After both stops execute, deal should be closed
-            # (This will be checked when execute_deal is implemented)
-            deal_id = result.deal_id
-            if deal_id > 0:
-                # Check deal directly through broker
-                deal = broker.get_deal_by_id(deal_id)
-                # Deal should be closed, all exit orders canceled
-                # (This will be verified when execute_deal is implemented)
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Complex Scenarios
-# ============================================================================
-
-class TestBuySltpComplexScenarios:
-    """Test buy_sltp with complex execution scenarios."""
-    
-    def test_buy_sltp_limits_executed_then_takes(self, broker_with_strategy):
-        """Test buy_sltp: limits executed, then take profits close their fractions."""
-        broker, strategy = broker_with_strategy
-        
-        # Create quotes data: limits execute, then price goes up to trigger takes
-        quotes_data = create_custom_quotes_data([100.0, 95.0, 110.0, 112.0])
-        quotes_data['low'][1] = 94.0  # Triggers limit at 96
-        quotes_data['high'][2] = 111.0  # Triggers first take at 110
-        quotes_data['high'][3] = 113.0  # Triggers second take at 112
-        
-        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
-            mock_client = Mock()
-            mock_client.get_quotes.return_value = quotes_data
-            mock_client_class.return_value = mock_client
-            
-            broker.run(save_results=False)
-            current_price = broker.price  # Should be 100.0 (last bar)
-            
-            # Place buy_sltp with two limits and two take profits (equal fractions, sum = 1.0)
-            result = strategy.buy_sltp(
-                enter=[(0.5, 96.0), (0.5, 94.0)],
-                take_profit=[(0.5, 110.0), (0.5, 112.0)]
-            )
-            
-            # Check result
-            assert isinstance(result, OrderOperationResult)
-            assert len(result.orders) >= 4  # 2 entries + 2 takes
-            assert len(result.error) == 0
-            
-            # Check take profit orders
-            take_orders = [o for o in result.orders if o.order_group == OrderGroup.TAKE_PROFIT]
-            assert len(take_orders) == 2
-    
-    def test_buy_sltp_all_limits_then_partial_stops_then_takes(self, broker_with_strategy):
-        """Test buy_sltp: all limits executed, partial stops, then takes close remaining."""
-        broker, strategy = broker_with_strategy
-        
-        # Create quotes data: all limits execute, one stop, then takes
-        quotes_data = create_custom_quotes_data([100.0, 95.0, 92.0, 110.0])
-        quotes_data['low'][1] = 94.0  # Triggers limit at 96
-        quotes_data['low'][2] = 91.0  # Triggers limit at 94 and stop at 90
-        quotes_data['high'][3] = 111.0  # Triggers take at 110
-        
-        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
-            mock_client = Mock()
-            mock_client.get_quotes.return_value = quotes_data
-            mock_client_class.return_value = mock_client
-            
-            broker.run(save_results=False)
-            current_price = broker.price  # Should be 100.0 (last bar)
-            
-            # Place buy_sltp with limits, stops, and takes (equal fractions, sum = 1.0 for each)
-            result = strategy.buy_sltp(
-                enter=[(0.5, 96.0), (0.5, 94.0)],
-                stop_loss=[(0.5, 90.0), (0.5, 88.0)],
-                take_profit=[(0.5, 110.0), (0.5, 112.0)]
-            )
-            
-            # Check result
-            assert isinstance(result, OrderOperationResult)
-            assert len(result.orders) >= 6  # 2 entries + 2 stops + 2 takes
-            assert len(result.error) == 0
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Simultaneous Stop and Take Execution
-# ============================================================================
-
-class TestBuySltpSimultaneousExecution:
-    """Test buy_sltp with simultaneous stop loss and take profit execution."""
-    
-    def test_buy_sltp_stops_and_takes_same_bar(self, broker_with_strategy):
-        """Test buy_sltp: stops and takes triggered on same bar - stops execute first, warning logged."""
-        broker, strategy = broker_with_strategy
-        
-        # Create quotes data where both stop and take are triggered on same bar
-        quotes_data = create_custom_quotes_data([100.0, 95.0])
-        quotes_data['low'][1] = 87.0  # Triggers stop at 90
-        quotes_data['high'][1] = 111.0  # Triggers take at 110
-        
-        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
-            mock_client = Mock()
-            mock_client.get_quotes.return_value = quotes_data
-            mock_client_class.return_value = mock_client
-            
-            broker.run(save_results=False)
-            current_price = broker.price  # Should be 100.0 (last bar)
-            
-            # Place buy_sltp with stop and take (explicit fractions 1.0)
-            result = strategy.buy_sltp(
-                enter=1.0,
-                stop_loss=[(1.0, 90.0)],
-                take_profit=[(1.0, 110.0)]
-            )
-            
-            # Check result
-            assert isinstance(result, OrderOperationResult)
-            assert len(result.orders) >= 3  # Entry + stop + take
-            assert len(result.error) == 0
-            
-            # When both are triggered on same bar, warning should be logged
-            # Check that logging was called with warning message
-            # (This will be verified when execute_deal is implemented)
-            assert broker.logging.called
-            
-            # Check if warning message was logged
-            warning_calls = [call for call in broker.logging.call_args_list 
-                           if len(call[0]) > 0 and ('warning' in str(call).lower() or 'недостоверен' in str(call).lower() or 'unreliable' in str(call).lower())]
-            # Warning should be logged when both stop and take are triggered
-            # (This will be verified when execute_deal is implemented)
-
-
-# ============================================================================
-# buy_sltp/sell_sltp Tests - Deal Orders and Volume Checks
-# ============================================================================
-
-class TestBuySltpDealOrders:
-    """Test buy_sltp using deal_orders to check orders and volumes."""
-    
-    def test_buy_sltp_deal_orders_check(self, broker_with_strategy, simple_quotes_data):
-        """Test buy_sltp and check orders through deal_orders."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Place buy_sltp with stop and take (explicit fractions 1.0)
-        result = strategy.buy_sltp(
-            enter=1.0,
-            stop_loss=[(1.0, current_price - 10.0)],
-            take_profit=[(1.0, current_price + 10.0)]
+    def test_buy_sltp_limit_one_stop_one_take(self, test_task):
+        """Test A1.2: Limit entry, one stop, one take profit."""
+        # Prepare quotes data: price 100.0, then drops to 95.0 (triggers limit entry), then to 90.0 (triggers stop)
+        # Bar 2: low should be <= 95.0 to trigger limit entry
+        # Bar 3: low should be <= 90.0 to trigger stop
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 98.0, 95.0, 90.0],
+            lows=[99.0, 97.0, 94.0, 89.0]  # Bar 2 low=94.0 triggers limit at 95.0, Bar 3 low=89.0 triggers stop
         )
         
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        deal_id = result.deal_id
-        assert deal_id > 0
+        # Protocol: On bar 0, enter limit at 95.0 with stop loss 90.0 and take profit 110.0
+        # Entry price: 95.0 (limit, no slippage, fee_maker)
+        # Expected limit trigger: bar 2 at price 95.0
+        # Expected stop trigger: bar 3 at price 90.0 (stop executes as market, with slippage -0.1 = 89.9)
+        # Expected profit calculation:
+        entry_price = 95.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity = 1.0
+        stop_trigger = 90.0
+        entry_execution = entry_price  # 95.0 (limit, no slippage)
+        entry_fee = entry_execution * quantity * test_task.fee_maker  # 95.0 * 1.0 * 0.0005 = 0.0475
+        exit_execution = stop_trigger - slippage  # 90.0 - 0.1 = 89.9 (SELL stop, slippage decreases price)
+        exit_fee = exit_execution * quantity * test_task.fee_taker  # 89.9 * 1.0 * 0.001 = 0.0899
+        expected_profit = exit_execution * quantity - exit_fee - (entry_execution * quantity + entry_fee)  # = -5.1374
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': (1.0, 95.0),  # Limit order at 95.0
+                    'stop_loss': 90.0,
+                    'take_profit': 110.0
+                }
+            }
+        ]
         
-        # Check deal directly through broker
-        deal = broker.get_deal_by_id(deal_id)
-        assert deal.deal_id == deal_id
+        collected_data = []
         
-        # Get all orders for this deal
-        deal_orders = [o for o in broker.orders if o.deal_id == deal_id]
-        assert len(deal_orders) > 0
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
         
-        # Check volume
-        assert abs(deal.quantity) >= 0  # Volume should be non-negative
-    
-    def test_buy_sltp_trade_volumes_check(self, broker_with_strategy):
-        """Test buy_sltp and check trade volumes match fractions."""
-        broker, strategy = broker_with_strategy
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
         
-        # Create quotes data where stop executes
-        quotes_data = create_custom_quotes_data([100.0, 88.0])
-        quotes_data['low'][1] = 87.0  # Triggers stop at 90
-        
+        # Create broker and run
         with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
             mock_client = Mock()
             mock_client.get_quotes.return_value = quotes_data
             mock_client_class.return_value = mock_client
             
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_limit_stop_take")
             broker.run(save_results=False)
-            current_price = broker.price  # Should be 100.0 (last bar)
-            
-            # Place buy_sltp with market entry and two stop losses (0.3 and 0.7)
-            result = strategy.buy_sltp(
-                enter=1.0,
-                stop_loss=[(0.3, 90.0), (0.7, 88.0)]
-            )
-            
-            # Check result
-            assert isinstance(result, OrderOperationResult)
-            deal_id = result.deal_id
-            assert deal_id > 0
-            
-            # When first stop executes, trade volume should be fraction * deal.quantity
-            # (This will be verified when execute_deal is implemented)
-            if broker.deals and len(broker.deals) >= deal_id:
-                deal = broker.deals[deal_id - 1]
-                entry_volume = deal.quantity  # Should be 1.0 after market entry
-                
-                # Find trades for this deal
-                deal_trades = [t for t in broker.trades if t.deal_id == deal_id]
-                
-                # When stop executes, trade volume should match fraction
-                # (This will be verified when execute_deal is implemented)
-                # For now, just check structure
-
-
-class TestBuySltpPrecision:
-    """Test precision rounding in buy_sltp/sell_sltp methods."""
-    
-    def test_buy_sltp_volume_rounding(self, broker_with_strategy, simple_quotes_data):
-        """Test that buy_sltp entry volume is rounded down to precision_amount."""
-        broker, strategy = broker_with_strategy
         
-        broker.run(save_results=False)
+        # Check results
+        assert len(collected_data) == 4
         
-        # Buy with volume that needs rounding: 1.234 with precision_amount=0.1 should become 1.2
-        result = strategy.buy_sltp(enter=1.234)
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
         
-        # Check that volume was rounded down
-        assert len(result.orders) >= 1
-        entry_orders = [o for o in result.orders if o.order_group == OrderGroup.NONE]
+        # Check orders: 1 limit entry + 1 stop + 1 take profit = 3 orders
+        assert len(method_result.orders) == 3
+        
+        # Entry order should be LIMIT and initially ACTIVE
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.LIMIT and o.side == OrderSide.BUY]
         assert len(entry_orders) == 1
-        entry_order = entry_orders[0]
-        assert abs(entry_order.volume - 1.2) < 1e-12, f"Volume should be rounded down to 1.2, got {entry_order.volume}"
-    
-    def test_buy_sltp_price_rounding(self, broker_with_strategy, simple_quotes_data):
-        """Test that buy_sltp entry and exit prices are rounded to precision_price."""
-        broker, strategy = broker_with_strategy
+        # Initially active, but should execute on bar 2 when price reaches 95.0
+        # After broker.run(), check if it executed
         
-        broker.run(save_results=False)
-        current_price = broker.price
+        # Check that entry executed on bar 2 (price 95.0)
+        # Entry limit at 95.0 should execute when price reaches 95.0
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        # Entry should have executed, so deal should have quantity > 0 initially
+        # Then stop should trigger, closing the deal
+        assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
         
-        # Buy with prices that need rounding - use two stops/takes to test extreme logic
-        entry_price = current_price - 10.0 + 0.123  # Should round to ...12
-        stop_price1 = current_price - 20.0 + 0.456   # Should round to ...46
-        stop_price2 = current_price - 25.0 + 0.789   # Should round to ...79
-        take_price1 = current_price + 10.0 + 0.123   # Should round to ...12
-        take_price2 = current_price + 20.0 + 0.456   # Should round to ...46
-        
-        # Use explicit fractions (sum = 1.0)
-        result = strategy.buy_sltp(
-            enter=(1.0, entry_price),
-            stop_loss=[(0.5, stop_price1), (0.5, stop_price2)],  # Sum = 1.0
-            take_profit=[(0.5, take_price1), (0.5, take_price2)]  # Sum = 1.0
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+
+
+    def test_buy_sltp_multiple_limits_one_stop_one_take(self, test_task):
+        """Test A1.3: Multiple limit entries, one stop, one take profit."""
+        # Prepare quotes data: price 100.0, then drops to trigger both limit entries, then to trigger stop
+        # Bar 1: low should be <= 99.0 to trigger first limit
+        # Bar 2: low should be <= 95.0 to trigger second limit
+        # Bar 3: low should be <= 90.0 to trigger stop
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 99.0, 95.0, 90.0],
+            lows=[99.0, 98.0, 94.0, 89.0]  # Bar 1 low=98.0 triggers limit at 99.0, Bar 2 low=94.0 triggers limit at 95.0, Bar 3 low=89.0 triggers stop
         )
         
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) >= 5  # Entry + 2 stops + 2 takes
-        assert len(result.error) == 0
+        # Protocol: On bar 0, enter with two limit orders (0.5 at 99.0, 0.5 at 95.0) with stop loss 90.0 and take profit 110.0
+        # Entry prices: 99.0 and 95.0 (limits, no slippage, fee_maker)
+        # Expected limit triggers: bar 1 at 99.0, bar 2 at 95.0
+        # Expected stop trigger: bar 3 at price 90.0 (stop executes as market, with slippage -0.1 = 89.9)
+        # Expected profit calculation:
+        entry_price1 = 99.0
+        entry_price2 = 95.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity1 = 0.5
+        quantity2 = 0.5
+        total_quantity = quantity1 + quantity2  # 1.0
+        stop_trigger = 90.0
+        entry_execution1 = entry_price1  # 99.0 (limit, no slippage)
+        entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 99.0 * 0.5 * 0.0005 = 0.02475
+        entry_execution2 = entry_price2  # 95.0 (limit, no slippage)
+        entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 95.0 * 0.5 * 0.0005 = 0.02375
+        total_entry_cost = entry_execution1 * quantity1 + entry_fee1 + entry_execution2 * quantity2 + entry_fee2  # 99.0*0.5 + 0.02475 + 95.0*0.5 + 0.02375 = 97.0485
+        exit_execution = stop_trigger - slippage  # 90.0 - 0.1 = 89.9 (SELL stop, slippage decreases price)
+        exit_fee = exit_execution * total_quantity * test_task.fee_taker  # 89.9 * 1.0 * 0.001 = 0.0899
+        exit_proceeds = exit_execution * total_quantity - exit_fee  # 89.9 * 1.0 - 0.0899 = 89.8101
+        expected_profit = exit_proceeds - total_entry_cost  # 89.8101 - 97.0485 = -7.2384
         
-        # Check entry price rounding
-        entry_orders = [o for o in result.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': [(0.5, 99.0), (0.5, 95.0)],  # Two limit orders
+                    'stop_loss': 90.0,
+                    'take_profit': 110.0
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_multiple_limits_stop_take")
+            broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 4
+        
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
+        
+        # Check orders: 2 limit entries + 1 stop + 1 take profit = 4 orders
+        assert len(method_result.orders) == 4
+        
+        # Check entry orders (both should be LIMIT)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.LIMIT and o.side == OrderSide.BUY]
+        assert len(entry_orders) == 2, "Should have two limit entry orders"
+        
+        # Check exit orders
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.LIMIT or o.side != OrderSide.BUY]
+        assert len(exit_orders) == 2, "Should have two exit orders (stop + take profit)"
+        
+        # Check final state: deal should be closed (stop triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+    
+    def test_buy_sltp_market_only_stops(self, test_task):
+        """Test A3.1: Market entry, only stop losses (no take profit)."""
+        # Prepare quotes data: price 100.0, then drops to trigger stop
+        # Bar 2: low should be <= 90.0 to trigger stop
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 98.0, 90.0, 95.0],
+            lows=[99.0, 97.0, 89.0, 94.0]  # Bar 2 low=89.0 triggers stop at 90.0
+        )
+        
+        # Protocol: On bar 0, enter market with stop loss 90.0 (no take profit)
+        # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
+        # Expected stop trigger: bar 2 at price 90.0 (stop executes as market, with slippage -0.1 = 89.9)
+        # Expected profit calculation:
+        entry_price = 100.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity = 1.0
+        stop_trigger = 90.0
+        entry_execution = entry_price + slippage  # 100.1
+        entry_fee = entry_execution * quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
+        exit_execution = stop_trigger - slippage  # 90.0 - 0.1 = 89.9 (SELL stop, slippage decreases price)
+        exit_fee = exit_execution * quantity * test_task.fee_taker  # 89.9 * 1.0 * 0.001 = 0.0899
+        expected_profit = exit_execution * quantity - exit_fee - (entry_execution * quantity + entry_fee)  # = -10.29
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': 90.0
+                    # No take_profit
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_market_only_stops")
+            broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 4
+        
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
+        
+        # Check orders: 1 entry (market) + 1 stop = 2 orders (no take profit)
+        assert len(method_result.orders) == 2
+        
+        # Check entry order (market, should be executed)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.MARKET]
         assert len(entry_orders) == 1
-        expected_entry_price = round(entry_price / 0.01) * 0.01
-        assert abs(entry_orders[0].price - expected_entry_price) < 1e-12, \
-            f"Entry price should be rounded to {expected_entry_price}, got {entry_orders[0].price}"
+        assert entry_orders[0].status == OrderStatus.EXECUTED
         
-        # Check stop price rounding
-        stop_orders = [o for o in result.orders if o.order_group == OrderGroup.STOP_LOSS]
-        assert len(stop_orders) == 2
-        expected_stop_price1 = round(stop_price1 / 0.01) * 0.01
-        expected_stop_price2 = round(stop_price2 / 0.01) * 0.01
-        stop_prices = [o.trigger_price for o in stop_orders]
-        assert expected_stop_price1 in stop_prices or expected_stop_price2 in stop_prices, \
-            f"Stop prices should include {expected_stop_price1} or {expected_stop_price2}, got {stop_prices}"
+        # Check exit orders (only stop, no take profit)
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.MARKET]
+        assert len(exit_orders) == 1
+        assert exit_orders[0].order_type == OrderType.STOP
+        assert exit_orders[0].trigger_price == 90.0
         
-        # Check take price rounding
-        take_orders = [o for o in result.orders if o.order_group == OrderGroup.TAKE_PROFIT]
-        assert len(take_orders) == 2
-        expected_take_price1 = round(take_price1 / 0.01) * 0.01
-        expected_take_price2 = round(take_price2 / 0.01) * 0.01
-        take_prices = [o.price for o in take_orders]
-        assert expected_take_price1 in take_prices or expected_take_price2 in take_prices, \
-            f"Take prices should include {expected_take_price1} or {expected_take_price2}, got {take_prices}"
+        # Check final state: deal should be closed (stop triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
     
-    def test_buy_sltp_stop_volumes_rounding(self, broker_with_strategy, simple_quotes_data):
-        """Test that stop loss volumes are rounded correctly using extreme stop logic."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        current_price = broker.price
-        
-        # Buy with multiple stops - volumes should be rounded and extreme stop gets remainder
-        # Use explicit fractions (sum = 1.0)
-        result = strategy.buy_sltp(
-            enter=1.0,
-            stop_loss=[
-                (0.3, current_price - 10.0),  # 0.3 * 1.0 = 0.3, with precision 0.1 = 0.3
-                (0.7, current_price - 20.0)   # 0.7 * 1.0 = 0.7, extreme stop (farther), gets remainder
-            ]
+    def test_buy_sltp_market_only_takes(self, test_task):
+        """Test A3.2: Market entry, only take profits (no stop loss)."""
+        # Prepare quotes data: price 100.0, then rises to trigger take profit
+        # Bar 2: high should be >= 110.0 to trigger take profit
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 105.0, 110.0, 115.0],
+            highs=[101.0, 106.0, 111.0, 116.0]  # Bar 2 high=111.0 triggers take profit at 110.0
         )
         
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.error) == 0
-        assert len(result.orders) >= 3  # Entry + 2 stops
+        # Protocol: On bar 0, enter market with take profit 110.0 (no stop loss)
+        # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
+        # Expected take profit trigger: bar 2 at price 110.0 (limit order, no slippage, fee_maker)
+        # Expected profit calculation:
+        entry_price = 100.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity = 1.0
+        take_profit_price = 110.0
+        entry_execution = entry_price + slippage  # 100.1
+        entry_fee = entry_execution * quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
+        exit_execution = take_profit_price  # 110.0 (limit, no slippage)
+        exit_fee = exit_execution * quantity * test_task.fee_maker  # 110.0 * 1.0 * 0.0005 = 0.055
+        expected_profit = exit_execution * quantity - exit_fee - (entry_execution * quantity + entry_fee)  # = 9.7449
         
-        # Check stop orders
-        stop_orders = [o for o in result.orders if o.order_group == OrderGroup.STOP_LOSS]
-        assert len(stop_orders) == 2
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'take_profit': 110.0
+                    # No stop_loss
+                }
+            }
+        ]
         
-        # Find extreme stop (minimum trigger_price for LONG)
-        extreme_stop = min(stop_orders, key=lambda o: o.trigger_price if o.trigger_price is not None else float('inf'))
-        other_stop = [o for o in stop_orders if o.order_id != extreme_stop.order_id][0]
+        collected_data = []
         
-        # Other stop should have rounded volume: 0.3 * 1.0 = 0.3 (no rounding needed with precision 0.1)
-        expected_other_volume = round(0.3 * 1.0 / 0.1) * 0.1
-        assert abs(other_stop.volume - expected_other_volume) < 1e-12, \
-            f"Other stop volume should be {expected_other_volume}, got {other_stop.volume}"
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
         
-        # Extreme stop should get remainder: 1.0 - other_volume
-        expected_extreme_volume = 1.0 - expected_other_volume
-        assert abs(extreme_stop.volume - expected_extreme_volume) < 1e-12, \
-            f"Extreme stop volume should be {expected_extreme_volume}, got {extreme_stop.volume}"
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
         
-        # Sum should equal entry volume
-        total_stop_volume = sum(o.volume for o in stop_orders)
-        assert abs(total_stop_volume - 1.0) < 1e-12, \
-            f"Total stop volume should be 1.0, got {total_stop_volume}"
-    
-    def test_buy_sltp_take_volumes_rounding(self, broker_with_strategy, simple_quotes_data):
-        """Test that take profit volumes are rounded correctly using extreme take logic."""
-        broker, strategy = broker_with_strategy
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_market_only_takes")
+            broker.run(save_results=False)
         
-        broker.run(save_results=False)
-        current_price = broker.price
+        # Check results
+        assert len(collected_data) == 4
         
-        # Buy with multiple takes - volumes should be rounded and extreme take gets remainder
-        # Use explicit fractions (sum = 1.0)
-        result = strategy.buy_sltp(
-            enter=1.0,
-            take_profit=[
-                (0.4, current_price + 10.0),  # 0.4 * 1.0 = 0.4, with precision 0.1 = 0.4
-                (0.6, current_price + 20.0)   # 0.6 * 1.0 = 0.6, extreme take (farther), gets remainder
-            ]
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
+        
+        # Check orders: 1 entry (market) + 1 take profit = 2 orders (no stop)
+        assert len(method_result.orders) == 2
+        
+        # Check entry order (market, should be executed)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.MARKET]
+        assert len(entry_orders) == 1
+        assert entry_orders[0].status == OrderStatus.EXECUTED
+        
+        # Check exit orders (only take profit, no stop)
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.MARKET]
+        assert len(exit_orders) == 1
+        assert exit_orders[0].order_type == OrderType.LIMIT
+        assert exit_orders[0].price == 110.0
+        
+        # Check final state: deal should be closed (take profit triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        assert deal.quantity == 0.0, "Deal should be closed after take profit triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+
+
+# Temporary file - will be appended to test_strategy.py
+
+    def test_buy_sltp_multiple_limits_one_stop_one_take(self, test_task):
+        """Test A1.3: Multiple limit entries, one stop, one take profit."""
+        # Prepare quotes data: price 100.0, then drops to trigger both limit entries, then to trigger stop
+        # Bar 1: low should be <= 99.0 to trigger first limit
+        # Bar 2: low should be <= 95.0 to trigger second limit
+        # Bar 3: low should be <= 90.0 to trigger stop
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 99.0, 95.0, 90.0],
+            lows=[99.0, 98.0, 94.0, 89.0]  # Bar 1 low=98.0 triggers limit at 99.0, Bar 2 low=94.0 triggers limit at 95.0, Bar 3 low=89.0 triggers stop
         )
         
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        if len(result.error) > 0:
-            # If there are errors, print them for debugging
-            print(f"Errors: {result.error_messages}")
-        assert len(result.error) == 0, f"Should have no errors, got: {result.error_messages}"
-        assert len(result.orders) >= 3  # Entry + 2 takes
+        # Protocol: On bar 0, enter with two limit orders (0.5 at 99.0, 0.5 at 95.0) with stop loss 90.0 and take profit 110.0
+        # Entry prices: 99.0 and 95.0 (limits, no slippage, fee_maker)
+        # Expected limit triggers: bar 1 at 99.0, bar 2 at 95.0
+        # Expected stop trigger: bar 3 at price 90.0 (stop executes as market, with slippage -0.1 = 89.9)
+        # Expected profit calculation:
+        entry_price1 = 99.0
+        entry_price2 = 95.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity1 = 0.5
+        quantity2 = 0.5
+        total_quantity = quantity1 + quantity2  # 1.0
+        stop_trigger = 90.0
+        entry_execution1 = entry_price1  # 99.0 (limit, no slippage)
+        entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 99.0 * 0.5 * 0.0005 = 0.02475
+        entry_execution2 = entry_price2  # 95.0 (limit, no slippage)
+        entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 95.0 * 0.5 * 0.0005 = 0.02375
+        total_entry_cost = entry_execution1 * quantity1 + entry_fee1 + entry_execution2 * quantity2 + entry_fee2  # 99.0*0.5 + 0.02475 + 95.0*0.5 + 0.02375 = 97.0485
+        exit_execution = stop_trigger - slippage  # 90.0 - 0.1 = 89.9 (SELL stop, slippage decreases price)
+        exit_fee = exit_execution * total_quantity * test_task.fee_taker  # 89.9 * 1.0 * 0.001 = 0.0899
+        exit_proceeds = exit_execution * total_quantity - exit_fee  # 89.9 * 1.0 - 0.0899 = 89.8101
+        expected_profit = exit_proceeds - total_entry_cost  # 89.8101 - 97.0485 = -7.2384
         
-        # Check take orders
-        take_orders = [o for o in result.orders if o.order_group == OrderGroup.TAKE_PROFIT]
-        assert len(take_orders) == 2
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': [(0.5, 99.0), (0.5, 95.0)],  # Two limit orders
+                    'stop_loss': 90.0,
+                    'take_profit': 110.0
+                }
+            }
+        ]
         
-        # Find extreme take (maximum price for LONG)
-        extreme_take = max(take_orders, key=lambda o: o.price if o.price is not None else float('-inf'))
-        other_take = [o for o in take_orders if o.order_id != extreme_take.order_id][0]
+        collected_data = []
         
-        # Other take should have rounded volume: 0.4 * 1.0 = 0.4 (no rounding needed with precision 0.1)
-        expected_other_volume = round(0.4 * 1.0 / 0.1) * 0.1
-        assert abs(other_take.volume - expected_other_volume) < 1e-12, \
-            f"Other take volume should be {expected_other_volume}, got {other_take.volume}"
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
         
-        # Extreme take should get remainder: 1.0 - other_volume
-        expected_extreme_volume = 1.0 - expected_other_volume
-        assert abs(extreme_take.volume - expected_extreme_volume) < 1e-12, \
-            f"Extreme take volume should be {expected_extreme_volume}, got {extreme_take.volume}"
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
         
-        # Sum should equal entry volume
-        total_take_volume = sum(o.volume for o in take_orders)
-        assert abs(total_take_volume - 1.0) < 1e-12, \
-            f"Total take volume should be 1.0, got {total_take_volume}"
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_multiple_limits_stop_take")
+            broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 4
+        
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
+        
+        # Check orders: 2 limit entries + 1 stop + 1 take profit = 4 orders
+        assert len(method_result.orders) == 4
+        
+        # Check entry orders (both should be LIMIT)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.LIMIT and o.side == OrderSide.BUY]
+        assert len(entry_orders) == 2, "Should have two limit entry orders"
+        
+        # Check exit orders
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.LIMIT or o.side != OrderSide.BUY]
+        assert len(exit_orders) == 2, "Should have two exit orders (stop + take profit)"
+        
+        # Check final state: deal should be closed (stop triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
     
-    def test_buy_sltp_precision_warning_logging(self, broker_with_strategy, simple_quotes_data):
-        """Test that warnings are logged when values are rounded in buy_sltp."""
-        broker, strategy = broker_with_strategy
+    def test_buy_sltp_market_only_stops(self, test_task):
+        """Test A3.1: Market entry, only stop losses (no take profit)."""
+        # Prepare quotes data: price 100.0, then drops to trigger stop
+        # Bar 2: low should be <= 90.0 to trigger stop
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 98.0, 90.0, 95.0],
+            lows=[99.0, 97.0, 89.0, 94.0]  # Bar 2 low=89.0 triggers stop at 90.0
+        )
         
-        broker.run(save_results=False)
-        current_price = broker.price
+        # Protocol: On bar 0, enter market with stop loss 90.0 (no take profit)
+        # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
+        # Expected stop trigger: bar 2 at price 90.0 (stop executes as market, with slippage -0.1 = 89.9)
+        # Expected profit calculation:
+        entry_price = 100.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity = 1.0
+        stop_trigger = 90.0
+        entry_execution = entry_price + slippage  # 100.1
+        entry_fee = entry_execution * quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
+        exit_execution = stop_trigger - slippage  # 90.0 - 0.1 = 89.9 (SELL stop, slippage decreases price)
+        exit_fee = exit_execution * quantity * test_task.fee_taker  # 89.9 * 1.0 * 0.001 = 0.0899
+        expected_profit = exit_execution * quantity - exit_fee - (entry_execution * quantity + entry_fee)  # = -10.29
         
-        # Mock logger to capture warnings - patch the logger used in strategy module
-        with patch('app.services.tasks.strategy.logger.warning') as mock_warning:
-            # Buy with volume that needs rounding
-            result = strategy.buy_sltp(enter=1.234)
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': 90.0
+                    # No take_profit
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
             
-            # Check that warning was logged
-            assert mock_warning.called, "Warning should be logged when volume is rounded"
-            warning_calls = [str(call) for call in mock_warning.call_args_list]
-            assert any("rounded down" in str(call).lower() for call in warning_calls), \
-                f"Warning should mention 'rounded down', got: {warning_calls}"
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_market_only_stops")
+            broker.run(save_results=False)
         
-        with patch('app.services.tasks.strategy.logger.warning') as mock_warning:
-            # Buy with prices that need rounding (explicit fractions, sum = 1.0)
-            result = strategy.buy_sltp(
-                enter=(1.0, current_price - 10.0 + 0.123),
-                stop_loss=[(0.5, current_price - 20.0 + 0.456), (0.5, current_price - 25.0 + 0.789)],
-                take_profit=[(0.5, current_price + 10.0 + 0.123), (0.5, current_price + 20.0 + 0.456)]
-            )
+        # Check results
+        assert len(collected_data) == 4
+        
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
+        
+        # Check orders: 1 entry (market) + 1 stop = 2 orders (no take profit)
+        assert len(method_result.orders) == 2
+        
+        # Check entry order (market, should be executed)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.MARKET]
+        assert len(entry_orders) == 1
+        assert entry_orders[0].status == OrderStatus.EXECUTED
+        
+        # Check exit orders (only stop, no take profit)
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.MARKET]
+        assert len(exit_orders) == 1
+        assert exit_orders[0].order_type == OrderType.STOP
+        assert exit_orders[0].trigger_price == 90.0
+        
+        # Check final state: deal should be closed (stop triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+    
+    def test_buy_sltp_market_only_takes(self, test_task):
+        """Test A3.2: Market entry, only take profits (no stop loss)."""
+        # Prepare quotes data: price 100.0, then rises to trigger take profit
+        # Bar 2: high should be >= 110.0 to trigger take profit
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 105.0, 110.0, 115.0],
+            highs=[101.0, 106.0, 111.0, 116.0]  # Bar 2 high=111.0 triggers take profit at 110.0
+        )
+        
+        # Protocol: On bar 0, enter market with take profit 110.0 (no stop loss)
+        # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
+        # Expected take profit trigger: bar 2 at price 110.0 (limit order, no slippage, fee_maker)
+        # Expected profit calculation:
+        entry_price = 100.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity = 1.0
+        take_profit_price = 110.0
+        entry_execution = entry_price + slippage  # 100.1
+        entry_fee = entry_execution * quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
+        exit_execution = take_profit_price  # 110.0 (limit, no slippage)
+        exit_fee = exit_execution * quantity * test_task.fee_maker  # 110.0 * 1.0 * 0.0005 = 0.055
+        expected_profit = exit_execution * quantity - exit_fee - (entry_execution * quantity + entry_fee)  # = 9.7449
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'take_profit': 110.0
+                    # No stop_loss
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
             
-            # Check that warnings were logged for prices
-            assert mock_warning.called, "Warning should be logged when prices are rounded"
-            warning_calls = [str(call) for call in mock_warning.call_args_list]
-            assert any("rounded" in str(call).lower() for call in warning_calls), \
-                f"Warning should mention 'rounded', got: {warning_calls}"
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_market_only_takes")
+            broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 4
+        
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
+        
+        # Check orders: 1 entry (market) + 1 take profit = 2 orders (no stop)
+        assert len(method_result.orders) == 2
+        
+        # Check entry order (market, should be executed)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.MARKET]
+        assert len(entry_orders) == 1
+        assert entry_orders[0].status == OrderStatus.EXECUTED
+        
+        # Check exit orders (only take profit, no stop)
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.MARKET]
+        assert len(exit_orders) == 1
+        assert exit_orders[0].order_type == OrderType.LIMIT
+        assert exit_orders[0].price == 110.0
+        
+        # Check final state: deal should be closed (take profit triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        assert deal.quantity == 0.0, "Deal should be closed after take profit triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+
+# ============================================================================
+# Group A: Basic Order Placement Tests - SELL
+# ============================================================================
+
+class TestSellSltpBasicPlacement:
+    """Test basic sell_sltp order placement scenarios."""
+    
+    def test_sell_sltp_market_one_stop_one_take(self, test_task):
+        """Test A1.1: Market entry, one stop, one take profit."""
+        # Prepare quotes data: price 100.0, then rises to trigger stop
+        # Bar 2: high should be >= 110.0 to trigger stop
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 105.0, 110.0, 108.0],
+            highs=[101.0, 106.0, 111.0, 109.0]  # Bar 2 high=111.0 triggers stop at 110.0
+        )
+        
+        # Protocol: On bar 0, enter market SELL with stop loss 110.0 and take profit 90.0
+        # Entry price: 100.0 (market SELL, with slippage -0.1 = 99.9)
+        # Expected stop trigger: bar 2 at price 110.0 (BUY stop executes as market, with slippage +0.1 = 110.1)
+        # Expected profit calculation:
+        entry_price = 100.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity = 1.0
+        stop_trigger = 110.0
+        entry_execution = entry_price - slippage  # 100.0 - 0.1 = 99.9 (SELL market, slippage decreases price)
+        entry_fee = entry_execution * quantity * test_task.fee_taker  # 99.9 * 1.0 * 0.001 = 0.0999
+        exit_execution = stop_trigger + slippage  # 110.0 + 0.1 = 110.1 (BUY stop, slippage increases price)
+        exit_fee = exit_execution * quantity * test_task.fee_taker  # 110.1 * 1.0 * 0.001 = 0.1101
+        expected_profit = entry_execution * quantity - entry_fee - (exit_execution * quantity + exit_fee)  # = -10.3101
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': 110.0,
+                    'take_profit': 90.0
+                }
+            }
+        ]
+        
+        # Collect data from callback
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_market_stop_take")
+            broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 4, f"Expected 4 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check orders: 1 entry (market) + 1 stop + 1 take profit = 3 orders
+        assert len(method_result.orders) == 3, f"Expected 3 orders, got {len(method_result.orders)}"
+        
+        # Check entry order (market, should be executed)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.MARKET]
+        assert len(entry_orders) == 1, "Should have one market entry order"
+        assert entry_orders[0].status == OrderStatus.EXECUTED, "Market entry should be executed"
+        assert entry_orders[0].side == OrderSide.SELL, "Entry order for SELL position should be SELL"
+        
+        # Check exit orders (stop and take profit, should be active initially)
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.MARKET]
+        assert len(exit_orders) == 2, "Should have two exit orders (stop + take profit)"
+        
+        # Check that stop loss order is BUY STOP
+        stop_orders = [o for o in exit_orders if o.order_type == OrderType.STOP]
+        assert len(stop_orders) == 1, "Should have one stop order"
+        assert stop_orders[0].side == OrderSide.BUY, "Stop order for SELL position should be BUY"
+        assert stop_orders[0].trigger_price == 110.0, "Stop trigger price should be 110.0"
+        
+        # Check that take profit order is BUY LIMIT
+        take_orders = [o for o in exit_orders if o.order_type == OrderType.LIMIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        assert take_orders[0].side == OrderSide.BUY, "Take profit for SELL position should be BUY"
+        assert take_orders[0].price == 90.0, "Take profit price should be 90.0"
+        
+        # Check final state: deal should be closed (stop triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+    
+    def test_sell_sltp_limit_one_stop_one_take(self, test_task):
+        """Test A1.2: Limit entry, one stop, one take profit."""
+        # Prepare quotes data: price 100.0, then rises to 105.0 (triggers limit entry), then to 110.0 (triggers stop)
+        # Bar 2: high should be >= 105.0 to trigger limit entry
+        # Bar 3: high should be >= 110.0 to trigger stop
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 103.0, 105.0, 110.0],
+            highs=[101.0, 104.0, 106.0, 111.0]  # Bar 2 high=106.0 triggers limit at 105.0, Bar 3 high=111.0 triggers stop
+        )
+        
+        # Protocol: On bar 0, enter SELL limit at 105.0 with stop loss 110.0 and take profit 90.0
+        # Entry price: 105.0 (limit, no slippage, fee_maker)
+        # Expected limit trigger: bar 2 at price 105.0
+        # Expected stop trigger: bar 3 at price 110.0 (BUY stop executes as market, with slippage +0.1 = 110.1)
+        # Expected profit calculation:
+        entry_price = 105.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity = 1.0
+        stop_trigger = 110.0
+        entry_execution = entry_price  # 105.0 (limit, no slippage)
+        entry_fee = entry_execution * quantity * test_task.fee_maker  # 105.0 * 1.0 * 0.0005 = 0.0525
+        exit_execution = stop_trigger + slippage  # 110.0 + 0.1 = 110.1 (BUY stop, slippage increases price)
+        exit_fee = exit_execution * quantity * test_task.fee_taker  # 110.1 * 1.0 * 0.001 = 0.1101
+        expected_profit = entry_execution * quantity - entry_fee - (exit_execution * quantity + exit_fee)  # = -5.1626
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': (1.0, 105.0),  # Limit order at 105.0
+                    'stop_loss': 110.0,
+                    'take_profit': 90.0
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_limit_stop_take")
+            broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 4
+        
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
+        
+        # Check orders: 1 limit entry + 1 stop + 1 take profit = 3 orders
+        assert len(method_result.orders) == 3
+        
+        # Entry order should be LIMIT and SELL
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.LIMIT and o.side == OrderSide.SELL]
+        assert len(entry_orders) == 1
+        
+        # Check final state: deal should be closed (stop triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+    
+    def test_sell_sltp_multiple_limits_one_stop_one_take(self, test_task):
+        """Test A1.3: Multiple limit entries, one stop, one take profit."""
+        # Prepare quotes data: price 100.0, then rises to trigger both limit entries, then to trigger stop
+        # Bar 1: high should be >= 101.0 to trigger first limit
+        # Bar 2: high should be >= 105.0 to trigger second limit
+        # Bar 3: high should be >= 110.0 to trigger stop
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 101.0, 105.0, 110.0],
+            highs=[101.0, 102.0, 106.0, 111.0]  # Bar 1 high=102.0 triggers limit at 101.0, Bar 2 high=106.0 triggers limit at 105.0, Bar 3 high=111.0 triggers stop
+        )
+        
+        # Protocol: On bar 0, enter with two SELL limit orders (0.5 at 101.0, 0.5 at 105.0) with stop loss 110.0 and take profit 90.0
+        # Entry prices: 101.0 and 105.0 (limits, no slippage, fee_maker)
+        # Expected limit triggers: bar 1 at 101.0, bar 2 at 105.0
+        # Expected stop trigger: bar 3 at price 110.0 (BUY stop executes as market, with slippage +0.1 = 110.1)
+        # Expected profit calculation:
+        entry_price1 = 101.0
+        entry_price2 = 105.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity1 = 0.5
+        quantity2 = 0.5
+        total_quantity = quantity1 + quantity2  # 1.0
+        stop_trigger = 110.0
+        entry_execution1 = entry_price1  # 101.0 (limit, no slippage)
+        entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 101.0 * 0.5 * 0.0005 = 0.02525
+        entry_execution2 = entry_price2  # 105.0 (limit, no slippage)
+        entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 105.0 * 0.5 * 0.0005 = 0.02625
+        total_entry_proceeds = entry_execution1 * quantity1 - entry_fee1 + entry_execution2 * quantity2 - entry_fee2  # 101.0*0.5 - 0.02525 + 105.0*0.5 - 0.02625 = 102.9485
+        exit_execution = stop_trigger + slippage  # 110.0 + 0.1 = 110.1 (BUY stop, slippage increases price)
+        exit_fee = exit_execution * total_quantity * test_task.fee_taker  # 110.1 * 1.0 * 0.001 = 0.1101
+        exit_cost = exit_execution * total_quantity + exit_fee  # 110.1 * 1.0 + 0.1101 = 110.2101
+        expected_profit = total_entry_proceeds - exit_cost  # 102.9485 - 110.2101 = -7.2616
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': [(0.5, 101.0), (0.5, 105.0)],  # Two limit orders
+                    'stop_loss': 110.0,
+                    'take_profit': 90.0
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_multiple_limits_stop_take")
+            broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 4
+        
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
+        
+        # Check orders: 2 limit entries + 1 stop + 1 take profit = 4 orders
+        assert len(method_result.orders) == 4
+        
+        # Check entry orders (both should be LIMIT and SELL)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.LIMIT and o.side == OrderSide.SELL]
+        assert len(entry_orders) == 2, "Should have two limit entry orders"
+        
+        # Check exit orders
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.LIMIT or o.side != OrderSide.SELL]
+        assert len(exit_orders) == 2, "Should have two exit orders (stop + take profit)"
+        
+        # Check final state: deal should be closed (stop triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+    
+    def test_sell_sltp_market_only_stops(self, test_task):
+        """Test A3.1: Market entry, only stop losses (no take profit)."""
+        # Prepare quotes data: price 100.0, then rises to trigger stop
+        # Bar 2: high should be >= 110.0 to trigger stop
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 105.0, 110.0, 108.0],
+            highs=[101.0, 106.0, 111.0, 109.0]  # Bar 2 high=111.0 triggers stop at 110.0
+        )
+        
+        # Protocol: On bar 0, enter market SELL with stop loss 110.0 (no take profit)
+        # Entry price: 100.0 (market SELL, with slippage -0.1 = 99.9)
+        # Expected stop trigger: bar 2 at price 110.0 (BUY stop executes as market, with slippage +0.1 = 110.1)
+        # Expected profit calculation:
+        entry_price = 100.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity = 1.0
+        stop_trigger = 110.0
+        entry_execution = entry_price - slippage  # 100.0 - 0.1 = 99.9 (SELL market, slippage decreases price)
+        entry_fee = entry_execution * quantity * test_task.fee_taker  # 99.9 * 1.0 * 0.001 = 0.0999
+        exit_execution = stop_trigger + slippage  # 110.0 + 0.1 = 110.1 (BUY stop, slippage increases price)
+        exit_fee = exit_execution * quantity * test_task.fee_taker  # 110.1 * 1.0 * 0.001 = 0.1101
+        expected_profit = entry_execution * quantity - entry_fee - (exit_execution * quantity + exit_fee)  # = -10.3101
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': 110.0
+                    # No take_profit
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_market_only_stops")
+            broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 4
+        
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
+        
+        # Check orders: 1 entry (market) + 1 stop = 2 orders (no take profit)
+        assert len(method_result.orders) == 2
+        
+        # Check entry order (market, should be executed)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.MARKET]
+        assert len(entry_orders) == 1
+        assert entry_orders[0].status == OrderStatus.EXECUTED
+        assert entry_orders[0].side == OrderSide.SELL
+        
+        # Check exit orders (only stop, no take profit)
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.MARKET]
+        assert len(exit_orders) == 1
+        assert exit_orders[0].order_type == OrderType.STOP
+        assert exit_orders[0].side == OrderSide.BUY
+        assert exit_orders[0].trigger_price == 110.0
+        
+        # Check final state: deal should be closed (stop triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+    
+    def test_sell_sltp_market_only_takes(self, test_task):
+        """Test A3.2: Market entry, only take profits (no stop loss)."""
+        # Prepare quotes data: price 100.0, then drops to trigger take profit
+        # Bar 2: low should be <= 90.0 to trigger take profit
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 95.0, 90.0, 92.0],
+            lows=[99.0, 94.0, 89.0, 91.0]  # Bar 2 low=89.0 triggers take profit at 90.0
+        )
+        
+        # Protocol: On bar 0, enter market SELL with take profit 90.0 (no stop loss)
+        # Entry price: 100.0 (market SELL, with slippage -0.1 = 99.9)
+        # Expected take profit trigger: bar 2 at price 90.0 (BUY limit order, no slippage, fee_maker)
+        # Expected profit calculation:
+        entry_price = 100.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        quantity = 1.0
+        take_profit_price = 90.0
+        entry_execution = entry_price - slippage  # 100.0 - 0.1 = 99.9 (SELL market, slippage decreases price)
+        entry_fee = entry_execution * quantity * test_task.fee_taker  # 99.9 * 1.0 * 0.001 = 0.0999
+        exit_execution = take_profit_price  # 90.0 (limit, no slippage)
+        exit_fee = exit_execution * quantity * test_task.fee_maker  # 90.0 * 1.0 * 0.0005 = 0.045
+        expected_profit = entry_execution * quantity - entry_fee - (exit_execution * quantity + exit_fee)  # = 9.7551
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'take_profit': 90.0
+                    # No stop_loss
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_market_only_takes")
+            broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 4
+        
+        # Check method result
+        method_result = collected_data[0]['method_result']
+        assert method_result is not None
+        assert len(method_result.error_messages) == 0
+        assert method_result.deal_id > 0
+        
+        # Check orders: 1 entry (market) + 1 take profit = 2 orders (no stop)
+        assert len(method_result.orders) == 2
+        
+        # Check entry order (market, should be executed)
+        entry_orders = [o for o in method_result.orders if o.order_type == OrderType.MARKET]
+        assert len(entry_orders) == 1
+        assert entry_orders[0].status == OrderStatus.EXECUTED
+        assert entry_orders[0].side == OrderSide.SELL
+        
+        # Check exit orders (only take profit, no stop)
+        exit_orders = [o for o in method_result.orders if o.order_type != OrderType.MARKET]
+        assert len(exit_orders) == 1
+        assert exit_orders[0].order_type == OrderType.LIMIT
+        assert exit_orders[0].side == OrderSide.BUY
+        assert exit_orders[0].price == 90.0
+        
+        # Check final state: deal should be closed (take profit triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None
+        assert deal.quantity == 0.0, "Deal should be closed after take profit triggers"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check actual profit matches expected calculation from comment above
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+
