@@ -1057,7 +1057,7 @@ class BrokerBacktesting(Broker):
             deal: Deal to update stop orders for
             target_volume: Target total volume for all stop orders
         """
-        stop_orders = [order for order in deal.orders if order.order_group == OrderGroup.STOP_LOSS and order.status == OrderStatus.ACTIVE]
+        stop_orders = [order for order in deal.orders if order.order_group == OrderGroup.STOP_LOSS and order.status in [OrderStatus.NEW, OrderStatus.ACTIVE]]
         if not stop_orders:
             return
         
