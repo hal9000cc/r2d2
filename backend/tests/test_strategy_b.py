@@ -41,16 +41,20 @@ class TestBuySltpSingleExecution:
         # Protocol: On bar 0, enter market with stop loss 90.0 and take profit 110.0
         # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
         # Expected stop trigger: bar 2 at price 90.0 (stop executes as market, with slippage -0.1 = 89.9)
-        # Expected profit calculation:
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volume: 1.0 (already multiple of 0.1, floor(1.0 / 0.1) * 0.1 = 1.0)
+        # Stop volume: 1.0 (for single stop, it's the full entry_quantity, round(1.0 / 0.1) * 0.1 = 1.0)
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
-        quantity = 1.0
+        entry_quantity = 1.0  # floor(1.0 / 0.1) * 0.1 = 1.0
         stop_trigger = 90.0
-        entry_execution = entry_price + slippage  # 100.1
-        entry_fee = entry_execution * quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
+        exit_quantity = 1.0  # round(1.0 / 0.1) * 0.1 = 1.0
+        
+        entry_execution = entry_price + slippage  # 100.0 + 0.1 = 100.1
+        entry_fee = entry_execution * entry_quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
         exit_execution = stop_trigger - slippage  # 90.0 - 0.1 = 89.9 (SELL stop, slippage decreases price)
-        exit_fee = exit_execution * quantity * test_task.fee_taker  # 89.9 * 1.0 * 0.001 = 0.0899
-        expected_profit = exit_execution * quantity - exit_fee - (entry_execution * quantity + entry_fee)  # = -10.29
+        exit_fee = exit_execution * exit_quantity * test_task.fee_taker  # 89.9 * 1.0 * 0.001 = 0.0899
+        expected_profit = exit_execution * exit_quantity - exit_fee - (entry_execution * entry_quantity + entry_fee)  # = 89.9*1.0 - 0.0899 - (100.1*1.0 + 0.1001) = -10.29
         
         protocol = [
             {
@@ -2077,38 +2081,45 @@ class TestBuySltpPartialExecution:
         # Bar 3: low=91.0, stops at 90.0, 88.0, 86.0 - третий стоп не сработает (91.0 > 86.0), цена откатилась
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 95.0, 87.0, 92.0, 95.0],
-            lows=[99.0, 94.0, 86.0, 91.0, 94.0]  # Bar 2 low=86.0 triggers first two stops at 90.0 and 88.0, third stop at 86.0 doesn't trigger
+            lows=[99.0, 94.0, 87.0, 91.0, 94.0]  # Bar 2 low=87.0 triggers first two stops at 90.0 and 88.0, third stop at 86.0 doesn't trigger (87.0 > 86.0)
         )
         
         # Protocol: On bar 0, enter market with three stops (0.33 at 90.0, 0.33 at 88.0, 0.34 at 86.0) and take profit 110.0
         # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
         # Expected: first two stops trigger on bar 2, third stop remains active but doesn't trigger
-        # Expected profit calculation (assuming auto-close on last bar):
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volume: 1.0 (already multiple of 0.1, no rounding needed)
+        # Stop volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Fractions: 0.33, 0.33, 0.34
+        # First stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Second stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Third stop (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
-        quantity = 1.0
+        entry_quantity = 1.0  # Already multiple of precision_amount=0.1
+        
         stop_trigger1 = 90.0
         stop_trigger2 = 88.0
-        quantity1 = 0.33
-        quantity2 = 0.33
-        quantity3 = 0.34  # Remaining position that will be auto-closed
+        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third stop/auto-close)
         
         entry_execution = entry_price + slippage  # 100.1
-        entry_fee = entry_execution * quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
+        entry_fee = entry_execution * entry_quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
         
         exit_execution1 = stop_trigger1 - slippage  # 90.0 - 0.1 = 89.9 (SELL stop, slippage decreases price)
-        exit_fee1 = exit_execution1 * quantity1 * test_task.fee_taker  # 89.9 * 0.33 * 0.001 = 0.029667
+        exit_fee1 = exit_execution1 * quantity1 * test_task.fee_taker  # 89.9 * 0.3 * 0.001 = 0.02697
         exit_execution2 = stop_trigger2 - slippage  # 88.0 - 0.1 = 87.9 (SELL stop, slippage decreases price)
-        exit_fee2 = exit_execution2 * quantity2 * test_task.fee_taker  # 87.9 * 0.33 * 0.001 = 0.029007
+        exit_fee2 = exit_execution2 * quantity2 * test_task.fee_taker  # 87.9 * 0.3 * 0.001 = 0.02637
         
         # Auto-close on last bar (bar 4) at close price 95.0
         auto_close_price = 95.0
         auto_close_execution = auto_close_price - slippage  # 95.0 - 0.1 = 94.9 (SELL market, slippage decreases price)
-        auto_close_fee = auto_close_execution * quantity3 * test_task.fee_taker  # 94.9 * 0.34 * 0.001 = 0.032266
+        auto_close_fee = auto_close_execution * quantity3 * test_task.fee_taker  # 94.9 * 0.4 * 0.001 = 0.03796
         
-        entry_cost = entry_execution * quantity + entry_fee  # 100.1*1.0 + 0.1001 = 100.2001
-        total_exit_proceeds = exit_execution1 * quantity1 - exit_fee1 + exit_execution2 * quantity2 - exit_fee2 + auto_close_execution * quantity3 - auto_close_fee  # 89.9*0.33 - 0.029667 + 87.9*0.33 - 0.029007 + 94.9*0.34 - 0.032266 = 91.80806
-        expected_profit = total_exit_proceeds - entry_cost  # = 91.80806 - 100.2001 = -8.39204
+        entry_cost = entry_execution * entry_quantity + entry_fee  # 100.1*1.0 + 0.1001 = 100.2001
+        total_exit_proceeds = exit_execution1 * quantity1 - exit_fee1 + exit_execution2 * quantity2 - exit_fee2 + auto_close_execution * quantity3 - auto_close_fee  # 89.9*0.3 - 0.02697 + 87.9*0.3 - 0.02637 + 94.9*0.4 - 0.03796 = 91.8087
+        expected_profit = total_exit_proceeds - entry_cost  # = 91.8087 - 100.2001 = -8.3914
         
         protocol = [
             {
@@ -2316,32 +2327,39 @@ class TestBuySltpPartialExecution:
         # Protocol: On bar 0, enter market with stop loss 90.0 and three takes (0.33 at 110.0, 0.33 at 112.0, 0.34 at 114.0)
         # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
         # Expected: first two takes trigger on bar 2, third take remains active but doesn't trigger
-        # Expected profit calculation (assuming auto-close on last bar):
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volume: 1.0 (already multiple of 0.1, no rounding needed)
+        # Take volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Fractions: 0.33, 0.33, 0.34
+        # First take: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Second take: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Third take (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
-        quantity = 1.0
+        entry_quantity = 1.0  # Already multiple of precision_amount=0.1
+        
         take_trigger1 = 110.0
         take_trigger2 = 112.0
-        quantity1 = 0.33
-        quantity2 = 0.33
-        quantity3 = 0.34  # Remaining position that will be auto-closed
+        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third take/auto-close)
         
         entry_execution = entry_price + slippage  # 100.1
-        entry_fee = entry_execution * quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
+        entry_fee = entry_execution * entry_quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
         
         exit_execution1 = take_trigger1  # 110.0 (limit, no slippage)
-        exit_fee1 = exit_execution1 * quantity1 * test_task.fee_maker  # 110.0 * 0.33 * 0.0005 = 0.01815
+        exit_fee1 = exit_execution1 * quantity1 * test_task.fee_maker  # 110.0 * 0.3 * 0.0005 = 0.0165
         exit_execution2 = take_trigger2  # 112.0 (limit, no slippage)
-        exit_fee2 = exit_execution2 * quantity2 * test_task.fee_maker  # 112.0 * 0.33 * 0.0005 = 0.01848
+        exit_fee2 = exit_execution2 * quantity2 * test_task.fee_maker  # 112.0 * 0.3 * 0.0005 = 0.0168
         
         # Auto-close on last bar (bar 4) at close price 110.0
         auto_close_price = 110.0
         auto_close_execution = auto_close_price - slippage  # 110.0 - 0.1 = 109.9 (SELL market, slippage decreases price)
-        auto_close_fee = auto_close_execution * quantity3 * test_task.fee_taker  # 109.9 * 0.34 * 0.001 = 0.037366
+        auto_close_fee = auto_close_execution * quantity3 * test_task.fee_taker  # 109.9 * 0.4 * 0.001 = 0.04396
         
-        entry_cost = entry_execution * quantity + entry_fee  # 100.1*1.0 + 0.1001 = 100.2001
-        total_exit_proceeds = exit_execution1 * quantity1 - exit_fee1 + exit_execution2 * quantity2 - exit_fee2 + auto_close_execution * quantity3 - auto_close_fee  # 110.0*0.33 - 0.01815 + 112.0*0.33 - 0.01848 + 109.9*0.34 - 0.037366 = 110.226004
-        expected_profit = total_exit_proceeds - entry_cost  # = 110.226004 - 100.2001 = 10.025904
+        entry_cost = entry_execution * entry_quantity + entry_fee  # 100.1*1.0 + 0.1001 = 100.2001
+        total_exit_proceeds = exit_execution1 * quantity1 - exit_fee1 + exit_execution2 * quantity2 - exit_fee2 + auto_close_execution * quantity3 - auto_close_fee  # 110.0*0.3 - 0.0165 + 112.0*0.3 - 0.0168 + 109.9*0.4 - 0.04396 = 110.2227
+        expected_profit = total_exit_proceeds - entry_cost  # = 110.2227 - 100.2001 = 10.0226
         
         protocol = [
             {
@@ -2424,10 +2442,10 @@ class TestBuySltpPartialExecution:
         # Prepare quotes data: price 100.0, then drops to trigger only one limit entry
         # Bar 0: low=99.0, limits at 97.0 and 95.0 - лимитки не сработают (99.0 > 97.0, 99.0 > 95.0)
         # Bar 1: low=96.0, limits at 97.0 and 95.0 - первая лимитка сработает (96.0 <= 97.0), вторая не сработает (96.0 > 95.0)
-        # Bar 2: low=98.0, limits at 97.0 and 95.0 - вторая лимитка не сработает (98.0 > 95.0), цена откатилась
+        # Bar 2: low=97.0, limits at 97.0 and 95.0 - вторая лимитка не сработает (97.0 > 95.0), цена откатилась
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 96.0, 98.0, 99.0],
-            lows=[99.0, 95.0, 97.0, 98.0]  # Bar 1 low=95.0 triggers first limit at 97.0, second limit at 95.0 doesn't trigger
+            lows=[99.0, 96.0, 97.0, 98.0]  # Bar 1 low=96.0 triggers first limit at 97.0 (96.0 <= 97.0), second limit at 95.0 doesn't trigger (96.0 > 95.0)
         )
         
         # Protocol: On bar 0, enter with two limits (0.5 at 97.0, 0.5 at 95.0) with stop loss 90.0 and take profit 110.0
@@ -2521,8 +2539,9 @@ class TestBuySltpPartialExecution:
         assert abs(deal.profit - expected_profit) < 0.01,             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that only one entry order was executed
-        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.ENTRY]
-        assert len(entry_orders) == 2, "Should have two entry orders"
+        # Filter only limit entry orders (exclude market auto-close order)
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 2, "Should have two entry limit orders"
         executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
         assert len(executed_entries) == 1, "Only one entry order should be executed"
     
@@ -2531,36 +2550,42 @@ class TestBuySltpPartialExecution:
         # Prepare quotes data: price 100.0, then drops to trigger part of limit entries
         # Bar 0: low=99.0, limits at 97.0, 95.0, 93.0 - лимитки не сработают (99.0 > 97.0, 99.0 > 95.0, 99.0 > 93.0)
         # Bar 1: low=94.0, limits at 97.0, 95.0, 93.0 - первые две лимитки сработают (94.0 <= 97.0, 94.0 <= 95.0), третья не сработает (94.0 > 93.0)
-        # Bar 2: low=96.0, limits at 97.0, 95.0, 93.0 - третья лимитка не сработает (96.0 > 93.0), цена откатилась
+        # Bar 2: low=95.0, limits at 97.0, 95.0, 93.0 - третья лимитка не сработает (95.0 > 93.0), цена откатилась
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 94.0, 96.0, 98.0],
-            lows=[99.0, 93.0, 95.0, 97.0]  # Bar 1 low=93.0 triggers first two limits at 97.0 and 95.0, third limit at 93.0 doesn't trigger
+            lows=[99.0, 94.0, 95.0, 97.0]  # Bar 1 low=94.0 triggers first two limits at 97.0 and 95.0 (94.0 <= 97.0, 94.0 <= 95.0), third limit at 93.0 doesn't trigger (94.0 > 93.0)
         )
         
         # Protocol: On bar 0, enter with three limits (0.33 at 97.0, 0.33 at 95.0, 0.34 at 93.0) with stop loss 90.0 and take profit 110.0
         # Entry prices: 97.0 and 95.0 (limits, no slippage, fee_maker)
         # Expected: first two limits trigger on bar 1, third limit remains active but doesn't trigger
-        # Expected profit calculation (assuming auto-close on last bar):
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Fractions: 0.33, 0.33, 0.34
+        # First limit: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Second limit: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Third limit (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
         entry_price1 = 97.0
         entry_price2 = 95.0
-        quantity1 = 0.33
-        quantity2 = 0.33
-        quantity3 = 0.34  # Remaining position that will be auto-closed
+        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third limit, which doesn't trigger)
+        auto_close_quantity = quantity1 + quantity2  # 0.3 + 0.3 = 0.6 (total volume that entered the market)
         
         entry_execution1 = entry_price1  # 97.0 (limit, no slippage)
-        entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 97.0 * 0.33 * 0.0005 = 0.016005
+        entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 97.0 * 0.3 * 0.0005 = 0.01455
         entry_execution2 = entry_price2  # 95.0 (limit, no slippage)
-        entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 95.0 * 0.33 * 0.0005 = 0.015675
+        entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 95.0 * 0.3 * 0.0005 = 0.01425
         
         # Auto-close on last bar (bar 3) at close price 98.0
         auto_close_price = 98.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
         auto_close_execution = auto_close_price - slippage  # 98.0 - 0.1 = 97.9 (SELL market, slippage decreases price)
-        auto_close_fee = auto_close_execution * quantity3 * test_task.fee_taker  # 97.9 * 0.34 * 0.001 = 0.033286
+        auto_close_fee = auto_close_execution * auto_close_quantity * test_task.fee_taker  # 97.9 * 0.6 * 0.001 = 0.05874
         
-        entry_cost = entry_execution1 * quantity1 + entry_fee1 + entry_execution2 * quantity2 + entry_fee2  # 97.0*0.33 + 0.016005 + 95.0*0.33 + 0.015675 = 63.38168
-        exit_proceeds = auto_close_execution * quantity3 - auto_close_fee  # 97.9*0.34 - 0.033286 = 33.253714
-        expected_profit = exit_proceeds - entry_cost  # = 33.253714 - 63.38168 = -30.127966
+        entry_cost = entry_execution1 * quantity1 + entry_fee1 + entry_execution2 * quantity2 + entry_fee2  # 97.0*0.3 + 0.01455 + 95.0*0.3 + 0.01425 = 57.6288
+        exit_proceeds = auto_close_execution * auto_close_quantity - auto_close_fee  # 97.9*0.6 - 0.05874 = 58.68126
+        expected_profit = exit_proceeds - entry_cost  # = 58.68126 - 57.6288 = 1.05246
         
         protocol = [
             {
@@ -2632,8 +2657,9 @@ class TestBuySltpPartialExecution:
         assert abs(deal.profit - expected_profit) < 0.01,             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that only two entry orders were executed
-        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.ENTRY]
-        assert len(entry_orders) == 3, "Should have three entry orders"
+        # Filter only limit entry orders (exclude market auto-close order)
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 3, "Should have three entry limit orders"
         executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
         assert len(executed_entries) == 2, "Only two entry orders should be executed"
 
@@ -2653,7 +2679,7 @@ class TestSellSltpPartialExecution:
         # Bar 3: high=109.0, stops at 110.0 and 112.0 - второй стоп не сработает (109.0 < 112.0), цена откатилась
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 105.0, 111.0, 109.0, 108.0],
-            highs=[101.0, 106.0, 112.0, 110.0, 109.0]  # Bar 2 high=112.0 triggers first stop at 110.0, second stop at 112.0 doesn't trigger
+            highs=[101.0, 106.0, 111.0, 110.0, 109.0]  # Bar 2 high=111.0 triggers first stop at 110.0 (111.0 >= 110.0), second stop at 112.0 doesn't trigger (111.0 < 112.0)
         )
         
         # Protocol: On bar 0, enter market SELL with two stops (0.5 at 110.0, 0.5 at 112.0) and take profit 90.0
@@ -2767,38 +2793,45 @@ class TestSellSltpPartialExecution:
         # Bar 3: high=111.0, stops at 110.0, 112.0, 114.0 - третий стоп не сработает (111.0 < 114.0), цена откатилась
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 105.0, 113.0, 111.0, 110.0],
-            highs=[101.0, 106.0, 114.0, 112.0, 111.0]  # Bar 2 high=114.0 triggers first two stops at 110.0 and 112.0, third stop at 114.0 doesn't trigger
+            highs=[101.0, 106.0, 113.0, 112.0, 111.0]  # Bar 2 high=113.0 triggers first two stops at 110.0 and 112.0, third stop at 114.0 doesn't trigger
         )
         
         # Protocol: On bar 0, enter market SELL with three stops (0.33 at 110.0, 0.33 at 112.0, 0.34 at 114.0) and take profit 90.0
         # Entry price: 100.0 (market SELL, with slippage -0.1 = 99.9)
         # Expected: first two stops trigger on bar 2, third stop remains active but doesn't trigger
-        # Expected profit calculation (assuming auto-close on last bar):
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volume: 1.0 (already multiple of 0.1, no rounding needed)
+        # Stop volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Fractions: 0.33, 0.33, 0.34
+        # First stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Second stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Third stop (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
-        quantity = 1.0
+        entry_quantity = 1.0  # Already multiple of precision_amount=0.1
+        
         stop_trigger1 = 110.0
         stop_trigger2 = 112.0
-        quantity1 = 0.33
-        quantity2 = 0.33
-        quantity3 = 0.34  # Remaining position that will be auto-closed
+        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third stop/auto-close)
         
         entry_execution = entry_price - slippage  # 100.0 - 0.1 = 99.9 (SELL market, slippage decreases price)
-        entry_fee = entry_execution * quantity * test_task.fee_taker  # 99.9 * 1.0 * 0.001 = 0.0999
+        entry_fee = entry_execution * entry_quantity * test_task.fee_taker  # 99.9 * 1.0 * 0.001 = 0.0999
         
         exit_execution1 = stop_trigger1 + slippage  # 110.0 + 0.1 = 110.1 (BUY stop, slippage increases price)
-        exit_fee1 = exit_execution1 * quantity1 * test_task.fee_taker  # 110.1 * 0.33 * 0.001 = 0.036333
+        exit_fee1 = exit_execution1 * quantity1 * test_task.fee_taker  # 110.1 * 0.3 * 0.001 = 0.03303
         exit_execution2 = stop_trigger2 + slippage  # 112.0 + 0.1 = 112.1 (BUY stop, slippage increases price)
-        exit_fee2 = exit_execution2 * quantity2 * test_task.fee_taker  # 112.1 * 0.33 * 0.001 = 0.036993
+        exit_fee2 = exit_execution2 * quantity2 * test_task.fee_taker  # 112.1 * 0.3 * 0.001 = 0.03363
         
         # Auto-close on last bar (bar 4) at close price 110.0
         auto_close_price = 110.0
         auto_close_execution = auto_close_price + slippage  # 110.0 + 0.1 = 110.1 (BUY market, slippage increases price)
-        auto_close_fee = auto_close_execution * quantity3 * test_task.fee_taker  # 110.1 * 0.34 * 0.001 = 0.037434
+        auto_close_fee = auto_close_execution * quantity3 * test_task.fee_taker  # 110.1 * 0.4 * 0.001 = 0.04404
         
-        entry_proceeds = entry_execution * quantity - entry_fee  # 99.9*1.0 - 0.0999 = 99.8001
-        total_exit_cost = exit_execution1 * quantity1 + exit_fee1 + exit_execution2 * quantity2 + exit_fee2 + auto_close_execution * quantity3 + auto_close_fee  # 110.1*0.33 + 0.036333 + 112.1*0.33 + 0.036993 + 110.1*0.34 + 0.037434 = 110.41066
-        expected_profit = entry_proceeds - total_exit_cost  # = 99.8001 - 110.41066 = -10.61056
+        entry_proceeds = entry_execution * entry_quantity - entry_fee  # 99.9*1.0 - 0.0999 = 99.8001
+        total_exit_cost = exit_execution1 * quantity1 + exit_fee1 + exit_execution2 * quantity2 + exit_fee2 + auto_close_execution * quantity3 + auto_close_fee  # 110.1*0.3 + 0.03303 + 112.1*0.3 + 0.03363 + 110.1*0.4 + 0.04404 = 110.4107
+        expected_profit = entry_proceeds - total_exit_cost  # = 99.8001 - 110.4107 = -10.6106
         
         protocol = [
             {
@@ -3003,32 +3036,39 @@ class TestSellSltpPartialExecution:
         # Protocol: On bar 0, enter market SELL with stop loss 110.0 and three takes (0.33 at 90.0, 0.33 at 88.0, 0.34 at 86.0)
         # Entry price: 100.0 (market SELL, with slippage -0.1 = 99.9)
         # Expected: first two takes trigger on bar 2, third take remains active but doesn't trigger
-        # Expected profit calculation (assuming auto-close on last bar):
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volume: 1.0 (already multiple of 0.1, no rounding needed)
+        # Take volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Fractions: 0.33, 0.33, 0.34
+        # First take: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Second take: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Third take (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
-        quantity = 1.0
+        entry_quantity = 1.0  # Already multiple of precision_amount=0.1
+        
         take_trigger1 = 90.0
         take_trigger2 = 88.0
-        quantity1 = 0.33
-        quantity2 = 0.33
-        quantity3 = 0.34  # Remaining position that will be auto-closed
+        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third take/auto-close)
         
         entry_execution = entry_price - slippage  # 100.0 - 0.1 = 99.9 (SELL market, slippage decreases price)
-        entry_fee = entry_execution * quantity * test_task.fee_taker  # 99.9 * 1.0 * 0.001 = 0.0999
+        entry_fee = entry_execution * entry_quantity * test_task.fee_taker  # 99.9 * 1.0 * 0.001 = 0.0999
         
         exit_execution1 = take_trigger1  # 90.0 (limit, no slippage)
-        exit_fee1 = exit_execution1 * quantity1 * test_task.fee_maker  # 90.0 * 0.33 * 0.0005 = 0.01485
+        exit_fee1 = exit_execution1 * quantity1 * test_task.fee_maker  # 90.0 * 0.3 * 0.0005 = 0.0135
         exit_execution2 = take_trigger2  # 88.0 (limit, no slippage)
-        exit_fee2 = exit_execution2 * quantity2 * test_task.fee_maker  # 88.0 * 0.33 * 0.0005 = 0.01452
+        exit_fee2 = exit_execution2 * quantity2 * test_task.fee_maker  # 88.0 * 0.3 * 0.0005 = 0.0132
         
         # Auto-close on last bar (bar 4) at close price 90.0
         auto_close_price = 90.0
         auto_close_execution = auto_close_price + slippage  # 90.0 + 0.1 = 90.1 (BUY market, slippage increases price)
-        auto_close_fee = auto_close_execution * quantity3 * test_task.fee_taker  # 90.1 * 0.34 * 0.001 = 0.030634
+        auto_close_fee = auto_close_execution * quantity3 * test_task.fee_taker  # 90.1 * 0.4 * 0.001 = 0.03604
         
-        entry_proceeds = entry_execution * quantity - entry_fee  # 99.9*1.0 - 0.0999 = 99.8001
-        total_exit_cost = exit_execution1 * quantity1 + exit_fee1 + exit_execution2 * quantity2 + exit_fee2 + auto_close_execution * quantity3 + auto_close_fee  # 90.0*0.33 + 0.01485 + 88.0*0.33 + 0.01452 + 90.1*0.34 + 0.030634 = 89.624004
-        expected_profit = entry_proceeds - total_exit_cost  # = 99.8001 - 89.624004 = 10.176096
+        entry_proceeds = entry_execution * entry_quantity - entry_fee  # 99.9*1.0 - 0.0999 = 99.8001
+        total_exit_cost = exit_execution1 * quantity1 + exit_fee1 + exit_execution2 * quantity2 + exit_fee2 + auto_close_execution * quantity3 + auto_close_fee  # 90.0*0.3 + 0.0135 + 88.0*0.3 + 0.0132 + 90.1*0.4 + 0.03604 = 89.59974
+        expected_profit = entry_proceeds - total_exit_cost  # = 99.8001 - 89.59974 = 10.20036
         
         protocol = [
             {
@@ -3111,10 +3151,10 @@ class TestSellSltpPartialExecution:
         # Prepare quotes data: price 100.0, then rises to trigger only one limit entry
         # Bar 0: high=101.0, limits at 103.0 and 105.0 - лимитки не сработают (101.0 < 103.0, 101.0 < 105.0)
         # Bar 1: high=104.0, limits at 103.0 and 105.0 - первая лимитка сработает (104.0 >= 103.0), вторая не сработает (104.0 < 105.0)
-        # Bar 2: high=102.0, limits at 103.0 and 105.0 - вторая лимитка не сработает (102.0 < 105.0), цена откатилась
+        # Bar 2: high=103.0, limits at 103.0 and 105.0 - вторая лимитка не сработает (103.0 < 105.0), цена откатилась
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 104.0, 102.0, 101.0],
-            highs=[101.0, 105.0, 103.0, 102.0]  # Bar 1 high=105.0 triggers first limit at 103.0, second limit at 105.0 doesn't trigger
+            highs=[101.0, 104.0, 103.0, 102.0]  # Bar 1 high=104.0 triggers first limit at 103.0 (104.0 >= 103.0), second limit at 105.0 doesn't trigger (104.0 < 105.0)
         )
         
         # Protocol: On bar 0, enter SELL with two limits (0.5 at 103.0, 0.5 at 105.0) with stop loss 110.0 and take profit 90.0
@@ -3208,8 +3248,9 @@ class TestSellSltpPartialExecution:
         assert abs(deal.profit - expected_profit) < 0.01,             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that only one entry order was executed
-        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.ENTRY]
-        assert len(entry_orders) == 2, "Should have two entry orders"
+        # Filter only limit entry orders (exclude market auto-close order)
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 2, "Should have two entry limit orders"
         executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
         assert len(executed_entries) == 1, "Only one entry order should be executed"
     
@@ -3221,33 +3262,39 @@ class TestSellSltpPartialExecution:
         # Bar 2: high=104.0, limits at 103.0, 105.0, 107.0 - третья лимитка не сработает (104.0 < 107.0), цена откатилась
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 106.0, 104.0, 102.0],
-            highs=[101.0, 107.0, 105.0, 103.0]  # Bar 1 high=107.0 triggers first two limits at 103.0 and 105.0, third limit at 107.0 doesn't trigger
+            highs=[101.0, 106.0, 105.0, 103.0]  # Bar 1 high=106.0 triggers first two limits at 103.0 and 105.0 (106.0 >= 103.0, 106.0 >= 105.0), third limit at 107.0 doesn't trigger (106.0 < 107.0)
         )
         
         # Protocol: On bar 0, enter SELL with three limits (0.33 at 103.0, 0.33 at 105.0, 0.34 at 107.0) with stop loss 110.0 and take profit 90.0
         # Entry prices: 103.0 and 105.0 (limits, no slippage, fee_maker)
         # Expected: first two limits trigger on bar 1, third limit remains active but doesn't trigger
-        # Expected profit calculation (assuming auto-close on last bar):
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Fractions: 0.33, 0.33, 0.34
+        # First limit: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Second limit: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
+        # Third limit (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
         entry_price1 = 103.0
         entry_price2 = 105.0
-        quantity1 = 0.33
-        quantity2 = 0.33
-        quantity3 = 0.34  # Remaining position that will be auto-closed
+        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
+        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third limit, which doesn't trigger)
+        auto_close_quantity = quantity1 + quantity2  # 0.3 + 0.3 = 0.6 (total volume that entered the market)
         
         entry_execution1 = entry_price1  # 103.0 (limit, no slippage)
-        entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 103.0 * 0.33 * 0.0005 = 0.016995
+        entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 103.0 * 0.3 * 0.0005 = 0.01545
         entry_execution2 = entry_price2  # 105.0 (limit, no slippage)
-        entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 105.0 * 0.33 * 0.0005 = 0.017325
+        entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 105.0 * 0.3 * 0.0005 = 0.01575
         
         # Auto-close on last bar (bar 3) at close price 102.0
         auto_close_price = 102.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
         auto_close_execution = auto_close_price + slippage  # 102.0 + 0.1 = 102.1 (BUY market, slippage increases price)
-        auto_close_fee = auto_close_execution * quantity3 * test_task.fee_taker  # 102.1 * 0.34 * 0.001 = 0.034714
+        auto_close_fee = auto_close_execution * auto_close_quantity * test_task.fee_taker  # 102.1 * 0.6 * 0.001 = 0.06126
         
-        entry_proceeds = entry_execution1 * quantity1 - entry_fee1 + entry_execution2 * quantity2 - entry_fee2  # 103.0*0.33 - 0.016995 + 105.0*0.33 - 0.017325 = 68.36568
-        exit_cost = auto_close_execution * quantity3 + auto_close_fee  # 102.1*0.34 + 0.034714 = 34.748714
-        expected_profit = entry_proceeds - exit_cost  # = 68.36568 - 34.748714 = 33.616966
+        entry_proceeds = entry_execution1 * quantity1 - entry_fee1 + entry_execution2 * quantity2 - entry_fee2  # 103.0*0.3 - 0.01545 + 105.0*0.3 - 0.01575 = 62.2688
+        exit_cost = auto_close_execution * auto_close_quantity + auto_close_fee  # 102.1*0.6 + 0.06126 = 61.32126
+        expected_profit = entry_proceeds - exit_cost  # = 62.2688 - 61.32126 = 0.94754
         
         protocol = [
             {
@@ -3319,7 +3366,8 @@ class TestSellSltpPartialExecution:
         assert abs(deal.profit - expected_profit) < 0.01,             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that only two entry orders were executed
-        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.ENTRY]
-        assert len(entry_orders) == 3, "Should have three entry orders"
+        # Filter only limit entry orders (exclude market auto-close order)
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 3, "Should have three entry limit orders"
         executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
         assert len(executed_entries) == 2, "Only two entry orders should be executed"
