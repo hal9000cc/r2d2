@@ -1269,8 +1269,10 @@ class BrokerBacktesting(Broker):
             else:
                 # Use deal type
                 if deal.type == DealType.LONG:
+                    assert deal.quantity > 0, "Deal quantity must be positive for LONG deal"
                     close_side = OrderSide.SELL
                 else:  # DealType.SHORT
+                    assert deal.quantity < 0, "Deal quantity must be negative for SHORT deal"
                     close_side = OrderSide.BUY
             
             # Create market order to close position

@@ -129,12 +129,20 @@
 - **F1.5**: BUY limit entry above current price → validation error
 - **F1.6**: SELL limit entry below current price → validation error
 
-#### F2. Structure Validation
-- **F2.1**: Sum of stop shares != 1.0 → validation error
-- **F2.2**: Sum of take profit shares != 1.0 → validation error
-- **F2.3**: Sum of entry order shares != 1.0 → validation error
-- **F2.4**: Negative shares → validation error
-- **F2.5**: Shares > 1.0 → validation error
+#### F2. Entry Limit Protection by Stop Loss
+- **F2.1**: BUY single limit entry below minimum stop price → validation error (entry not protected)
+- **F2.2**: SELL single limit entry above maximum stop price → validation error (entry not protected)
+- **F2.3**: BUY multiple limit entries, one entry below minimum stop price → validation error
+- **F2.4**: SELL multiple limit entries, one entry above maximum stop price → validation error
+- **F2.5**: BUY limit entry equal to minimum stop price → validation error (entry not protected, stop must be strictly below)
+- **F2.6**: SELL limit entry equal to maximum stop price → validation error (entry not protected, stop must be strictly above)
+
+#### F3. Structure Validation
+- **F3.1**: Sum of stop shares != 1.0 → validation error
+- **F3.2**: Sum of take profit shares != 1.0 → validation error
+- **F3.3**: Sum of entry order shares != 1.0 → validation error
+- **F3.4**: Negative shares → validation error
+- **F3.5**: Shares > 1.0 → validation error
 
 ---
 
@@ -160,6 +168,48 @@
 #### G3. Order Cancellation
 - **G3.1**: Market entry → stops/takes set → entry executed → cancel stops/takes → verify cancellation
 - **G3.2**: Limit entry → entry not executed → cancel entry order → verify cancellation
+
+---
+
+### Group H: Interleaved Entry and Exit Orders
+
+**NOTE**: This group tests scenarios where exit orders (stops or take profits) are positioned between entry orders, creating an interleaved structure. This tests the protection logic and execution order when exit orders are not simply above/below all entries.
+
+#### H1. Stops Between Entries - Alternating Single Orders
+- **H1.1**: BUY - Multiple limit entries with stops between them (alternating pattern: entry, stop, entry, stop, entry)
+  - Example: entries at 100.0, 90.0, 80.0; stops at 95.0, 85.0
+  - Verify all entries are protected (all entries > min_stop)
+  - Test execution when price hits entries and stops in various combinations
+- **H1.2**: SELL - Multiple limit entries with stops between them (alternating pattern: entry, stop, entry, stop, entry)
+  - Example: entries at 100.0, 110.0, 120.0; stops at 105.0, 115.0
+  - Verify all entries are protected (all entries < max_stop)
+  - Test execution when price hits entries and stops in various combinations
+
+#### H2. Stops Between Entries - Alternating Multiple Orders
+- **H2.1**: BUY - Multiple limit entries with multiple stops between them (alternating pattern: 2 entries, 2 stops, 2 entries, 2 stops, etc.)
+  - Example: entries at 100.0, 95.0, 85.0, 80.0; stops at 92.5, 87.5, 77.5
+  - Verify all entries are protected
+  - Test execution when price hits entries and stops in various combinations
+- **H2.2**: SELL - Multiple limit entries with multiple stops between them (alternating pattern: 2 entries, 2 stops, 2 entries, 2 stops, etc.)
+  - Example: entries at 100.0, 105.0, 115.0, 120.0; stops at 107.5, 112.5, 122.5
+  - Verify all entries are protected
+  - Test execution when price hits entries and stops in various combinations
+
+#### H3. Take Profits Between Entries - Alternating Single Orders
+- **H3.1**: BUY - Multiple limit entries with take profits between them (alternating pattern: entry, take, entry, take, entry)
+  - Example: entries at 100.0, 90.0, 80.0; take profits at 105.0, 95.0
+  - Test execution when price hits entries and take profits in various combinations
+- **H3.2**: SELL - Multiple limit entries with take profits between them (alternating pattern: entry, take, entry, take, entry)
+  - Example: entries at 100.0, 110.0, 120.0; take profits at 95.0, 105.0
+  - Test execution when price hits entries and take profits in various combinations
+
+#### H4. Take Profits Between Entries - Alternating Multiple Orders
+- **H4.1**: BUY - Multiple limit entries with multiple take profits between them (alternating pattern: 2 entries, 2 takes, 2 entries, 2 takes, etc.)
+  - Example: entries at 100.0, 95.0, 85.0, 80.0; take profits at 102.5, 97.5, 87.5
+  - Test execution when price hits entries and take profits in various combinations
+- **H4.2**: SELL - Multiple limit entries with multiple take profits between them (alternating pattern: 2 entries, 2 takes, 2 entries, 2 takes, etc.)
+  - Example: entries at 100.0, 105.0, 115.0, 120.0; take profits at 97.5, 102.5, 112.5
+  - Test execution when price hits entries and take profits in various combinations
 
 ---
 

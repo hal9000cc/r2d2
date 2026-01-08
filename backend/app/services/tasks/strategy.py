@@ -660,6 +660,31 @@ class Strategy(ABC):
                         f"take_profit {i}: SELL take profit price ({price}) must be below current price ({current_price})"
                     )
         
+        # Validate that all entry limit orders are protected by stop loss
+        # Extract limit entry prices (skip market orders where price is None)
+        limit_entry_prices = [price for _, price in entries if price is not None]
+        
+        # Only check if there are limit entries and stop losses
+        if limit_entry_prices and stop_losses:
+            stop_prices = [price for _, price in stop_losses]
+            
+            if side == OrderSide.BUY:
+                # BUY position: minimum stop price must be below minimum entry limit price
+                min_entry_limit = min(limit_entry_prices)
+                min_stop = min(stop_prices)
+                if not self.lt(min_stop, min_entry_limit):
+                    errors.append(
+                        f"Entry limit order at {min_entry_limit} is not protected by stop loss (minimum stop price is {min_stop})"
+                    )
+            else:  # SELL
+                # SELL position: maximum stop price must be above maximum entry limit price
+                max_entry_limit = max(limit_entry_prices)
+                max_stop = max(stop_prices)
+                if not self.gt(max_stop, max_entry_limit):
+                    errors.append(
+                        f"Entry limit order at {max_entry_limit} is not protected by stop loss (maximum stop price is {max_stop})"
+                    )
+        
         return errors
     
     def buy_sltp(
