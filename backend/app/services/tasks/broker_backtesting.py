@@ -715,12 +715,14 @@ class BrokerBacktesting(Broker):
             entry_orders.append(order)
             self._add_order(order)
         
-        # 5. Set deal type based on entry side
+        # 5. Set deal type based on entry side and store initial entry volume
         deal = self.get_deal_by_id(deal_id)
         if side == OrderSide.BUY:
             deal.type = DealType.LONG
         else:  # OrderSide.SELL
             deal.type = DealType.SHORT
+        # Store initial entry volume for calculating stop/take target volumes
+        deal.enter_volume = total_entry_volume
         
         # 6. Create stop loss orders (with temporary volume=0, will be updated later)
         stop_orders = []
@@ -777,11 +779,13 @@ class BrokerBacktesting(Broker):
         
         # 8. Update stop loss volumes using extreme stop logic
         if stop_orders:
-            self._update_stop_loss_volumes(deal, total_entry_volume)
+            # At deal creation, current volume equals initial entry volume
+            self._update_stop_loss_volumes(deal, total_entry_volume, total_entry_volume)
         
         # 9. Update take profit volumes using extreme take logic
         if take_orders:
-            self._update_take_profit_volumes(deal, total_entry_volume)
+            # At deal creation, current volume equals initial entry volume
+            self._update_take_profit_volumes(deal, total_entry_volume, total_entry_volume)
         
         # 10. Form list of orders to execute
         orders_to_execute = []
@@ -1070,16 +1074,57 @@ class BrokerBacktesting(Broker):
         
         return VOLUME_TYPE(unexecuted_volume)
     
-    def _update_stop_loss_volumes(self, deal: Deal, target_volume: VOLUME_TYPE) -> None:
+    def _get_executed_stop_loss_volume(self, deal: Deal) -> VOLUME_TYPE:
+        """
+        Get total volume of executed stop loss orders in a deal.
+        
+        Args:
+            deal: Deal to check
+        
+        Returns:
+            Sum of filled_volume of all executed stop loss orders, or 0.0 if none
+        """
+        executed_volume = 0.0
+        
+        for order in deal.orders:
+            # Check if it's an executed stop loss order
+            if (order.order_group == OrderGroup.STOP_LOSS and
+                order.status == OrderStatus.EXECUTED):
+                executed_volume += order.filled_volume
+        
+        return VOLUME_TYPE(executed_volume)
+    
+    def _get_executed_take_profit_volume(self, deal: Deal) -> VOLUME_TYPE:
+        """
+        Get total volume of executed take profit orders in a deal.
+        
+        Args:
+            deal: Deal to check
+        
+        Returns:
+            Sum of filled_volume of all executed take profit orders, or 0.0 if none
+        """
+        executed_volume = 0.0
+        
+        for order in deal.orders:
+            # Check if it's an executed take profit order
+            if (order.order_group == OrderGroup.TAKE_PROFIT and
+                order.status == OrderStatus.EXECUTED):
+                executed_volume += order.filled_volume
+        
+        return VOLUME_TYPE(executed_volume)
+    
+    def _update_stop_loss_volumes(self, deal: Deal, target_volume: VOLUME_TYPE, current_volume: VOLUME_TYPE) -> None:
         """
         Update volumes of all stop loss orders in a deal.
         
-        All stops except extreme one get rounded volumes based on fraction.
-        Extreme stop gets remainder to ensure sum equals target_volume.
+        All stops except extreme one get rounded volumes based on fraction and target_volume.
+        Extreme stop gets remainder from current_volume to ensure it closes the remaining position.
         
         Args:
             deal: Deal to update stop orders for
-            target_volume: Target total volume for all stop orders
+            target_volume: Target total volume for calculating regular stop volumes (based on fraction)
+            current_volume: Current position volume for calculating extreme stop volume (remainder)
         """
         stop_orders = [order for order in deal.orders if order.order_group == OrderGroup.STOP_LOSS and order.status in [OrderStatus.NEW, OrderStatus.ACTIVE]]
         if not stop_orders:
@@ -1096,14 +1141,14 @@ class BrokerBacktesting(Broker):
                 # Extreme stop: will be calculated as remainder
                 stop_volumes.append(0.0)
             else:
-                # Regular stop: round to precision
+                # Regular stop: round to precision based on target_volume
                 assert order.fraction is not None, f"Stop order {order.order_id} must have fraction"
                 volume = self.round_to_precision(order.fraction * target_volume, self.precision_amount)
                 stop_volumes.append(volume)
         
-        # Calculate extreme stop volume as remainder
+        # Calculate extreme stop volume as remainder from current position volume
         extreme_index = next(i for i, order in enumerate(stop_orders) if order.order_id == extreme_stop.order_id)
-        extreme_volume = target_volume - sum(stop_volumes)
+        extreme_volume = current_volume - sum(stop_volumes)
         stop_volumes[extreme_index] = extreme_volume
         
         # Update all stop orders
@@ -1112,17 +1157,18 @@ class BrokerBacktesting(Broker):
             order.volume = volume
             order.modify_time = self.current_time
     
-    def _update_take_profit_volumes(self, deal: Deal, target_volume: VOLUME_TYPE) -> List[Order]:
+    def _update_take_profit_volumes(self, deal: Deal, target_volume: VOLUME_TYPE, current_volume: VOLUME_TYPE) -> List[Order]:
         """
         Update volumes of all take profit orders in a deal.
         
         Processes only take profit orders with status NEW or ACTIVE.
-        All takes except extreme one get rounded volumes based on fraction.
-        Extreme take gets remainder to ensure sum equals target_volume.
+        All takes except extreme one get rounded volumes based on fraction and target_volume.
+        Extreme take gets remainder from current_volume to ensure it closes the remaining position.
         
         Args:
             deal: Deal to update take orders for
-            target_volume: Target total volume for all take orders
+            target_volume: Target total volume for calculating regular take volumes (based on fraction)
+            current_volume: Current position volume for calculating extreme take volume (remainder)
         
         Returns:
             List of take orders in NEW status that need to be activated
@@ -1145,14 +1191,14 @@ class BrokerBacktesting(Broker):
                 # Extreme take: will be calculated as remainder
                 take_volumes.append(0.0)
             else:
-                # Regular take: round to precision
+                # Regular take: round to precision based on target_volume
                 assert order.fraction is not None, f"Take order {order.order_id} must have fraction"
                 volume = self.round_to_precision(order.fraction * target_volume, self.precision_amount)
                 take_volumes.append(volume)
         
-        # Calculate extreme take volume as remainder
+        # Calculate extreme take volume as remainder from current position volume
         extreme_index = next(i for i, order in enumerate(take_orders) if order.order_id == extreme_take.order_id)
-        extreme_volume = target_volume - sum(take_volumes)
+        extreme_volume = current_volume - sum(take_volumes)
         take_volumes[extreme_index] = extreme_volume
         
         # Update volumes for all NEW and ACTIVE take orders
@@ -1184,21 +1230,33 @@ class BrokerBacktesting(Broker):
             # 1. Update stop loss volumes
             extreme_stop = self._find_extreme_stop_order(deal)
             if extreme_stop is not None:
-                # Calculate unexecuted entry limit volume
+                assert deal.enter_volume > 0, f"Deal {deal_id} must have enter_volume > 0 for stop loss volume calculation"
+                # Calculate unexecuted entry limit volume (for range check)
                 extreme_stop_price = extreme_stop.trigger_price
                 if extreme_stop_price is not None:
                     unexecuted_entry_volume = self._get_unexecuted_entry_limit_volume(
                         deal, self.price, extreme_stop_price
                     )
-                    # Target volume = current position + unexecuted entry limits
-                    # Use abs() because deal.quantity can be negative for SHORT positions
-                    target_volume = abs(deal.quantity) + unexecuted_entry_volume
-                    self._update_stop_loss_volumes(deal, target_volume)
+                    executed_take_volume = self._get_executed_take_profit_volume(deal)
+                    # Target volume = initial entry volume - unexecuted entry limits - executed take volumes
+                    target_volume = deal.enter_volume - unexecuted_entry_volume - executed_take_volume
+                    # Current volume = current position size (abs(deal.quantity) for LONG/SHORT)
+                    current_volume = abs(deal.quantity)
+                    self._update_stop_loss_volumes(deal, target_volume, current_volume)
             
             # 2. Update take profit volumes (only if deal has position)
             if abs(deal.quantity) > 0:
-                # Use abs() because deal.quantity can be negative for SHORT positions
-                new_takes = self._update_take_profit_volumes(deal, abs(deal.quantity))
+                assert deal.enter_volume > 0, f"Deal {deal_id} must have enter_volume > 0 for take profit volume calculation"
+                executed_stop_volume = self._get_executed_stop_loss_volume(deal)
+                # IMPORTANT: Take profit volumes are calculated from FULL ENTRY VOLUME (deal.enter_volume),
+                # MINUS executed stop volumes, NOT from current position size
+                # This is the same logic as stop losses: calculated from all requested entry volumes (including unexecuted limits)
+                # Target volume = initial entry volume - executed stop volumes
+                target_volume = deal.enter_volume - executed_stop_volume
+                # Current volume = current position size (abs(deal.quantity) for LONG/SHORT)
+                # Used only for calculating extreme take profit volume (remainder)
+                current_volume = abs(deal.quantity)
+                new_takes = self._update_take_profit_volumes(deal, target_volume, current_volume)
                 
                 # 3. Activate take profit orders in NEW status
                 if new_takes:
@@ -1294,6 +1352,7 @@ class BrokerBacktesting(Broker):
         
         # Deactivate all active and new orders in the deal
         self._cancel_deal_orders(deal)
+        self.check_closed(deal)
         
         # Close position if there is any
         # Use 1/10 of volume precision as tolerance for floating point comparison

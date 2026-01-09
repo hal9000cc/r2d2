@@ -127,6 +127,7 @@ class Deal(BaseModel):
     - Accumulates orders (entry and exit) belonging to a single logical deal.
     - Tracks average buy and sell prices across all trades.
     - Tracks current position quantity, total fees and profit.
+    - Stores initial entry volume for deals created via buy_sltp/sell_sltp (used for calculating stop/take volumes).
     """
 
     deal_id: int = Field(gt=0)
@@ -149,6 +150,11 @@ class Deal(BaseModel):
     
     # Deal closed status (set to True when quantity == 0 and no active entry orders)
     is_closed: bool = False
+    
+    # Initial entry volume (sum of all entry order volumes) - set for deals created via buy_sltp/sell_sltp
+    # Used for calculating stop loss and take profit order target volumes
+    # Defaults to 0.0 for automatic deals (created via regular buy/sell methods)
+    enter_volume: VOLUME_TYPE = 0.0
 
     # Internal accumulators for efficient incremental updates
     buy_quantity: VOLUME_TYPE = 0.0
@@ -199,15 +205,30 @@ class Deal(BaseModel):
         else:
             self.profit = None
         
-        # Set is_closed to True if quantity == 0 and no active entry orders
-        if not self.is_closed and self.quantity == 0:
+
+    def check_closed(self) -> bool:
+        """
+        Check if deal should be closed and set is_closed to True if conditions are met.
+        
+        Deal is closed if quantity == 0 and there are no active entry orders.
+        This method does not check is_closed status itself - it should be called
+        only when is_closed is False.
+        
+        Returns:
+            True if deal was just closed (status changed from open to closed), False otherwise
+        """
+        if self.quantity == 0:
             # Check if there are any active entry orders (OrderGroup.NONE and status ACTIVE)
             has_active_entry_orders = any(
                 order.order_group == OrderGroup.NONE and order.status == OrderStatus.ACTIVE
                 for order in self.orders
             )
             if not has_active_entry_orders:
+                was_closed = self.is_closed
                 self.is_closed = True
+                # Return True if status changed from open to closed
+                return not was_closed
+        return False
 
     def get_unrealized_profit(self, current_price: PRICE_TYPE) -> Optional[PRICE_TYPE]:
         """
@@ -680,6 +701,33 @@ class Broker(ABC):
             self.last_auto_deal_id = None
             return None
     
+    def check_closed(self, deal: Deal) -> None:
+        """
+        Check if deal should be closed and update broker state accordingly.
+        
+        Calls deal.check_closed() to check and update deal status.
+        If deal was just closed, updates active_deals, registers deal in statistics,
+        and clears last_auto_deal_id if needed.
+        If deal is open, ensures it's in active_deals.
+        
+        Args:
+            deal: Deal to check
+        """
+        # Check if deal should be closed (returns True if status changed from open to closed)
+        was_just_closed = deal.check_closed()
+        
+        if was_just_closed:
+            # Deal is closed, remove from active deals
+            self.active_deals.discard(deal.deal_id)
+            # Register it in statistics
+            self.stats.add_deal(deal)
+            # If this was the last automatic deal, clear the reference
+            if deal.deal_id == self.last_auto_deal_id:
+                self.last_auto_deal_id = None
+        elif not deal.is_closed:
+            # Deal is open, ensure it's in active deals
+            self.active_deals.add(deal.deal_id)
+    
     def _add_trade_to_deal(self, deal: Deal, trade: Trade) -> None:
         """
         Add trade to deal and update statistics.
@@ -688,8 +736,7 @@ class Broker(ABC):
         It handles:
         - Adding trade to deal
         - Updating trade statistics
-        - Registering deal in statistics if it becomes closed
-        - Updating last_auto_deal_id if automatic deal is closed
+        - Checking if deal should be closed and updating broker state
         
         Args:
             deal: Deal to add trade to
@@ -701,18 +748,8 @@ class Broker(ABC):
         # Update trade statistics
         self.stats.add_trade(trade)
         
-        # Update active_deals set based on deal status
-        if deal.is_closed:
-            # Deal is closed, remove from active deals
-            self.active_deals.discard(deal.deal_id)
-            # Register it in statistics
-            self.stats.add_deal(deal)
-            # If this was the last automatic deal, clear the reference
-            if deal.deal_id == self.last_auto_deal_id:
-                self.last_auto_deal_id = None
-        else:
-            # Deal is open, add to active deals
-            self.active_deals.add(deal.deal_id)
+        # Check if deal should be closed and update broker state
+        self.check_closed(deal)
 
     def reg_buy(
         self,
