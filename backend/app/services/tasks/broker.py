@@ -146,6 +146,9 @@ class Deal(BaseModel):
     # Aggregated fees and realized profit for the deal
     fee: PRICE_TYPE = 0.0
     profit: Optional[PRICE_TYPE] = None
+    
+    # Deal closed status (set to True when quantity == 0 and no active entry orders)
+    is_closed: bool = False
 
     # Internal accumulators for efficient incremental updates
     buy_quantity: VOLUME_TYPE = 0.0
@@ -195,14 +198,16 @@ class Deal(BaseModel):
             self.profit = self.sell_proceeds - self.buy_cost - self.fee
         else:
             self.profit = None
-
-
-    @property
-    def is_closed(self) -> bool:
-        """
-        Check if deal is closed (quantity == 0).
-        """
-        return self.quantity == 0
+        
+        # Set is_closed to True if quantity == 0 and no active entry orders
+        if not self.is_closed and self.quantity == 0:
+            # Check if there are any active entry orders (OrderGroup.NONE and status ACTIVE)
+            has_active_entry_orders = any(
+                order.order_group == OrderGroup.NONE and order.status == OrderStatus.ACTIVE
+                for order in self.orders
+            )
+            if not has_active_entry_orders:
+                self.is_closed = True
 
     def get_unrealized_profit(self, current_price: PRICE_TYPE) -> Optional[PRICE_TYPE]:
         """

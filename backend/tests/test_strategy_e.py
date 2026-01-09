@@ -1,0 +1,643 @@
+"""
+Tests for Strategy class - buy_sltp/sell_sltp methods - Group E.
+
+Group E: Order Execution - Most Complex Cases (Entries + Stops + Takes Simultaneously)
+Tests scenarios where entry orders, stop loss orders, and take profit orders trigger:
+- E1: One entry, one stop, one take profit
+- E2: One entry, multiple stops, one take profit
+- E3: One entry, one stop, multiple take profits
+- E4: One entry, multiple stops, multiple take profits
+- E5: Multiple entries, stops, take profits
+
+IMPORTANT RULES for simultaneous order execution:
+1. When price hits both stops and take profits simultaneously, ONLY STOPS are considered
+2. Take profits do NOT trigger on the same bar as stops
+3. Take profits may trigger on subsequent bars if the deal is not fully closed
+4. After placing all orders: entry and stop are ACTIVE, take is NEW (not active)
+5. Take profit activates only after entry executes
+6. On the same bar, entry and stop can trigger simultaneously
+7. Take profit CANNOT trigger on the same bar as entry - it activates only after entry executes
+"""
+import pytest
+from unittest.mock import Mock, patch
+
+from app.services.tasks.strategy import OrderOperationResult
+from app.services.tasks.broker import OrderSide, OrderType, OrderStatus, OrderGroup
+
+# Import helpers from test_strategy_helpers
+from tests.test_strategy_helpers import (
+    TestStrategy,
+    create_broker_and_strategy,
+    create_custom_quotes_data,
+    test_task
+)
+
+# ============================================================================
+# Group E1: One Entry, One Stop, One Take Profit - BUY
+# ============================================================================
+
+class TestBuySltpOneEntryOneStopOneTake:
+    """Test E1: One entry, one stop, one take profit scenarios for buy_sltp."""
+    
+    def test_buy_sltp_limit_entry_stop_take_simultaneous_stop_priority(self, test_task):
+        """Test E1.1: Limit entry, stop and take profit hit simultaneously → entry + stop trigger, take profit does NOT trigger."""
+        # Prepare quotes data: price 100.0, then price moves to trigger limit entry, stop, and take profit simultaneously
+        # Bar 0: high=101.0, low=99.0, limit=95.0, stop=90.0, take=110.0 - won't trigger (99.0 > 95.0, 99.0 > 90.0, 101.0 < 110.0)
+        # Bar 1: high=112.0, low=88.0, limit=95.0, stop=90.0, take=110.0 - entry and stop trigger simultaneously, take does NOT trigger
+        #   Entry limit (BUY, triggers when low <= price): 88.0 <= 95.0 ✓
+        #   Stop loss (BUY stop, triggers when low <= trigger_price): 88.0 <= 90.0 ✓
+        #   Take profit (SELL limit, triggers when high >= price): 112.0 >= 110.0 ✓, but take is NEW, and stops have priority
+        # Bar 2: high=112.0, take=110.0 - take profit does NOT trigger (deal already closed by stop)
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            highs=[101.0, 112.0, 112.0],  # Bar 1 high=112.0 hits take profit at 110.0, but stops have priority
+            lows=[99.0, 88.0, 100.0]  # Bar 1 low=88.0 triggers limit entry at 95.0 and stop at 90.0 simultaneously
+        )
+        
+        # Protocol: On bar 0, enter BUY with limit (1.0 at 95.0) with stop loss 90.0 and take profit 110.0
+        # Entry price: 95.0 (limit, no slippage, fee_maker)
+        # Stop trigger: 90.0 (stop executes as market, with slippage, fee_taker)
+        # Expected: limit entry triggers on bar 1, stop triggers on bar 1, take profit does NOT trigger (stops have priority)
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volume: 1.0 (no rounding needed)
+        # Stop volume: 1.0 (closes entire position)
+        # Take profit does NOT trigger
+        entry_price = 95.0
+        entry_quantity = 1.0
+        stop_trigger_price = 90.0
+        stop_quantity = 1.0  # Closes entire position
+        take_price = 110.0  # Does NOT trigger
+        
+        entry_execution = entry_price  # 95.0 (limit, no slippage)
+        entry_fee = entry_execution * entry_quantity * test_task.fee_maker  # 95.0 * 1.0 * 0.0005 = 0.0475
+        
+        # Stop executes as market order (with slippage, fee_taker)
+        stop_execution = stop_trigger_price - test_task.slippage_in_steps * test_task.price_step  # 90.0 - 0.1 = 89.9 (SELL market, slippage decreases price)
+        stop_fee = stop_execution * stop_quantity * test_task.fee_taker  # 89.9 * 1.0 * 0.001 = 0.0899
+        
+        entry_cost = entry_execution * entry_quantity + entry_fee  # 95.0 * 1.0 + 0.0475 = 95.0475
+        exit_proceeds = stop_execution * stop_quantity - stop_fee  # 89.9 * 1.0 - 0.0899 = 89.8101
+        expected_profit = exit_proceeds - entry_cost  # = 89.8101 - 95.0475 = -5.2374
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': [(1.0, 95.0)],  # One limit order
+                    'stop_loss': 90.0,
+                    'take_profit': [(1.0, 110.0)]  # One take profit
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_buy_e1_1_limit_entry_stop_take_simultaneous_stop_priority")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that entry and stop trigger on bar 1, take profit does NOT trigger
+        # Bar 0: no execution (0 trades)
+        # Bar 1: entry and stop trigger simultaneously (2 trades - entry + stop), take profit does NOT trigger
+        # Bar 2: no execution (deal already closed)
+        assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
+        assert collected_data[1]['trades_count'] == 2, "Entry and stop should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "No additional trades on bar 2 (deal already closed)"
+        
+        # Check final state: deal should be closed by stop
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check total trades count
+        assert len(broker.trades) == 2, f"Expected 2 trades total (entry + stop), got {len(broker.trades)}"
+        
+        # Check actual profit matches expected calculation
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+        
+        # Check that entry order was executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 1, "Should have one entry limit order"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 1, "Entry order should be executed"
+        
+        # Check that stop order was executed
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 1, "Should have one stop loss order"
+        executed_stops = [o for o in stop_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_stops) == 1, "Stop loss order should be executed"
+        
+        # Check that take profit order was NOT executed (stops have priority)
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        executed_takes = [o for o in take_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_takes) == 0, "Take profit order should NOT be executed (stops have priority)"
+        # Take profit should be CANCELED (deal closed by stop)
+        canceled_takes = [o for o in take_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_takes) == 1, "Take profit order should be canceled (deal closed by stop)"
+    
+    def test_buy_sltp_limit_entry_stop_take_simultaneous_take_next_bar(self, test_task):
+        """Test E1.2: Limit entry, stop and take profit hit simultaneously → entry + stop trigger, take profit triggers on next bar (if deal didn't close completely)."""
+        # Prepare quotes data: price 100.0, then price moves to trigger limit entry and stop simultaneously, but stop only closes part of position
+        # Bar 0: high=101.0, low=99.0, limit=95.0, stop=90.0, take=110.0 - won't trigger (99.0 > 95.0, 99.0 > 90.0, 101.0 < 110.0)
+        # Bar 1: high=112.0, low=88.0, limit=95.0, stop=90.0, take=110.0 - entry and stop trigger simultaneously, take does NOT trigger
+        #   Entry limit (BUY, triggers when low <= price): 88.0 <= 95.0 ✓
+        #   Stop loss (BUY stop, triggers when low <= trigger_price): 88.0 <= 90.0 ✓
+        #   Take profit (SELL limit, triggers when high >= price): 112.0 >= 110.0 ✓, but take is NEW, and stops have priority
+        # Bar 2: high=112.0, take=110.0 - take profit triggers (112.0 >= 110.0) for remaining position
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            highs=[101.0, 112.0, 112.0],  # Bar 1 high=112.0 hits take profit at 110.0, but stops have priority; Bar 2 high=112.0 triggers take
+            lows=[99.0, 88.0, 100.0]  # Bar 1 low=88.0 triggers limit entry at 95.0 and stop at 90.0 simultaneously
+        )
+        
+        # Protocol: On bar 0, enter BUY with limit (1.0 at 95.0) with two stops (0.5 at 90.0, 0.5 at 85.0) and two take profits (0.5 at 110.0, 0.5 at 115.0)
+        # Entry price: 95.0 (limit, no slippage, fee_maker)
+        # Stop triggers: 90.0 (first stop executes as market, with slippage, fee_taker) - closes 0.5; 85.0 does NOT trigger (low=88.0 > 85.0)
+        # Take triggers: 110.0 (first take executes as limit, no slippage, fee_maker) - closes remaining 0.5 on bar 2; 115.0 does NOT trigger (high=112.0 < 115.0)
+        # Expected: limit entry triggers on bar 1, first stop triggers on bar 1 (closes 0.5), first take profit triggers on bar 2 (closes remaining 0.5)
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volume: 1.0 (no rounding needed)
+        # Stop volumes: calculated from all requested entry volumes (1.0)
+        #   First stop: round(0.5 * 1.0 / 0.1) * 0.1 = round(5.0) * 0.1 = 5 * 0.1 = 0.5
+        #   Second stop (extreme): 1.0 - 0.5 = 0.5 (but doesn't trigger)
+        # Take volumes: calculated from CURRENT POSITION at the time of take activation/execution, NOT from entry volume
+        #   After stop closes 0.5 on bar 1, remaining position is 0.5
+        #   On bar 2, take volumes are recalculated from current position (0.5)
+        #   First take: round(0.5 * 0.5 / 0.1) * 0.1 = round(2.5) * 0.1 = 2 * 0.1 = 0.2 (banking rounding: round(2.5) = 2)
+        #   Second take (extreme): 0.5 - 0.2 = 0.3 (but doesn't trigger)
+        #   Remaining position after take: 0.5 - 0.2 = 0.3 (will be auto-closed at end of test)
+        entry_price = 95.0
+        entry_quantity = 1.0
+        stop_trigger_price1 = 90.0
+        stop_quantity1 = 0.5  # First stop closes half position
+        stop_trigger_price2 = 85.0  # Does NOT trigger (low=88.0 > 85.0)
+        take_price1 = 110.0
+        take_price2 = 115.0  # Does NOT trigger (high=112.0 < 115.0)
+        # IMPORTANT: Take profit volumes are calculated from CURRENT POSITION (0.5 after stop), NOT from entry volume (1.0)
+        # Fraction: 0.5
+        # Current position after stop: 0.5
+        # First take: round(0.5 * 0.5 / 0.1) * 0.1 = round(2.5) * 0.1 = 2 * 0.1 = 0.2
+        take_quantity1 = 0.2  # round(0.5 * 0.5 / 0.1) * 0.1 = 0.2
+        remaining_quantity = 0.3  # 0.5 - 0.2 = 0.3 (will be auto-closed)
+        
+        entry_execution = entry_price  # 95.0 (limit, no slippage)
+        entry_fee = entry_execution * entry_quantity * test_task.fee_maker  # 95.0 * 1.0 * 0.0005 = 0.0475
+        
+        # Stop executes as market order (with slippage, fee_taker)
+        stop_execution = stop_trigger_price1 - test_task.slippage_in_steps * test_task.price_step  # 90.0 - 0.1 = 89.9 (SELL market, slippage decreases price)
+        stop_fee = stop_execution * stop_quantity1 * test_task.fee_taker  # 89.9 * 0.5 * 0.001 = 0.04495
+        
+        # Take executes as limit order (no slippage, fee_maker)
+        take_execution = take_price1  # 110.0 (limit, no slippage)
+        # Take fee recalculated with correct volume: 110.0 * 0.2 * 0.0005 = 0.011
+        take_fee = take_execution * take_quantity1 * test_task.fee_maker  # 110.0 * 0.2 * 0.0005 = 0.011
+        
+        # Auto-close: remaining 0.3 position closed at last bar closing price (100.0) as market order (with slippage, fee_taker)
+        auto_close_price = 100.0  # Last bar closing price
+        # Auto-close is SELL market order (closing BUY position), slippage decreases price
+        auto_close_execution = auto_close_price - test_task.slippage_in_steps * test_task.price_step  # 100.0 - 0.1 = 99.9
+        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 99.9 * 0.3 * 0.001 = 0.02997
+        
+        entry_cost = entry_execution * entry_quantity + entry_fee  # 95.0 * 1.0 + 0.0475 = 95.0475
+        exit_proceeds = stop_execution * stop_quantity1 - stop_fee + take_execution * take_quantity1 - take_fee + auto_close_execution * remaining_quantity - auto_close_fee  # 89.9*0.5 - 0.04495 + 110.0*0.2 - 0.011 + 99.9*0.3 - 0.02997 = 44.90505 + 21.989 + 29.87003 = 96.76408
+        expected_profit = exit_proceeds - entry_cost  # = 96.76408 - 95.0475 = 1.71658
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': [(1.0, 95.0)],  # One limit order
+                    'stop_loss': [(0.5, 90.0), (0.5, 85.0)],  # Two stops (0.5 + 0.5 = 1.0), only first triggers
+                    'take_profit': [(0.5, 110.0), (0.5, 115.0)]  # Two take profits (0.5 + 0.5 = 1.0), only first triggers
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_buy_e1_2_limit_entry_stop_take_simultaneous_take_next_bar")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that entry and stop trigger on bar 1, take profit triggers on bar 2
+        # Bar 0: no execution (0 trades)
+        # Bar 1: entry and stop trigger simultaneously (2 trades - entry + stop), take profit does NOT trigger
+        # Bar 2: take profit triggers (3 trades total - entry + stop + take)
+        # After bar 2: auto-close of remaining position (4 trades total - entry + stop + take + auto-close)
+        assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
+        assert collected_data[1]['trades_count'] == 2, "Entry and stop should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "Take profit should trigger on bar 2"
+        
+        # Check final state: deal should be closed (auto-closed at end of test)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check total trades count (including auto-close)
+        assert len(broker.trades) == 4, f"Expected 4 trades total (entry + stop + take + auto-close), got {len(broker.trades)}"
+        
+        # Check actual profit matches expected calculation
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+        
+        # Check that entry order was executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 1, "Should have one entry limit order"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 1, "Entry order should be executed"
+        
+        # Check that first stop order was executed, second does NOT trigger
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 2, "Should have two stop loss orders"
+        executed_stops = [o for o in stop_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_stops) == 1, "First stop loss order should be executed"
+        active_stops = [o for o in stop_orders if o.status == OrderStatus.ACTIVE]
+        assert len(active_stops) == 0, "No stop orders should remain active after deal closes"
+        
+        # Check that first take profit order was executed (on bar 2), second does NOT trigger
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 2, "Should have two take profit orders"
+        executed_takes = [o for o in take_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_takes) == 1, "First take profit order should be executed on bar 2"
+        active_takes = [o for o in take_orders if o.status == OrderStatus.ACTIVE]
+        assert len(active_takes) == 0, "No take profit orders should remain active after deal closes"
+
+
+# ============================================================================
+# Group E1: One Entry, One Stop, One Take Profit - SELL
+# ============================================================================
+
+class TestSellSltpOneEntryOneStopOneTake:
+    """Test E1: One entry, one stop, one take profit scenarios for sell_sltp."""
+    
+    def test_sell_sltp_limit_entry_stop_take_simultaneous_stop_priority(self, test_task):
+        """Test E1.1: Limit entry, stop and take profit hit simultaneously → entry + stop trigger, take profit does NOT trigger."""
+        # Prepare quotes data: price 100.0, then price moves to trigger limit entry, stop, and take profit simultaneously
+        # Bar 0: high=101.0, low=99.0, limit=105.0, stop=110.0, take=90.0 - won't trigger (101.0 < 105.0, 101.0 < 110.0, 99.0 > 90.0)
+        # Bar 1: high=112.0, low=88.0, limit=105.0, stop=110.0, take=90.0 - entry and stop trigger simultaneously, take does NOT trigger
+        #   Entry limit (SELL, triggers when high >= price): 112.0 >= 105.0 ✓
+        #   Stop loss (SELL stop, triggers when high >= trigger_price): 112.0 >= 110.0 ✓
+        #   Take profit (BUY limit, triggers when low <= price): 88.0 <= 90.0 ✓, but take is NEW, and stops have priority
+        # Bar 2: low=88.0, take=90.0 - take profit does NOT trigger (deal already closed by stop)
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            highs=[101.0, 112.0, 100.0],  # Bar 1 high=112.0 triggers limit entry at 105.0 and stop at 110.0 simultaneously
+            lows=[99.0, 88.0, 100.0]  # Bar 1 low=88.0 hits take profit at 90.0, but stops have priority
+        )
+        
+        # Protocol: On bar 0, enter SELL with limit (1.0 at 105.0) with stop loss 110.0 and take profit 90.0
+        # Entry price: 105.0 (limit, no slippage, fee_maker)
+        # Stop trigger: 110.0 (stop executes as market, with slippage, fee_taker)
+        # Expected: limit entry triggers on bar 1, stop triggers on bar 1, take profit does NOT trigger (stops have priority)
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volume: 1.0 (no rounding needed)
+        # Stop volume: 1.0 (closes entire position)
+        # Take profit does NOT trigger
+        entry_price = 105.0
+        entry_quantity = 1.0
+        stop_trigger_price = 110.0
+        stop_quantity = 1.0  # Closes entire position
+        take_price = 90.0  # Does NOT trigger
+        
+        entry_execution = entry_price  # 105.0 (limit, no slippage)
+        entry_fee = entry_execution * entry_quantity * test_task.fee_maker  # 105.0 * 1.0 * 0.0005 = 0.0525
+        
+        # Stop executes as market order (with slippage, fee_taker)
+        stop_execution = stop_trigger_price + test_task.slippage_in_steps * test_task.price_step  # 110.0 + 0.1 = 110.1 (BUY market, slippage increases price)
+        stop_fee = stop_execution * stop_quantity * test_task.fee_taker  # 110.1 * 1.0 * 0.001 = 0.1101
+        
+        entry_proceeds = entry_execution * entry_quantity - entry_fee  # 105.0 * 1.0 - 0.0525 = 104.9475
+        exit_cost = stop_execution * stop_quantity + stop_fee  # 110.1 * 1.0 + 0.1101 = 110.2101
+        expected_profit = entry_proceeds - exit_cost  # = 104.9475 - 110.2101 = -5.2626
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': [(1.0, 105.0)],  # One limit order
+                    'stop_loss': 110.0,
+                    'take_profit': [(1.0, 90.0)]  # One take profit
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_e1_1_limit_entry_stop_take_simultaneous_stop_priority")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that entry and stop trigger on bar 1, take profit does NOT trigger
+        # Bar 0: no execution (0 trades)
+        # Bar 1: entry and stop trigger simultaneously (2 trades - entry + stop), take profit does NOT trigger
+        # Bar 2: no execution (deal already closed)
+        assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
+        assert collected_data[1]['trades_count'] == 2, "Entry and stop should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "No additional trades on bar 2 (deal already closed)"
+        
+        # Check final state: deal should be closed by stop
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check total trades count
+        assert len(broker.trades) == 2, f"Expected 2 trades total (entry + stop), got {len(broker.trades)}"
+        
+        # Check actual profit matches expected calculation
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+        
+        # Check that entry order was executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 1, "Should have one entry limit order"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 1, "Entry order should be executed"
+        
+        # Check that stop order was executed
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 1, "Should have one stop loss order"
+        executed_stops = [o for o in stop_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_stops) == 1, "Stop loss order should be executed"
+        
+        # Check that take profit order was NOT executed (stops have priority)
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        executed_takes = [o for o in take_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_takes) == 0, "Take profit order should NOT be executed (stops have priority)"
+        # Take profit should be CANCELED (deal closed by stop)
+        canceled_takes = [o for o in take_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_takes) == 1, "Take profit order should be canceled (deal closed by stop)"
+    
+    def test_sell_sltp_limit_entry_stop_take_simultaneous_take_next_bar(self, test_task):
+        """Test E1.2: Limit entry, stop and take profit hit simultaneously → entry + stop trigger, take profit triggers on next bar (if deal didn't close completely)."""
+        # Prepare quotes data: price 100.0, then price moves to trigger limit entry and stop simultaneously, but stop only closes part of position
+        # Bar 0: high=101.0, low=99.0, limit=105.0, stop=110.0, take=90.0 - won't trigger (101.0 < 105.0, 101.0 < 110.0, 99.0 > 90.0)
+        # Bar 1: high=112.0, low=88.0, limit=105.0, stop=110.0, take=90.0 - entry and stop trigger simultaneously, take does NOT trigger
+        #   Entry limit (SELL, triggers when high >= price): 112.0 >= 105.0 ✓
+        #   Stop loss (SELL stop, triggers when high >= trigger_price): 112.0 >= 110.0 ✓
+        #   Take profit (BUY limit, triggers when low <= price): 88.0 <= 90.0 ✓, but take is NEW, and stops have priority
+        # Bar 2: low=88.0, take=90.0 - take profit triggers (88.0 <= 90.0) for remaining position
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            highs=[101.0, 112.0, 100.0],  # Bar 1 high=112.0 triggers limit entry at 105.0 and stop at 110.0 simultaneously
+            lows=[99.0, 88.0, 88.0]  # Bar 1 low=88.0 hits take profit at 90.0, but stops have priority; Bar 2 low=88.0 triggers take
+        )
+        
+        # Protocol: On bar 0, enter SELL with limit (1.0 at 105.0) with two stops (0.5 at 110.0, 0.5 at 115.0) and two take profits (0.5 at 90.0, 0.5 at 85.0)
+        # Entry price: 105.0 (limit, no slippage, fee_maker)
+        # Stop triggers: 110.0 (first stop executes as market, with slippage, fee_taker) - closes 0.5; 115.0 does NOT trigger (high=112.0 < 115.0)
+        # Take triggers: 90.0 (first take executes as limit, no slippage, fee_maker) - closes remaining 0.5 on bar 2; 85.0 does NOT trigger (low=88.0 > 85.0)
+        # Expected: limit entry triggers on bar 1, first stop triggers on bar 1 (closes 0.5), first take profit triggers on bar 2 (closes remaining 0.5)
+        # Expected profit calculation (with volume rounding to precision_amount=0.1):
+        # Entry volume: 1.0 (no rounding needed)
+        # Stop volumes: calculated from all requested entry volumes (1.0)
+        #   First stop: round(0.5 * 1.0 / 0.1) * 0.1 = round(5.0) * 0.1 = 5 * 0.1 = 0.5
+        #   Second stop (extreme): 1.0 - 0.5 = 0.5 (but doesn't trigger)
+        # Take volumes: calculated from CURRENT POSITION at the time of take activation/execution, NOT from entry volume
+        #   After stop closes 0.5 on bar 1, remaining position is 0.5 (SELL position, negative quantity: -0.5, but we use abs)
+        #   On bar 2, take volumes are recalculated from current position (0.5)
+        #   First take: round(0.5 * 0.5 / 0.1) * 0.1 = round(2.5) * 0.1 = 2 * 0.1 = 0.2 (banking rounding: round(2.5) = 2)
+        #   Second take (extreme): 0.5 - 0.2 = 0.3 (but doesn't trigger)
+        #   Remaining position after take: 0.5 - 0.2 = 0.3 (will be auto-closed at end of test)
+        entry_price = 105.0
+        entry_quantity = 1.0
+        stop_trigger_price1 = 110.0
+        stop_quantity1 = 0.5  # First stop closes half position
+        stop_trigger_price2 = 115.0  # Does NOT trigger (high=112.0 < 115.0)
+        take_price1 = 90.0
+        take_price2 = 85.0  # Does NOT trigger (low=88.0 > 85.0)
+        # IMPORTANT: Take profit volumes are calculated from CURRENT POSITION (0.5 after stop), NOT from entry volume (1.0)
+        # Fraction: 0.5
+        # Current position after stop: 0.5 (SELL position, but we use abs for calculation)
+        # First take: round(0.5 * 0.5 / 0.1) * 0.1 = round(2.5) * 0.1 = 2 * 0.1 = 0.2
+        take_quantity1 = 0.2  # round(0.5 * 0.5 / 0.1) * 0.1 = 0.2
+        remaining_quantity = 0.3  # 0.5 - 0.2 = 0.3 (will be auto-closed)
+        
+        entry_execution = entry_price  # 105.0 (limit, no slippage)
+        entry_fee = entry_execution * entry_quantity * test_task.fee_maker  # 105.0 * 1.0 * 0.0005 = 0.0525
+        
+        # Stop executes as market order (with slippage, fee_taker)
+        stop_execution = stop_trigger_price1 + test_task.slippage_in_steps * test_task.price_step  # 110.0 + 0.1 = 110.1 (BUY market, slippage increases price)
+        stop_fee = stop_execution * stop_quantity1 * test_task.fee_taker  # 110.1 * 0.5 * 0.001 = 0.05505
+        
+        # Take executes as limit order (no slippage, fee_maker)
+        take_execution = take_price1  # 90.0 (limit, no slippage)
+        # Take fee recalculated with correct volume: 90.0 * 0.2 * 0.0005 = 0.009
+        take_fee = take_execution * take_quantity1 * test_task.fee_maker  # 90.0 * 0.2 * 0.0005 = 0.009
+        
+        # Auto-close: remaining 0.3 position closed at last bar closing price (100.0) as market order (with slippage, fee_taker)
+        auto_close_price = 100.0  # Last bar closing price
+        # Auto-close is BUY market order (closing SELL position), slippage increases price
+        auto_close_execution = auto_close_price + test_task.slippage_in_steps * test_task.price_step  # 100.0 + 0.1 = 100.1
+        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 100.1 * 0.3 * 0.001 = 0.03003
+        
+        entry_proceeds = entry_execution * entry_quantity - entry_fee  # 105.0 * 1.0 - 0.0525 = 104.9475
+        exit_cost = stop_execution * stop_quantity1 + stop_fee + take_execution * take_quantity1 + take_fee + auto_close_execution * remaining_quantity + auto_close_fee  # 110.1*0.5 + 0.05505 + 90.0*0.2 + 0.009 + 100.1*0.3 + 0.03003 = 55.05505 + 18.009 + 30.03003 = 103.09408
+        expected_profit = entry_proceeds - exit_cost  # = 104.9475 - 103.09408 = 1.85342
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': [(1.0, 105.0)],  # One limit order
+                    'stop_loss': [(0.5, 110.0), (0.5, 115.0)],  # Two stops (0.5 + 0.5 = 1.0), only first triggers
+                    'take_profit': [(0.5, 90.0), (0.5, 85.0)]  # Two take profits (0.5 + 0.5 = 1.0), only first triggers
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_e1_2_limit_entry_stop_take_simultaneous_take_next_bar")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that entry and stop trigger on bar 1, take profit triggers on bar 2
+        # Bar 0: no execution (0 trades)
+        # Bar 1: entry and stop trigger simultaneously (2 trades - entry + stop), take profit does NOT trigger
+        # Bar 2: take profit triggers (3 trades total - entry + stop + take)
+        # After bar 2: auto-close of remaining position (4 trades total - entry + stop + take + auto-close)
+        assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
+        assert collected_data[1]['trades_count'] == 2, "Entry and stop should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "Take profit should trigger on bar 2"
+        
+        # Check final state: deal should be closed (auto-closed at end of test)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is not None, "Deal profit should be calculated"
+        
+        # Check total trades count (including auto-close)
+        assert len(broker.trades) == 4, f"Expected 4 trades total (entry + stop + take + auto-close), got {len(broker.trades)}"
+        
+        # Check actual profit matches expected calculation
+        assert abs(deal.profit - expected_profit) < 0.01, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
+        
+        # Check that entry order was executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 1, "Should have one entry limit order"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 1, "Entry order should be executed"
+        
+        # Check that first stop order was executed, second does NOT trigger
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 2, "Should have two stop loss orders"
+        executed_stops = [o for o in stop_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_stops) == 1, "First stop loss order should be executed"
+        active_stops = [o for o in stop_orders if o.status == OrderStatus.ACTIVE]
+        assert len(active_stops) == 0, "No stop orders should remain active after deal closes"
+        
+        # Check that first take profit order was executed (on bar 2), second does NOT trigger
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 2, "Should have two take profit orders"
+        executed_takes = [o for o in take_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_takes) == 1, "First take profit order should be executed on bar 2"
+        active_takes = [o for o in take_orders if o.status == OrderStatus.ACTIVE]
+        assert len(active_takes) == 0, "No take profit orders should remain active after deal closes"
+

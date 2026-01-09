@@ -915,10 +915,16 @@ class BrokerBacktesting(Broker):
         Check for triggered orders (limit and stop) on current bar and execute them.
         Uses vectorized operations to find triggered orders.
         
+        After executing orders, checks if any deals were closed and cancels
+        their remaining active and new orders.
+        
         Args:
             high: High price of current bar
             low: Low price of current bar
         """
+        # Track deal IDs that had order executions
+        deal_ids_with_executions = set()
+        
         # Check long limit orders (BUY): triggered if low <= price
         if len(self.long_order_ids) > 0:
             triggered_mask = low < self.long_order_prices
@@ -928,6 +934,9 @@ class BrokerBacktesting(Broker):
                 for order_id in triggered_order_ids:
                     order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                     self._execute_triggered_order(order, high, low)
+                    # Track deal_id if order has one
+                    if order.deal_id > 0:
+                        deal_ids_with_executions.add(order.deal_id)
         
         # Check short limit orders (SELL): triggered if high > price
         if len(self.short_order_ids) > 0:
@@ -938,6 +947,9 @@ class BrokerBacktesting(Broker):
                 for order_id in triggered_order_ids:
                     order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                     self._execute_triggered_order(order, high, low)
+                    # Track deal_id if order has one
+                    if order.deal_id > 0:
+                        deal_ids_with_executions.add(order.deal_id)
         
         # Check long stop orders (BUY): triggered if high >= trigger_price (breakout up)
         if len(self.long_stop_order_ids) > 0:
@@ -948,6 +960,9 @@ class BrokerBacktesting(Broker):
                 for order_id in triggered_order_ids:
                     order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                     self._execute_triggered_order(order, high, low)
+                    # Track deal_id if order has one
+                    if order.deal_id > 0:
+                        deal_ids_with_executions.add(order.deal_id)
         
         # Check short stop orders (SELL): triggered if low <= trigger_price (breakout down)
         if len(self.short_stop_order_ids) > 0:
@@ -958,6 +973,15 @@ class BrokerBacktesting(Broker):
                 for order_id in triggered_order_ids:
                     order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                     self._execute_triggered_order(order, high, low)
+                    # Track deal_id if order has one
+                    if order.deal_id > 0:
+                        deal_ids_with_executions.add(order.deal_id)
+        
+        # After all executions, check if any deals were closed and cancel their orders
+        for deal_id in deal_ids_with_executions:
+            deal = self.get_deal_by_id(deal_id)
+            if deal.is_closed:
+                self._cancel_deal_orders(deal)
     
     def _find_extreme_stop_order(self, deal: Deal) -> Optional[Order]:
         """
@@ -1238,6 +1262,25 @@ class BrokerBacktesting(Broker):
         
         return canceled_orders
     
+    def _cancel_deal_orders(self, deal: Deal) -> None:
+        """
+        Cancel all active and new orders in a deal.
+        
+        Sets order.status = CANCELED for all orders with status ACTIVE or NEW,
+        updates modify_time, and removes orders from numpy arrays.
+        
+        Args:
+            deal: Deal whose orders should be canceled
+        """
+        assert self.current_time is not None, "Cannot cancel deal orders: current_time is not set"
+        
+        for order in deal.orders:
+            if order.status in [OrderStatus.ACTIVE, OrderStatus.NEW]:
+                order.status = OrderStatus.CANCELED
+                order.modify_time = self.current_time
+                # Remove from numpy arrays
+                self._remove_order_from_np_arrays(order)
+    
     def close_deal(self, deal_id: int) -> None:
         """
         Close a specific deal by canceling all active orders and closing position.
@@ -1249,13 +1292,8 @@ class BrokerBacktesting(Broker):
         
         deal = self.get_deal_by_id(deal_id)
         
-        # Deactivate all active orders in the deal
-        for order in deal.orders:
-            if order.status == OrderStatus.ACTIVE:
-                order.status = OrderStatus.CANCELED
-                order.modify_time = self.current_time
-                # Remove from numpy arrays
-                self._remove_order_from_np_arrays(order)
+        # Deactivate all active and new orders in the deal
+        self._cancel_deal_orders(deal)
         
         # Close position if there is any
         # Use 1/10 of volume precision as tolerance for floating point comparison
