@@ -202,19 +202,6 @@
 - **F3.4**: Negative shares → validation error
 - **F3.5**: Shares > 1.0 → validation error
 
-#### F4. modify_deal Validation
-- **F4.1**: modify_deal - deal not found (invalid deal_id) → validation error
-- **F4.2**: modify_deal - deal already closed (quantity == 0) → validation error
-- **F4.3**: modify_deal - negative volume exceeds current position volume → validation error
-- **F4.4**: modify_deal LONG - buy limit order price above current price → validation error
-- **F4.5**: modify_deal SHORT - sell limit order price below current price → validation error
-- **F4.6**: modify_deal LONG - stop loss trigger price above current price → validation error
-- **F4.7**: modify_deal SHORT - stop loss trigger price below current price → validation error
-- **F4.8**: modify_deal LONG - take profit price below current price → validation error
-- **F4.9**: modify_deal SHORT - take profit price above current price → validation error
-- **F4.10**: modify_deal LONG - buy limit entry not protected by stop loss → validation error
-- **F4.11**: modify_deal SHORT - sell limit entry not protected by stop loss → validation error
-
 ---
 
 ### Group G: Edge Cases
@@ -312,6 +299,101 @@
 
 #### H5. modify_deal - Interleaved Orders
 - **H5.1**: H4.2 scenario → modify_deal to update interleaved orders
+  - Place sell_sltp with multiple limit entries and multiple take profits between them
+  - modify_deal to update stop loss and take profit
+  - Verify new orders maintain protection logic for all entries
+  - Verify position volume is preserved
+  - Test execution when price hits entries and updated exits in various combinations
+
+---
+
+### Group I: modify_deal Tests
+
+Tests for the `modify_deal()` method that modifies existing deals by canceling active orders and placing new ones.
+
+#### I1. modify_deal Validation
+- **I1.1**: modify_deal - deal not found (invalid deal_id) → validation error
+- **I1.2**: modify_deal - deal already closed (quantity == 0) → validation error
+- **I1.3**: modify_deal - negative volume exceeds current position volume → validation error
+- **I1.4**: modify_deal LONG - buy limit order price above current price → validation error
+- **I1.5**: modify_deal SHORT - sell limit order price below current price → validation error
+- **I1.6**: modify_deal LONG - stop loss trigger price above current price → validation error
+- **I1.7**: modify_deal SHORT - stop loss trigger price below current price → validation error
+- **I1.8**: modify_deal LONG - take profit price below current price → validation error
+- **I1.9**: modify_deal SHORT - take profit price above current price → validation error
+- **I1.10**: modify_deal LONG - buy limit entry not protected by stop loss → validation error
+- **I1.11**: modify_deal SHORT - sell limit entry not protected by stop loss → validation error
+
+#### I2. modify_deal - Basic Modification
+- **I2.1**: A4.1 scenario → modify_deal to update stop loss and take profit
+  - Place buy_sltp with multiple limit entries, only take profits
+  - After entries execute, modify_deal to add stop loss and update take profit
+  - Verify new orders are placed, old active orders are canceled
+  - Verify position volume is preserved
+
+#### I3. modify_deal - After Partial Execution
+- **I3.1**: B4.1 scenario → modify_deal to update remaining orders
+  - Place buy_sltp with multiple limit entries
+  - Part of entries trigger
+  - modify_deal to update stop loss and take profit for remaining position
+  - Verify new orders are placed with correct volumes based on remaining position
+  - Verify executed orders remain unchanged
+
+#### I4. modify_deal - After Complex Execution
+- **I4.1**: C5.1 scenario → modify_deal to update remaining orders
+  - Place buy_sltp with multiple limit entries and multiple stops
+  - Part of entries and part of stops trigger simultaneously
+  - modify_deal to update remaining stop loss and take profit
+  - Verify new orders are placed with correct volumes based on remaining position
+  - Verify executed orders remain unchanged
+
+#### I5. modify_deal - After Take Profit Execution
+- **I5.1**: D5.1 scenario → modify_deal to update remaining orders
+  - Place buy_sltp with multiple limit entries and multiple take profits
+  - Part of entries and part of take profits trigger simultaneously
+  - modify_deal to update remaining stop loss and take profit
+  - Verify new orders are placed with correct volumes based on remaining position
+  - Verify executed orders remain unchanged
+
+#### I6. modify_deal - After Most Complex Execution
+- **I6.1**: E6.1 scenario → modify_deal to update remaining orders
+  - Place buy_sltp with multiple limit entries, multiple stops, and multiple take profits
+  - Part of entries, part of stops, and part of take profits hit simultaneously
+  - modify_deal to update remaining stop loss and take profit
+  - Verify new orders are placed with correct volumes based on remaining position
+  - Verify executed orders remain unchanged
+  - Verify stop priority logic is maintained
+
+#### I7. modify_deal - Edge Cases
+- **I7.1**: modify_deal with unexecuted limit entry
+  - Place buy_sltp with limit entry (not executed)
+  - modify_deal to update stop loss and take profit
+  - Verify unexecuted entry order is canceled
+  - Verify new orders are placed
+  - Verify position volume is preserved (0 if entry didn't execute)
+- **I7.2**: modify_deal with enter=None (only update exits)
+  - Place buy_sltp with market entry, stop loss, take profit
+  - Entry executes
+  - modify_deal with enter=None, update stop loss and take profit
+  - Verify no new entry orders, only exit orders updated
+  - Verify position volume is preserved
+- **I7.3**: modify_deal with negative enter (close part of position)
+  - Place buy_sltp with market entry, stop loss, take profit
+  - Entry executes (position = 1.0)
+  - modify_deal with enter=-0.3 (close 0.3), update stop loss and take profit
+  - Verify market order to close 0.3 is placed
+  - Verify position volume decreases to 0.7
+  - Verify new exit orders are calculated based on remaining position
+- **I7.4**: modify_deal with positive enter (add to position)
+  - Place buy_sltp with market entry, stop loss, take profit
+  - Entry executes (position = 1.0)
+  - modify_deal with enter=0.5 (add 0.5), update stop loss and take profit
+  - Verify new entry order is placed
+  - Verify position volume increases to 1.5 after new entry executes
+  - Verify new exit orders are calculated based on total position
+
+#### I8. modify_deal - Interleaved Orders
+- **I8.1**: modify_deal to update interleaved orders
   - Place sell_sltp with multiple limit entries and multiple take profits between them
   - modify_deal to update stop loss and take profit
   - Verify new orders maintain protection logic for all entries
