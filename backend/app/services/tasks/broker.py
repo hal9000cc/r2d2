@@ -511,7 +511,7 @@ class Broker(ABC):
 
         raise NotImplementedError
 
-    def _cancel_deal_orders(self, deal: Deal, current_time: np.datetime64) -> None:
+    def _cancel_deal_orders(self, deal: Deal, current_time: np.datetime64) -> List[Order]:
         """
         Cancel all active and new orders in a deal.
         
@@ -521,10 +521,16 @@ class Broker(ABC):
         Args:
             deal: Deal whose orders should be canceled
             current_time: Current time for order modification
+        
+        Returns:
+            List of orders that were canceled
         """
+        canceled_orders = []
         for order in deal.orders:
             if order.status in [OrderStatus.ACTIVE, OrderStatus.NEW]:
                 self._cancel_order(order, current_time)
+                canceled_orders.append(order)
+        return canceled_orders
     
     def _cancel_order(self, order: Order, current_time: np.datetime64) -> None:
         """

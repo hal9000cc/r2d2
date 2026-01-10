@@ -632,7 +632,7 @@ class BrokerBacktesting(Broker):
         stop_losses: List[Tuple[Optional[float], PRICE_TYPE]],
         take_profits: List[Tuple[Optional[float], PRICE_TYPE]],
         existing_deal_id: Optional[int] = None
-    ) -> Optional[Deal]:
+    ) -> Tuple[Optional[Deal], List[Order], List[int]]:
         """
         Execute a deal with entry orders, stop losses, and take profits.
         
@@ -658,20 +658,23 @@ class BrokerBacktesting(Broker):
                              uses existing deal instead of creating new one.
         
         Returns:
-            Optional[Deal]: Copy of the deal that groups all orders (orders are in deal.orders),
-                          or None if deal was not created (e.g., due to errors)
+            Tuple[Optional[Deal], List[Order], List[int]]: 
+            - Deal that groups all orders (or None if deal was not created due to errors)
+            - List of new orders created in this call
+            - List of canceled order IDs (old orders canceled when modifying existing deal, or new orders canceled on error)
         """
         if self.current_time is None:
             raise RuntimeError("Cannot execute deal: current_time is not set")
         
         # 1. Handle existing deal or create new one
+        canceled_old_orders = []
         if existing_deal_id is not None:
             # Get existing deal
             deal = self.get_deal_by_id(existing_deal_id)
             deal_id = existing_deal_id
             
             # Cancel all active orders for the deal
-            self._cancel_deal_orders(deal, self.current_time)
+            canceled_old_orders = self._cancel_deal_orders(deal, self.current_time)
             
             # Use deal type from existing deal (should match provided deal_type)
             deal_type = deal.type
@@ -852,6 +855,9 @@ class BrokerBacktesting(Broker):
                 # At deal creation, current volume equals initial entry volume
                 self._update_take_profit_volumes(deal, deal.enter_volume, deal.enter_volume)
         
+        # 9.5. Collect all new orders created in this call
+        all_new_orders = entry_orders + stop_orders + take_orders
+        
         # 10. Form list of orders to execute
         orders_to_execute = []
         # Always add entry orders and stop orders
@@ -869,10 +875,19 @@ class BrokerBacktesting(Broker):
         has_errors = any(order.status == OrderStatus.ERROR for order in executed_orders)
         if has_errors:
             self.close_deal(deal_id)
-            return None
+            # Get deal after closing
+            deal = self.get_deal_by_id(deal_id)
+            # Collect IDs of canceled new orders (from all_new_orders with CANCELED status)
+            canceled_new_order_ids = [o.order_id for o in all_new_orders if o.status == OrderStatus.CANCELED]
+            # Combine old and new canceled order IDs
+            canceled_old_order_ids = [o.order_id for o in canceled_old_orders]
+            all_canceled_ids = canceled_old_order_ids + canceled_new_order_ids
+            return (deal, all_new_orders, all_canceled_ids)
         
-        # 13. Return deal
-        return self.get_deal_by_id(deal_id)
+        # 13. Return deal with new orders and canceled order IDs
+        deal = self.get_deal_by_id(deal_id)
+        canceled_old_order_ids = [o.order_id for o in canceled_old_orders]
+        return (deal, all_new_orders, canceled_old_order_ids)
     
     def _add_order_to_np_arrays(self, order: Order) -> None:
         """
@@ -1278,7 +1293,7 @@ class BrokerBacktesting(Broker):
         Returns:
             Extreme stop order or None if no stop orders exist
         """
-        stop_orders = [order for order in deal.orders if order.order_group == OrderGroup.STOP_LOSS]
+        stop_orders = [order for order in deal.orders if order.order_group == OrderGroup.STOP_LOSS and order.status in [OrderStatus.NEW, OrderStatus.ACTIVE]]
         if not stop_orders:
             return None
         

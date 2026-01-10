@@ -817,10 +817,10 @@ class Strategy(ABC):
             )
         
         # Execute deal through broker
-        deal = self.broker.execute_deal(DealType.LONG, entries, stop_losses, take_profits)
+        deal, new_orders, canceled_order_ids = self.broker.execute_deal(DealType.LONG, entries, stop_losses, take_profits)
         
-        # Get orders from deal (if deal was created)
-        orders = deal.orders if deal else []
+        # Get orders from new_orders (created in this call)
+        orders = new_orders if deal else []
         
         # Extract errors from orders
         all_errors = [error for order in orders for error in order.errors]
@@ -828,6 +828,7 @@ class Strategy(ABC):
         # Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
         executed_ids = [order.order_id for order in orders if order.status == OrderStatus.EXECUTED]
+        canceled_ids = canceled_order_ids
         error_ids = [order.order_id for order in orders if order.status == OrderStatus.ERROR]
         
         # Log errors if any
@@ -843,6 +844,7 @@ class Strategy(ABC):
             error_messages=all_errors,
             active=active_ids,
             executed=executed_ids,
+            canceled=canceled_ids,
             error=error_ids,
             deal_id=deal_id,
             volume=volume
@@ -913,10 +915,10 @@ class Strategy(ABC):
             )
         
         # Execute deal through broker
-        deal = self.broker.execute_deal(DealType.SHORT, entries, stop_losses, take_profits)
+        deal, new_orders, canceled_order_ids = self.broker.execute_deal(DealType.SHORT, entries, stop_losses, take_profits)
         
-        # Get orders from deal (if deal was created)
-        orders = deal.orders if deal else []
+        # Get orders from new_orders (created in this call)
+        orders = new_orders if deal else []
         
         # Extract errors from orders
         all_errors = [error for order in orders for error in order.errors]
@@ -924,6 +926,7 @@ class Strategy(ABC):
         # Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
         executed_ids = [order.order_id for order in orders if order.status == OrderStatus.EXECUTED]
+        canceled_ids = canceled_order_ids
         error_ids = [order.order_id for order in orders if order.status == OrderStatus.ERROR]
         
         # Log errors if any
@@ -939,6 +942,7 @@ class Strategy(ABC):
             error_messages=all_errors,
             active=active_ids,
             executed=executed_ids,
+            canceled=canceled_ids,
             error=error_ids,
             deal_id=deal_id,
             volume=volume
@@ -1166,7 +1170,7 @@ class Strategy(ABC):
             )
         
         # 9. Execute deal through broker with existing deal_id
-        deal_result = self.broker.execute_deal(
+        deal_result, new_orders, canceled_order_ids = self.broker.execute_deal(
             deal_type,
             entries,
             stop_losses,
@@ -1174,8 +1178,8 @@ class Strategy(ABC):
             existing_deal_id=deal_id
         )
         
-        # 11. Get orders from deal (if deal was created/updated)
-        orders = deal_result.orders if deal_result else []
+        # 11. Get orders from new_orders (created in this call)
+        orders = new_orders if deal_result else []
         
         # 12. Extract errors from orders
         all_errors = [error for order in orders for error in order.errors]
@@ -1183,7 +1187,7 @@ class Strategy(ABC):
         # 13. Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
         executed_ids = [order.order_id for order in orders if order.status == OrderStatus.EXECUTED]
-        canceled_ids = [order.order_id for order in orders if order.status == OrderStatus.CANCELED]
+        canceled_ids = canceled_order_ids
         error_ids = [order.order_id for order in orders if order.status == OrderStatus.ERROR]
         
         # 14. Log errors if any

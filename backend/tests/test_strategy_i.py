@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import Mock, patch
 
 from app.services.tasks.strategy import OrderOperationResult
-from app.services.tasks.broker import OrderSide, OrderType, OrderStatus
+from app.services.tasks.broker import OrderSide, OrderType, OrderStatus, OrderGroup
 
 # Import helpers from test_strategy_helpers
 from tests.test_strategy_helpers import (
@@ -172,8 +172,8 @@ class TestModifyDealValidation:
     def test_modify_deal_negative_volume_exceeds_position(self, test_task):
         """Test I1.3: modify_deal - negative volume exceeds current position volume → validation error."""
         quotes_data = create_custom_quotes_data(
-            prices=[100.0],
-            highs=[101.0]
+            prices=[100.0, 100.0],  # Need 2 bars: one for buy_sltp, one for modify_deal
+            highs=[101.0, 101.0]
         )
         
         protocol = [
@@ -187,7 +187,7 @@ class TestModifyDealValidation:
                 }
             },
             {
-                'bar_index': 0,
+                'bar_index': 1,  # On next bar after buy_sltp (TestStrategy executes only one action per bar)
                 'method': 'modify_deal',
                 'args': {
                     'deal_id': None,  # Will be set from first result
@@ -211,7 +211,7 @@ class TestModifyDealValidation:
             collected_data.append(data)
             
             # Get deal_id from first result
-            if method_result and method_result.deal_id > 0 and deal_id is None:
+            if bar_index == 0 and method_result and method_result.deal_id > 0:
                 deal_id = method_result.deal_id
                 # Update protocol for modify_deal
                 for action in strategy.test_protocol:
@@ -235,18 +235,19 @@ class TestModifyDealValidation:
                 broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_modify_deal_i1_3_negative_volume_exceeds_position")
                 broker.run(save_results=False)
         
-        # Check results - should have 2 method results (buy_sltp and modify_deal)
-        modify_results = [d['method_result'] for d in collected_data if d.get('method_result')]
-        assert len(modify_results) >= 2, f"Expected at least 2 method results, got {len(modify_results)}"
+        # Check results
+        assert len(collected_data) == 2, f"Expected 2 bars, got {len(collected_data)}"
         
-        # Find modify_deal result
-        modify_result = None
-        for result in modify_results:
-            if result and len(result.error_messages) > 0:
-                modify_result = result
-                break
+        # Check buy_sltp result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        buy_result = collected_data[0]['method_result']
+        assert isinstance(buy_result, OrderOperationResult)
+        assert buy_result.deal_id > 0
         
-        assert modify_result is not None, "Should have modify_deal result with errors"
+        # Check modify_deal result on bar 1
+        assert collected_data[1]['method_result'] is not None
+        modify_result = collected_data[1]['method_result']
+        assert isinstance(modify_result, OrderOperationResult)
         
         # Should have validation errors
         assert len(modify_result.error_messages) > 0, "Should have validation errors"
@@ -878,4 +879,254 @@ class TestModifyDealValidation:
         assert len(method_result.error_messages) > 0, "Should have validation errors"
         assert any("not protected by stop loss" in msg for msg in method_result.error_messages), \
             f"Should have error about entry not protected by stop loss, got: {method_result.error_messages}"
+
+
+# ============================================================================
+# Group I2: modify_deal - Basic Modification
+# ============================================================================
+
+class TestModifyDealBasicModification:
+    """Test I2: Basic modification scenarios for modify_deal."""
+    
+    def test_modify_deal_basic_modification(self, test_task):
+        """Test I2.1: A4.1 scenario → modify_deal to update stop loss and take profit."""
+        # Prepare quotes data: price 100.0, drops to trigger limits, then modify_deal on bar 2
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 99.0, 95.0, 100.0],  # Bar 1 triggers first limit, Bar 2 triggers second limit, Bar 3 for modify_deal
+            lows=[99.0, 98.0, 94.0, 99.0],  # Bar 1 triggers first limit, Bar 2 triggers second limit
+            highs=[101.0, 100.0, 96.0, 101.0]
+        )
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': [(0.5, 99.0), (0.5, 95.0)],
+                    'take_profit': 110.0
+                    # No stop_loss initially
+                }
+            },
+            {
+                'bar_index': 2,  # After both entries execute
+                'method': 'modify_deal',
+                'args': {
+                    'deal_id': None,  # Will be set from first result
+                    'stop_loss': 90.0,  # Add stop loss
+                    'take_profit': 115.0  # Update take profit
+                }
+            }
+        ]
+        
+        collected_data = []
+        deal_id = None
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            nonlocal deal_id
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'method_result': method_result
+            }
+            collected_data.append(data)
+            
+            # Get deal_id from first result
+            if bar_index == 0 and method_result and method_result.deal_id > 0:
+                deal_id = method_result.deal_id
+                # Update protocol for modify_deal
+                for action in strategy.test_protocol:
+                    if action.get('method') == 'modify_deal':
+                        action['args']['deal_id'] = deal_id
+                        break
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_modify_deal_i2_1_basic_modification")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 4, f"Expected 4 bars, got {len(collected_data)}"
+        
+        # Check buy_sltp result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        buy_result = collected_data[0]['method_result']
+        assert isinstance(buy_result, OrderOperationResult)
+        assert len(buy_result.error_messages) == 0, f"Should not have errors, got: {buy_result.error_messages}"
+        assert buy_result.deal_id > 0
+        
+        # Check modify_deal result on bar 2
+        assert collected_data[2]['method_result'] is not None
+        modify_result = collected_data[2]['method_result']
+        assert isinstance(modify_result, OrderOperationResult)
+        assert len(modify_result.error_messages) == 0, f"Should not have errors, got: {modify_result.error_messages}"
+        assert modify_result.deal_id == deal_id, "Should return the same deal_id"
+        
+        # Verify new orders are placed (stop loss + updated take profit)
+        assert len(modify_result.orders) >= 2, "Should have at least stop loss and take profit orders"
+        
+        # Check that stop loss order is present
+        stop_orders = [o for o in modify_result.orders if o.order_type == OrderType.STOP]
+        assert len(stop_orders) == 1, "Should have one stop loss order"
+        assert stop_orders[0].trigger_price == 90.0, "Stop loss trigger price should be 90.0"
+        
+        # Check that new take profit order is created (modify_result.orders contains only new orders)
+        take_orders = [o for o in modify_result.orders if o.order_type == OrderType.LIMIT and o.side == OrderSide.SELL]
+        assert len(take_orders) == 1, "Should have one new take profit order in modify_result.orders"
+        assert take_orders[0].price == 115.0, "New take profit price should be 115.0"
+        
+        # Verify deal exists and was closed after backtesting (close_deals is called at the end)
+        deal = broker.get_deal_by_id(deal_id)
+        assert deal is not None, "Deal should exist"
+        # After broker.run() completes, all open deals are closed, so quantity should be 0
+        assert deal.quantity == 0.0, f"Deal should be closed after backtesting (quantity=0.0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be marked as closed after backtesting"
+        
+        # Verify old active orders are canceled and new ones are created
+        # After close_deals(), all active orders are canceled, so we check that both orders exist
+        # Check all take profit orders in the deal to see both old and new ones
+        all_take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(all_take_orders) >= 2, "Should have at least 2 take profit orders (old + new)"
+        
+        # Find old take profit (110.0) - should be canceled (was canceled by modify_deal)
+        old_take = [o for o in all_take_orders if o.price == 110.0]
+        assert len(old_take) == 1, "Should have one old take profit order at 110.0"
+        assert old_take[0].status == OrderStatus.CANCELED, "Old take profit at 110.0 should be canceled"
+        
+        # Find new take profit (115.0) - should be canceled (was canceled by close_deals at the end)
+        new_take = [o for o in all_take_orders if o.price == 115.0]
+        assert len(new_take) == 1, "Should have one new take profit order at 115.0"
+        assert new_take[0].status == OrderStatus.CANCELED, "New take profit at 115.0 should be canceled (deal was closed at the end)"
+        
+        # Verify canceled list contains the old take profit order ID
+        assert old_take[0].order_id in modify_result.canceled, "Old take profit order ID should be in canceled list"
+
+
+# ============================================================================
+# Group I7: modify_deal - Edge Cases
+# ============================================================================
+
+class TestModifyDealEdgeCases:
+    """Test I7: Edge case scenarios for modify_deal."""
+    
+    def test_modify_deal_enter_none_only_update_exits(self, test_task):
+        """Test I7.2: modify_deal with enter=None (only update exits)."""
+        # Prepare quotes data: price 100.0, market entry executes immediately
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0],  # Bar 0: entry executes, Bar 1: modify_deal
+            highs=[101.0, 101.0],
+            lows=[99.0, 99.0]
+        )
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': 1.0,  # Market entry
+                    'stop_loss': 90.0,
+                    'take_profit': 110.0
+                }
+            },
+            {
+                'bar_index': 1,
+                'method': 'modify_deal',
+                'args': {
+                    'deal_id': None,  # Will be set from first result
+                    'enter': None,  # No new entry orders
+                    'stop_loss': 95.0,  # Update stop loss
+                    'take_profit': 115.0  # Update take profit
+                }
+            }
+        ]
+        
+        collected_data = []
+        deal_id = None
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            nonlocal deal_id
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'method_result': method_result
+            }
+            collected_data.append(data)
+            
+            # Get deal_id from first result
+            if bar_index == 0 and method_result and method_result.deal_id > 0:
+                deal_id = method_result.deal_id
+                # Update protocol for modify_deal
+                for action in strategy.test_protocol:
+                    if action.get('method') == 'modify_deal':
+                        action['args']['deal_id'] = deal_id
+                        break
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_modify_deal_i7_2_enter_none")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 2, f"Expected 2 bars, got {len(collected_data)}"
+        
+        # Check buy_sltp result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        buy_result = collected_data[0]['method_result']
+        assert isinstance(buy_result, OrderOperationResult)
+        assert len(buy_result.error_messages) == 0, f"Should not have errors, got: {buy_result.error_messages}"
+        assert buy_result.deal_id > 0
+        
+        # Check modify_deal result on bar 1
+        assert collected_data[1]['method_result'] is not None
+        modify_result = collected_data[1]['method_result']
+        assert isinstance(modify_result, OrderOperationResult)
+        assert len(modify_result.error_messages) == 0, f"Should not have errors, got: {modify_result.error_messages}"
+        assert modify_result.deal_id == deal_id, "Should return the same deal_id"
+        
+        # Verify no new entry orders
+        entry_orders = [o for o in modify_result.orders if o.order_type == OrderType.MARKET or 
+                       (o.order_type == OrderType.LIMIT and o.side == OrderSide.BUY)]
+        assert len(entry_orders) == 0, "Should not have any new entry orders"
+        
+        # Verify only exit orders are updated
+        exit_orders = [o for o in modify_result.orders if o.side == OrderSide.SELL]
+        assert len(exit_orders) == 2, "Should have two exit orders (stop loss + take profit)"
+        
+        # Check that stop loss order is updated
+        stop_orders = [o for o in exit_orders if o.order_type == OrderType.STOP]
+        assert len(stop_orders) == 1, "Should have one stop loss order"
+        assert stop_orders[0].trigger_price == 95.0, "Stop loss trigger price should be updated to 95.0"
+        
+        # Check that take profit order is updated
+        take_orders = [o for o in exit_orders if o.order_type == OrderType.LIMIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        assert take_orders[0].price == 115.0, "Take profit price should be updated to 115.0"
+        
+        # Verify deal exists and was closed after backtesting (close_deals is called at the end)
+        deal = broker.get_deal_by_id(deal_id)
+        assert deal is not None, "Deal should exist"
+        # After broker.run() completes, all open deals are closed, so quantity should be 0
+        assert deal.quantity == 0.0, f"Deal should be closed after backtesting (quantity=0.0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be marked as closed after backtesting"
 
