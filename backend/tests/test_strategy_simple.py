@@ -242,20 +242,6 @@ class TestStrategyDirect:
         result = Strategy.get_parameters_description()
         assert result == {}
     
-    def test_buy_without_broker(self):
-        """Test buy() raises RuntimeError when broker is not set."""
-        strategy = SimpleTestStrategy()
-        
-        with pytest.raises(AttributeError):
-            strategy.buy(quantity=1.0)
-    
-    def test_sell_without_broker(self):
-        """Test sell() raises AttributeError when broker is not set."""
-        strategy = SimpleTestStrategy()
-        
-        with pytest.raises(AttributeError):
-            strategy.sell(quantity=1.0)
-    
     def test_cancel_orders_without_broker(self):
         """Test cancel_orders() raises AttributeError when broker is not set."""
         strategy = SimpleTestStrategy()

@@ -612,6 +612,152 @@ else:
 - Orders are categorized by status: `active`, `executed`, `canceled`, `error`
 - The `volume` field contains the current position volume for the specified deal (`deal.quantity`)
 
+### `modify_deal(deal_id, enter, stop_loss, take_profit)`
+
+Modifies an existing deal by canceling all active orders and placing new ones. The existing position volume in the market is preserved. The deal direction (long/short) cannot be changed.
+
+```python
+# Modify deal: update stop loss and take profit, keep existing position
+result = self.modify_deal(
+    deal_id=5,
+    stop_loss=90.0,  # New stop loss
+    take_profit=110.0  # New take profit
+)
+
+# Modify deal: add more volume via limit orders, update exits
+result = self.modify_deal(
+    deal_id=5,
+    enter=[(0.5, 99.0), (0.5, 98.0)],  # Add 1.0 more via limit orders
+    stop_loss=[(0.5, 90.0), (0.5, 88.0)],  # Multiple stops
+    take_profit=110.0
+)
+
+# Modify deal: add volume via market order
+result = self.modify_deal(
+    deal_id=5,
+    enter=0.5,  # Add 0.5 more at market
+    stop_loss=90.0,
+    take_profit=110.0
+)
+
+# Modify deal: close part of position via market order
+result = self.modify_deal(
+    deal_id=5,
+    enter=-0.3,  # Close 0.3 at market
+    stop_loss=90.0,
+    take_profit=110.0
+)
+```
+
+**Parameters:**
+- `deal_id`: ID of the deal to modify (required)
+- `enter`: Entry order(s) - same format as `buy_sltp()`/`sell_sltp()`, or `None`/`0` to skip adding new entry orders, or negative value to close part of position (optional)
+- `stop_loss`: Stop loss order(s) - same format as `buy_sltp()`/`sell_sltp()` (optional)
+- `take_profit`: Take profit order(s) - same format as `buy_sltp()`/`sell_sltp()` (optional)
+
+**Returns:** `OrderOperationResult` with all orders (new entry + exit if specified), categorized by status.
+
+**Features:**
+- **Deal Direction Preservation**: The deal direction (long/short) cannot be changed. The function will validate that new orders match the existing deal type.
+- **Order Cancellation**: All active (ACTIVE/NEW) orders for the specified deal are canceled before placing new orders. Executed orders remain in the deal and are not canceled.
+- **Position Preservation**: The existing position volume (`deal.quantity`) in the market is preserved. New entry orders add to the position, negative values close part of the position.
+- **Enter Parameter**:
+  - If `enter` is not specified, `enter=None`, or `enter=0`, no new entry orders are created. The existing position volume is preserved.
+  - If `enter` is a positive value, new entry orders are placed according to the same rules as `buy_sltp()`/`sell_sltp()`:
+    - Market order: `enter=volume` (single positive value)
+    - Limit order: `enter=(volume, price)` (single tuple with positive volume)
+    - Multiple limit orders: `enter=[(volume1, price1), (volume2, price2), ...]` (all volumes positive)
+  - If `enter` is a negative value, a market order is placed to close part of the position:
+    - Market close: `enter=-volume` (single negative value)
+    - The absolute value must not exceed the current position volume (`abs(enter) <= abs(deal.quantity)`), otherwise the deal would reverse direction, which is not allowed
+    - For LONG deals: negative `enter` creates a SELL market order
+    - For SHORT deals: negative `enter` creates a BUY market order
+  - For increasing position volume with limit orders:
+    - For LONG deals: buy limit orders (price below current price) or buy market orders are allowed
+    - For SHORT deals: sell limit orders (price above current price) or sell market orders are allowed
+- **Stop Loss and Take Profit**:
+  - Same format as `buy_sltp()`/`sell_sltp()`: single price, list of prices (equal parts), or list of (fraction, price) tuples
+  - **Direction Constraints** (automatically enforced based on deal type):
+    - For LONG deals:
+      - Stop loss orders: SELL STOP orders (trigger_price below current price)
+      - Take profit orders: SELL LIMIT orders (price above current price)
+    - For SHORT deals:
+      - Stop loss orders: BUY STOP orders (trigger_price above current price)
+      - Take profit orders: BUY LIMIT orders (price below current price)
+- **Volume Calculation**: Stop loss and take profit volumes are calculated from the total entry volume. The total entry volume is calculated as: `current position volume + new positive enter orders - closed volume (from negative enter)`. This follows the same rules as `buy_sltp()`/`sell_sltp()`.
+- **Enter Volume Update**: The `deal.enter_volume` field is updated to reflect the new total entry volume: `new_enter_volume = current_position_volume + new_positive_enter - closed_volume`.
+- **Error Handling**:
+  - If `deal_id` is not found, returns error in `error_messages`
+  - If deal is closed (`deal.quantity == 0`), returns error in `error_messages`
+  - If deal direction validation fails, returns error in `error_messages`
+  - If price validation fails (e.g., wrong direction for stop/take, limit order price in wrong direction), returns error in `error_messages`
+  - If negative `enter` value exceeds current position volume, returns error in `error_messages`
+- **Return Value**: The `deal_id` field in the result equals the modified deal ID. The `volume` field contains the current position volume for the deal (`deal.quantity`) after modification.
+
+**Restrictions:**
+1. **Deal Direction**: The deal direction (long/short) cannot be changed. Attempting to place orders with the wrong direction will result in an error.
+2. **Closed Deals**: If the deal is already closed (`deal.quantity == 0`), the function returns an error.
+3. **Limit Order Direction**: 
+   - For LONG deals: buy limit orders must have price below current price
+   - For SHORT deals: sell limit orders must have price above current price
+4. **Stop Loss Direction**: 
+   - For LONG deals: stop loss must be SELL STOP (trigger_price below current price)
+   - For SHORT deals: stop loss must be BUY STOP (trigger_price above current price)
+5. **Take Profit Direction**:
+   - For LONG deals: take profit must be SELL LIMIT (price above current price)
+   - For SHORT deals: take profit must be BUY LIMIT (price below current price)
+6. **Negative Enter Constraint**: The absolute value of negative `enter` must not exceed the current position volume. For example, if `deal.quantity = 1.0` for a LONG deal, `enter=-1.5` is not allowed as it would reverse the position.
+
+**Examples:**
+
+```python
+# Example 1: Update only stop loss and take profit, no new entry
+result = self.modify_deal(
+    deal_id=5,
+    stop_loss=90.0,
+    take_profit=110.0
+)
+
+# Example 2: Add more volume via limit orders and update exits
+result = self.modify_deal(
+    deal_id=5,
+    enter=[(0.3, 99.0), (0.2, 98.0)],  # Add 0.5 more via limit orders (below current price for LONG)
+    stop_loss=[(0.5, 90.0), (0.5, 88.0)],
+    take_profit=[(0.3, 110.0), (0.4, 112.0), (0.3, 114.0)]
+)
+
+# Example 3: Add volume via market order
+result = self.modify_deal(
+    deal_id=5,
+    enter=0.5,  # Add 0.5 more at market
+    stop_loss=90.0,
+    take_profit=110.0
+)
+
+# Example 4: Close part of position via market order
+result = self.modify_deal(
+    deal_id=5,
+    enter=-0.3,  # Close 0.3 at market (must not exceed current position volume)
+    stop_loss=90.0,
+    take_profit=110.0
+)
+
+# Example 5: Only update stop loss, remove take profit
+result = self.modify_deal(
+    deal_id=5,
+    stop_loss=92.0,  # New stop loss
+    take_profit=None  # No take profit (all take profit orders will be canceled)
+)
+
+# Example 6: Add volume and update exits in one call
+result = self.modify_deal(
+    deal_id=5,
+    enter=0.2,  # Add 0.2 more at market
+    stop_loss=95.0,  # Update stop loss
+    take_profit=[(0.5, 110.0), (0.5, 115.0)]  # Update take profit with multiple levels
+)
+```
+
 ---
 
 ## Logging

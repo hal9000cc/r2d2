@@ -627,31 +627,35 @@ class BrokerBacktesting(Broker):
     
     def execute_deal(
         self,
-        side: OrderSide,
+        deal_type: DealType,
         entries: List[Tuple[VOLUME_TYPE, Optional[PRICE_TYPE]]],
         stop_losses: List[Tuple[Optional[float], PRICE_TYPE]],
-        take_profits: List[Tuple[Optional[float], PRICE_TYPE]]
+        take_profits: List[Tuple[Optional[float], PRICE_TYPE]],
+        existing_deal_id: Optional[int] = None
     ) -> Optional[Deal]:
         """
         Execute a deal with entry orders, stop losses, and take profits.
         
-        This is an internal method used by buy_sltp() and sell_sltp() methods.
+        This is an internal method used by buy_sltp(), sell_sltp(), and modify_deal() methods.
         
         Args:
-            side: Order side (BUY or SELL)
+            deal_type: Deal type (LONG or SHORT)
             entries: List of entry orders as (volume, price) tuples.
                     Price can be None for market orders. If price is None (market order),
                     the list must contain only one element.
+                    Volume can be negative for closing position (only for existing deals).
             stop_losses: List of stop loss orders as (fraction, price) tuples.
                         Fraction can be None for "all remaining" - this should be
                         the order with the farthest price from entry points.
-                        For BUY: farthest = minimum price.
-                        For SELL: farthest = maximum price.
+                        For LONG: farthest = minimum price.
+                        For SHORT: farthest = maximum price.
             take_profits: List of take profit orders as (fraction, price) tuples.
                          Fraction can be None for "all remaining" - this should be
                          the order with the farthest price from entry points.
-                         For BUY: farthest = maximum price.
-                         For SELL: farthest = minimum price.
+                         For LONG: farthest = maximum price.
+                         For SHORT: farthest = minimum price.
+            existing_deal_id: Optional existing deal ID for modification. If provided,
+                             uses existing deal instead of creating new one.
         
         Returns:
             Optional[Deal]: Copy of the deal that groups all orders (orders are in deal.orders),
@@ -660,22 +664,51 @@ class BrokerBacktesting(Broker):
         if self.current_time is None:
             raise RuntimeError("Cannot execute deal: current_time is not set")
         
-        # 1. Create deal
-        deal_id = self.create_deal()
+        # 1. Handle existing deal or create new one
+        if existing_deal_id is not None:
+            # Get existing deal
+            deal = self.get_deal_by_id(existing_deal_id)
+            deal_id = existing_deal_id
+            
+            # Cancel all active orders for the deal
+            self._cancel_deal_orders(deal, self.current_time)
+            
+            # Use deal type from existing deal (should match provided deal_type)
+            deal_type = deal.type
+            
+            # Get current position volume
+            current_position_volume = abs(deal.quantity)
+        else:
+            # Create new deal
+            deal_id = self.create_deal()
+            deal = self.get_deal_by_id(deal_id)
+            current_position_volume = 0.0
         
-        # 2. Check market entry constraint
-        market_entry_count = sum(1 for _, price in entries if price is None)
-        if market_entry_count > 0:
-            assert len(entries) == 1, f"Market entry (price=None) must be the only entry, got {len(entries)} entries"
+        # Determine side from deal type
+        side = OrderSide.BUY if deal_type == DealType.LONG else OrderSide.SELL
         
-        # 3. Determine entry type and calculate total volume
-        is_market_entry = market_entry_count > 0
-        total_entry_volume = sum(vol for vol, _ in entries)
-        assert total_entry_volume > 0, f"Total entry volume must be positive, got {total_entry_volume}"
+        # 2. Separate positive and negative entries
+        positive_entries = [(vol, price) for vol, price in entries if vol > 0]
+        negative_entries = [(vol, price) for vol, price in entries if vol < 0]
         
-        # 4. Create entry orders
+        # 3. Check market entry constraint (only for positive entries)
+        if positive_entries:
+            market_entry_count = sum(1 for _, price in positive_entries if price is None)
+            if market_entry_count > 0:
+                assert len(positive_entries) == 1, f"Market entry (price=None) must be the only entry, got {len(positive_entries)} entries"
+        
+        # 4. Determine entry type and calculate volumes
+        is_market_entry = len(positive_entries) > 0 and sum(1 for _, price in positive_entries if price is None) > 0
+        new_positive_enter = sum(vol for vol, _ in positive_entries)
+        closed_volume = sum(abs(vol) for vol, _ in negative_entries)
+        
+        # For new deals, total entry volume must be positive
+        if existing_deal_id is None:
+            assert new_positive_enter > 0, f"Total entry volume must be positive, got {new_positive_enter}"
+        
+        # 5. Create entry orders for positive volumes
         entry_orders = []
-        for volume, price in entries:
+        for volume, price in positive_entries:
             if price is None:
                 # Market order
                 order = Order(
@@ -715,14 +748,38 @@ class BrokerBacktesting(Broker):
             entry_orders.append(order)
             self._add_order(order)
         
-        # 5. Set deal type based on entry side and store initial entry volume
-        deal = self.get_deal_by_id(deal_id)
-        if side == OrderSide.BUY:
-            deal.type = DealType.LONG
-        else:  # OrderSide.SELL
-            deal.type = DealType.SHORT
-        # Store initial entry volume for calculating stop/take target volumes
-        deal.enter_volume = total_entry_volume
+        # 6. Create market orders for negative volumes (closing position)
+        opposite_side = OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY
+        for volume, price in negative_entries:
+            # Negative volume means closing position - create opposite side market order
+            close_volume = abs(volume)
+            order = Order(
+                order_id=0,  # Will be assigned by _add_order
+                deal_id=deal_id,
+                order_type=OrderType.MARKET,
+                create_time=self.current_time,
+                modify_time=self.current_time,
+                side=opposite_side,
+                price=None,
+                trigger_price=None,
+                volume=close_volume,
+                filled_volume=0.0,
+                status=OrderStatus.NEW,
+                order_group=OrderGroup.NONE,
+                fraction=None,
+                errors=[]
+            )
+            entry_orders.append(order)
+            self._add_order(order)
+        
+        # 7. Set deal type and update enter_volume
+        deal.type = deal_type
+        if existing_deal_id is not None:
+            # Update enter_volume: current_position_volume + new_positive_enter - closed_volume
+            deal.enter_volume = current_position_volume + new_positive_enter - closed_volume
+        else:
+            # Store initial entry volume for calculating stop/take target volumes
+            deal.enter_volume = new_positive_enter
         
         # 6. Create stop loss orders (with temporary volume=0, will be updated later)
         stop_orders = []
@@ -779,21 +836,29 @@ class BrokerBacktesting(Broker):
         
         # 8. Update stop loss volumes using extreme stop logic
         if stop_orders:
-            # At deal creation, current volume equals initial entry volume
-            self._update_stop_loss_volumes(deal, total_entry_volume, total_entry_volume)
+            if existing_deal_id is not None:
+                # For existing deal, use current position volume
+                self._update_stop_loss_volumes(deal, deal.enter_volume, current_position_volume)
+            else:
+                # At deal creation, current volume equals initial entry volume
+                self._update_stop_loss_volumes(deal, deal.enter_volume, deal.enter_volume)
         
         # 9. Update take profit volumes using extreme take logic
         if take_orders:
-            # At deal creation, current volume equals initial entry volume
-            self._update_take_profit_volumes(deal, total_entry_volume, total_entry_volume)
+            if existing_deal_id is not None:
+                # For existing deal, use current position volume
+                self._update_take_profit_volumes(deal, deal.enter_volume, current_position_volume)
+            else:
+                # At deal creation, current volume equals initial entry volume
+                self._update_take_profit_volumes(deal, deal.enter_volume, deal.enter_volume)
         
         # 10. Form list of orders to execute
         orders_to_execute = []
         # Always add entry orders and stop orders
         orders_to_execute.extend(entry_orders)
         orders_to_execute.extend(stop_orders)
-        # Add take profit orders only for market entry
-        if is_market_entry:
+        # Add take profit orders only for market entry (or if no entry orders for existing deal)
+        if is_market_entry or (existing_deal_id is not None and not entry_orders):
             orders_to_execute.extend(take_orders)
         # Note: take profit orders for limit entry remain in NEW status and will be activated later
         

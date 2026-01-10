@@ -23,6 +23,13 @@
 - **A3.5**: Multiple limit entries, only stops
 - **A3.6**: Multiple limit entries, only take profits
 
+#### A4. modify_deal - Basic Modification
+- **A4.1**: A3.6 scenario → modify_deal to update stop loss and take profit
+  - Place buy_sltp with multiple limit entries, only take profits
+  - After entries execute, modify_deal to add stop loss and update take profit
+  - Verify new orders are placed, old active orders are canceled
+  - Verify position volume is preserved
+
 ---
 
 ### Group B: Order Execution - Simple Cases
@@ -48,6 +55,14 @@
 - **B3.5**: Multiple limit entries → only one triggers
 - **B3.6**: Multiple limit entries → part triggers
 
+#### B4. modify_deal - After Partial Execution
+- **B4.1**: B3.6 scenario → modify_deal to update remaining orders
+  - Place buy_sltp with multiple limit entries
+  - Part of entries trigger
+  - modify_deal to update stop loss and take profit for remaining position
+  - Verify new orders are placed with correct volumes based on remaining position
+  - Verify executed orders remain unchanged
+
 ---
 
 ### Group C: Order Execution - Complex Cases (Entries + Stops Simultaneously)
@@ -69,6 +84,14 @@
 - **C4.1**: Multiple limit entries and part of stops hit simultaneously → all entries + part of stops
 - **C4.2**: Multiple limit entries and part of stops hit simultaneously → part of entries + part of stops
 
+#### C5. modify_deal - After Complex Execution
+- **C5.1**: C4.2 scenario → modify_deal to update remaining orders
+  - Place buy_sltp with multiple limit entries and multiple stops
+  - Part of entries and part of stops trigger simultaneously
+  - modify_deal to update remaining stop loss and take profit
+  - Verify new orders are placed with correct volumes based on remaining position
+  - Verify executed orders remain unchanged
+
 ---
 
 ### Group D: Order Execution - Complex Cases (Entries + Takes Simultaneously)
@@ -86,6 +109,14 @@
 #### D4. Multiple Entries, Part of Take Profits
 - **D4.1**: Multiple limit entries and part of take profits hit simultaneously → all entries + part of takes
 - **D4.2**: Multiple limit entries and part of take profits hit simultaneously → part of entries + part of takes
+
+#### D5. modify_deal - After Take Profit Execution
+- **D5.1**: D4.2 scenario → modify_deal to update remaining orders
+  - Place buy_sltp with multiple limit entries and multiple take profits
+  - Part of entries and part of take profits trigger simultaneously
+  - modify_deal to update remaining stop loss and take profit
+  - Verify new orders are placed with correct volumes based on remaining position
+  - Verify executed orders remain unchanged
 
 ---
 
@@ -135,6 +166,15 @@
 - **E5.3**: Multiple limit entries, part of stops and all take profits hit simultaneously → all entries + part of stops trigger, all takes do NOT trigger
 - **E5.4**: Multiple limit entries, part of stops and part of take profits hit simultaneously → all entries + part of stops trigger, part of takes do NOT trigger
 
+#### E6. modify_deal - After Most Complex Execution
+- **E6.1**: E5.4 scenario → modify_deal to update remaining orders
+  - Place buy_sltp with multiple limit entries, multiple stops, and multiple take profits
+  - Part of entries, part of stops, and part of take profits hit simultaneously
+  - modify_deal to update remaining stop loss and take profit
+  - Verify new orders are placed with correct volumes based on remaining position
+  - Verify executed orders remain unchanged
+  - Verify stop priority logic is maintained
+
 ---
 
 ### Group F: Validation and Errors
@@ -162,6 +202,19 @@
 - **F3.4**: Negative shares → validation error
 - **F3.5**: Shares > 1.0 → validation error
 
+#### F4. modify_deal Validation
+- **F4.1**: modify_deal - deal not found (invalid deal_id) → validation error
+- **F4.2**: modify_deal - deal already closed (quantity == 0) → validation error
+- **F4.3**: modify_deal - negative volume exceeds current position volume → validation error
+- **F4.4**: modify_deal LONG - buy limit order price above current price → validation error
+- **F4.5**: modify_deal SHORT - sell limit order price below current price → validation error
+- **F4.6**: modify_deal LONG - stop loss trigger price above current price → validation error
+- **F4.7**: modify_deal SHORT - stop loss trigger price below current price → validation error
+- **F4.8**: modify_deal LONG - take profit price below current price → validation error
+- **F4.9**: modify_deal SHORT - take profit price above current price → validation error
+- **F4.10**: modify_deal LONG - buy limit entry not protected by stop loss → validation error
+- **F4.11**: modify_deal SHORT - sell limit entry not protected by stop loss → validation error
+
 ---
 
 ### Group G: Edge Cases
@@ -186,6 +239,34 @@
 #### G3. Order Cancellation
 - **G3.1**: Market entry → stops/takes set → entry executed → cancel stops/takes → verify cancellation
 - **G3.2**: Limit entry → entry not executed → cancel entry order → verify cancellation
+
+#### G5. modify_deal - Edge Cases
+- **G5.1**: G3.2 scenario → modify_deal to modify deal with unexecuted limit entry
+  - Place buy_sltp with limit entry (not executed)
+  - modify_deal to update stop loss and take profit
+  - Verify unexecuted entry order is canceled
+  - Verify new orders are placed
+  - Verify position volume is preserved (0 if entry didn't execute)
+- **G5.2**: modify_deal with enter=None (only update exits)
+  - Place buy_sltp with market entry, stop loss, take profit
+  - Entry executes
+  - modify_deal with enter=None, update stop loss and take profit
+  - Verify no new entry orders, only exit orders updated
+  - Verify position volume is preserved
+- **G5.3**: modify_deal with negative enter (close part of position)
+  - Place buy_sltp with market entry, stop loss, take profit
+  - Entry executes (position = 1.0)
+  - modify_deal with enter=-0.3 (close 0.3), update stop loss and take profit
+  - Verify market order to close 0.3 is placed
+  - Verify position volume decreases to 0.7
+  - Verify new exit orders are calculated based on remaining position
+- **G5.4**: modify_deal with positive enter (add to position)
+  - Place buy_sltp with market entry, stop loss, take profit
+  - Entry executes (position = 1.0)
+  - modify_deal with enter=0.5 (add 0.5), update stop loss and take profit
+  - Verify new entry order is placed
+  - Verify position volume increases to 1.5 after new entry executes
+  - Verify new exit orders are calculated based on total position
 
 ---
 
@@ -228,6 +309,14 @@
 - **H4.2**: SELL - Multiple limit entries with multiple take profits between them (alternating pattern: 2 entries, 2 takes, 2 entries, 2 takes, etc.)
   - Example: entries at 100.0, 105.0, 115.0, 120.0; take profits at 97.5, 102.5, 112.5
   - Test execution when price hits entries and take profits in various combinations
+
+#### H5. modify_deal - Interleaved Orders
+- **H5.1**: H4.2 scenario → modify_deal to update interleaved orders
+  - Place sell_sltp with multiple limit entries and multiple take profits between them
+  - modify_deal to update stop loss and take profit
+  - Verify new orders maintain protection logic for all entries
+  - Verify position volume is preserved
+  - Test execution when price hits entries and updated exits in various combinations
 
 ---
 
