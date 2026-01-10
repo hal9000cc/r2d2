@@ -499,6 +499,45 @@ self.buy_sltp(enter=1.0, stop_loss=[(0.5, 90.0), (0.5, 88.0)])
 self.buy_sltp(enter=1.0, take_profit=[(0.3, 110.0), (0.4, 112.0), (0.3, 114.0)])
 ```
 
+#### Volume Calculation Rules for Stop Loss and Take Profit Orders
+
+**IMPORTANT**: The volumes of stop loss and take profit orders are calculated dynamically based on the following rules:
+
+1. **Stop Loss Volume Calculation**:
+   - Stop loss volumes are calculated from the **entry volume** (sum of all entry order volumes), **minus executed take profit volumes**
+   - Each stop loss order's volume is calculated by applying its fraction to the target volume
+   - The last (extreme) stop loss order always closes all remaining volume
+
+2. **Take Profit Volume Calculation**:
+   - Take profit volumes are calculated from the **entry volume** (sum of all entry order volumes), **minus executed stop loss volumes**
+   - Each take profit order's volume is calculated by applying its fraction to the target volume
+   - The last (extreme) take profit order always closes all remaining volume
+
+3. **Key Points**:
+   - Both stop loss and take profit volumes are always calculated from the **full entry volume**, not from the current position size
+   - When calculating stop loss volumes, executed take profits are subtracted from the entry volume
+   - When calculating take profit volumes, executed stop losses are subtracted from the entry volume
+   - The last order (extreme stop or extreme take) always closes all remaining volume to ensure the position is fully closed
+
+**Example**:
+```python
+# Entry: 1.0 volume
+# Stop losses: 0.33, 0.33, 0.34 (fractions)
+# Take profits: 0.5, 0.5 (fractions)
+
+# After entry executes: entry_volume = 1.0
+# Initial stop volumes: calculated from 1.0 (no takes executed yet)
+# Initial take volumes: calculated from 1.0 (no stops executed yet)
+
+# After first stop executes (0.3 volume):
+#   - Remaining entry volume for takes: 1.0 - 0.3 = 0.7
+#   - Take volumes recalculated from 0.7
+
+# After first take executes (0.35 volume):
+#   - Remaining entry volume for stops: 1.0 - 0.35 = 0.65
+#   - Stop volumes recalculated from 0.65
+```
+
 **Important:** 
 - When using the format with fractions (tuples), all orders must have an explicit fraction
 - The sum of fractions must be equal to 1.0

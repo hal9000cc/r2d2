@@ -869,14 +869,12 @@ class BrokerBacktesting(Broker):
         else:
             raise ValueError(f"Invalid order type: {order.order_type} in _remove_order_from_arrays: {order.order_id}")
     
-    def _execute_triggered_order(self, order: Order, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
+    def _execute_triggered_order(self, order: Order) -> None:
         """
         Execute a triggered order (limit or stop).
         
         Args:
             order: Order to execute
-            high: High price of current bar (for logging)
-            low: Low price of current bar (for logging)
         """
         if order.status != OrderStatus.ACTIVE:
             return
@@ -914,48 +912,25 @@ class BrokerBacktesting(Broker):
         # Remove order from arrays (no longer active)
         self._remove_order_from_np_arrays(order)
     
-    def _execute_triggered_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
+    def _execute_triggered_orders_old(self, high: PRICE_TYPE, low: PRICE_TYPE, order_group: OrderGroup) -> None:
         """
-        Check for triggered orders (limit and stop) on current bar and execute them.
+        Execute triggered orders of specified group (limit and stop) on current bar.
         Uses vectorized operations to find triggered orders.
         
-        After executing orders, checks if any deals were closed and cancels
-        their remaining active and new orders.
+        Executes orders in the following order:
+        1. Long stop orders (BUY): triggered if high >= trigger_price
+        2. Short stop orders (SELL): triggered if low <= trigger_price
+        3. Long limit orders (BUY): triggered if low < price
+        4. Short limit orders (SELL): triggered if high > price
+        
+        Only orders matching the specified order_group are executed.
         
         Args:
             high: High price of current bar
             low: Low price of current bar
+            order_group: Order group to filter by (NONE for entries, STOP_LOSS for stops, TAKE_PROFIT for takes)
         """
-        # Track deal IDs that had order executions
-        deal_ids_with_executions = set()
-        
-        # Check long limit orders (BUY): triggered if low <= price
-        if len(self.long_order_ids) > 0:
-            triggered_mask = low < self.long_order_prices
-            triggered_order_ids = self.long_order_ids[triggered_mask]
-            
-            if len(triggered_order_ids) > 0:
-                for order_id in triggered_order_ids:
-                    order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
-                    self._execute_triggered_order(order, high, low)
-                    # Track deal_id if order has one
-                    if order.deal_id > 0:
-                        deal_ids_with_executions.add(order.deal_id)
-        
-        # Check short limit orders (SELL): triggered if high > price
-        if len(self.short_order_ids) > 0:
-            triggered_mask = high > self.short_order_prices
-            triggered_order_ids = self.short_order_ids[triggered_mask]
-            
-            if len(triggered_order_ids) > 0:
-                for order_id in triggered_order_ids:
-                    order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
-                    self._execute_triggered_order(order, high, low)
-                    # Track deal_id if order has one
-                    if order.deal_id > 0:
-                        deal_ids_with_executions.add(order.deal_id)
-        
-        # Check long stop orders (BUY): triggered if high >= trigger_price (breakout up)
+        # Execute long stop orders (BUY): triggered if high >= trigger_price
         if len(self.long_stop_order_ids) > 0:
             triggered_mask = high >= self.long_stop_trigger_prices
             triggered_order_ids = self.long_stop_order_ids[triggered_mask]
@@ -963,12 +938,10 @@ class BrokerBacktesting(Broker):
             if len(triggered_order_ids) > 0:
                 for order_id in triggered_order_ids:
                     order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
-                    self._execute_triggered_order(order, high, low)
-                    # Track deal_id if order has one
-                    if order.deal_id > 0:
-                        deal_ids_with_executions.add(order.deal_id)
+                    if order.order_group == order_group:
+                        self._execute_triggered_order(order)
         
-        # Check short stop orders (SELL): triggered if low <= trigger_price (breakout down)
+        # Execute short stop orders (SELL): triggered if low <= trigger_price
         if len(self.short_stop_order_ids) > 0:
             triggered_mask = low <= self.short_stop_trigger_prices
             triggered_order_ids = self.short_stop_order_ids[triggered_mask]
@@ -976,16 +949,256 @@ class BrokerBacktesting(Broker):
             if len(triggered_order_ids) > 0:
                 for order_id in triggered_order_ids:
                     order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
-                    self._execute_triggered_order(order, high, low)
-                    # Track deal_id if order has one
-                    if order.deal_id > 0:
-                        deal_ids_with_executions.add(order.deal_id)
+                    if order.order_group == order_group:
+                        self._execute_triggered_order(order)
         
-        # After all executions, check if any deals were closed and cancel their orders
-        for deal_id in deal_ids_with_executions:
+        # Execute long limit orders (BUY): triggered if low < price
+        if len(self.long_order_ids) > 0:
+            triggered_mask = low < self.long_order_prices
+            triggered_order_ids = self.long_order_ids[triggered_mask]
+            
+            if len(triggered_order_ids) > 0:
+                for order_id in triggered_order_ids:
+                    order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
+                    if order.order_group == order_group:
+                        self._execute_triggered_order(order)
+        
+        # Execute short limit orders (SELL): triggered if high > price
+        if len(self.short_order_ids) > 0:
+            triggered_mask = high > self.short_order_prices
+            triggered_order_ids = self.short_order_ids[triggered_mask]
+            
+            if len(triggered_order_ids) > 0:
+                for order_id in triggered_order_ids:
+                    order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
+                    if order.order_group == order_group:
+                        self._execute_triggered_order(order)
+    
+    def _deals_of_triggered_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> set:
+        """
+        Get set of deal IDs for deals that have triggered orders on current bar.
+        
+        Checks all four types of orders (long stop, short stop, long limit, short limit)
+        and collects deal IDs from orders that would trigger.
+        
+        Args:
+            high: High price of current bar
+            low: Low price of current bar
+        
+        Returns:
+            Set of deal IDs that have triggered orders
+        """
+        deal_ids = set()
+        
+        # Check long stop orders (BUY): triggered if high >= trigger_price
+        if len(self.long_stop_order_ids) > 0:
+            triggered_mask = high >= self.long_stop_trigger_prices
+            triggered_order_ids = self.long_stop_order_ids[triggered_mask]
+            
+            for order_id in triggered_order_ids:
+                order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
+                if order.deal_id > 0:
+                    deal_ids.add(order.deal_id)
+        
+        # Check short stop orders (SELL): triggered if low <= trigger_price
+        if len(self.short_stop_order_ids) > 0:
+            triggered_mask = low <= self.short_stop_trigger_prices
+            triggered_order_ids = self.short_stop_order_ids[triggered_mask]
+            
+            for order_id in triggered_order_ids:
+                order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
+                if order.deal_id > 0:
+                    deal_ids.add(order.deal_id)
+        
+        # Check long limit orders (BUY): triggered if low < price
+        if len(self.long_order_ids) > 0:
+            triggered_mask = low < self.long_order_prices
+            triggered_order_ids = self.long_order_ids[triggered_mask]
+            
+            for order_id in triggered_order_ids:
+                order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
+                if order.deal_id > 0:
+                    deal_ids.add(order.deal_id)
+        
+        # Check short limit orders (SELL): triggered if high > price
+        if len(self.short_order_ids) > 0:
+            triggered_mask = high > self.short_order_prices
+            triggered_order_ids = self.short_order_ids[triggered_mask]
+            
+            for order_id in triggered_order_ids:
+                order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
+                if order.deal_id > 0:
+                    deal_ids.add(order.deal_id)
+        
+        return deal_ids
+    
+    def _check_order_trigger_condition(self, order: Order, high: PRICE_TYPE, low: PRICE_TYPE) -> bool:
+        """
+        Check if order should be triggered based on current bar prices.
+        
+        Args:
+            order: Order to check
+            high: High price of current bar
+            low: Low price of current bar
+        
+        Returns:
+            True if order should be executed, False otherwise
+        """
+        if order.order_type == OrderType.LIMIT:
+            if order.side == OrderSide.BUY:
+                # Buy limit: low < price
+                return order.price is not None and low < order.price
+            else:  # SELL
+                # Sell limit: high > price
+                return order.price is not None and high > order.price
+        elif order.order_type == OrderType.STOP:
+            if order.side == OrderSide.BUY:
+                # Buy stop: high >= trigger_price
+                return order.trigger_price is not None and high >= order.trigger_price
+            else:  # SELL
+                # Sell stop: low <= trigger_price
+                return order.trigger_price is not None and low <= order.trigger_price
+        return False
+    
+    def _process_order_group(self, orders: List[Order], high: PRICE_TYPE, low: PRICE_TYPE, deal: Deal, reverse: bool = False) -> bool:
+        """
+        Process a group of orders: sort by price and execute triggered ones.
+        
+        Args:
+            orders: List of orders to process
+            high: High price of current bar
+            low: Low price of current bar
+            deal: Deal these orders belong to
+            reverse: If True, sort in descending order, otherwise ascending
+        
+        Returns:
+            True if deal was closed during processing, False otherwise
+        """
+        # Prepare orders with sort prices
+        orders_with_price = []
+        for order in orders:
+            sort_price = order.price if order.order_type == OrderType.LIMIT else order.trigger_price
+            if sort_price is not None:
+                orders_with_price.append((sort_price, order))
+        
+        # Sort by price
+        orders_with_price.sort(key=lambda x: x[0], reverse=reverse)
+        
+        # Process orders
+        for sort_price, order in orders_with_price:
+            if self._check_order_trigger_condition(order, high, low):
+                self._execute_triggered_order(order)
+                # Check if deal is closed
+                if deal.is_closed:
+                    return True
+        
+        return False
+    
+    def _execute_triggered_orders_for_long_deal(self, deal: Deal, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
+        """
+        Execute triggered orders for a LONG deal.
+        
+        First (descending): buy limit and sell stop
+        Then (ascending): sell limit and buy stop
+        
+        Args:
+            deal: LONG deal to process
+            high: High price of current bar
+            low: Low price of current bar
+        """
+        active_orders = [o for o in deal.orders if o.status == OrderStatus.ACTIVE]
+        
+        # First (descending) - buy limit and sell stop
+        first_orders = []
+        for order in active_orders:
+            if ((order.order_type == OrderType.LIMIT and order.side == OrderSide.BUY) or
+                (order.order_type == OrderType.STOP and order.side == OrderSide.SELL)):
+                first_orders.append(order)
+        
+        if self._process_order_group(first_orders, high, low, deal, reverse=True):
+            return  # Deal closed
+        
+        # Update SL/TP orders after first group processing
+        self._update_sltp_orders_for_deal(deal)
+        
+        # Then (ascending) - sell limit and buy stop
+        second_orders = []
+        for order in active_orders:
+            if ((order.order_type == OrderType.LIMIT and order.side == OrderSide.SELL) or
+                (order.order_type == OrderType.STOP and order.side == OrderSide.BUY)):
+                second_orders.append(order)
+        
+        if self._process_order_group(second_orders, high, low, deal, reverse=False):
+            return  # Deal closed
+        
+        # Update SL/TP orders after second group processing
+        self._update_sltp_orders_for_deal(deal)
+    
+    def _execute_triggered_orders_for_short_deal(self, deal: Deal, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
+        """
+        Execute triggered orders for a SHORT deal.
+        
+        First (ascending): sell limit and buy stop
+        Then (descending): buy limit and sell stop
+        
+        Args:
+            deal: SHORT deal to process
+            high: High price of current bar
+            low: Low price of current bar
+        """
+        active_orders = [o for o in deal.orders if o.status == OrderStatus.ACTIVE]
+        
+        # First (ascending) - sell limit and buy stop
+        first_orders = []
+        for order in active_orders:
+            if ((order.order_type == OrderType.LIMIT and order.side == OrderSide.SELL) or
+                (order.order_type == OrderType.STOP and order.side == OrderSide.BUY)):
+                first_orders.append(order)
+        
+        if self._process_order_group(first_orders, high, low, deal, reverse=False):
+            return  # Deal closed
+        
+        # Update SL/TP orders after first group processing
+        self._update_sltp_orders_for_deal(deal)
+        
+        # Then (descending) - buy limit and sell stop
+        second_orders = []
+        for order in active_orders:
+            if ((order.order_type == OrderType.LIMIT and order.side == OrderSide.BUY) or
+                (order.order_type == OrderType.STOP and order.side == OrderSide.SELL)):
+                second_orders.append(order)
+        
+        if self._process_order_group(second_orders, high, low, deal, reverse=True):
+            return  # Deal closed
+        
+        # Update SL/TP orders after second group processing
+        self._update_sltp_orders_for_deal(deal)
+    
+    def _execute_triggered_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
+        """
+        Execute triggered orders on current bar.
+        
+        Processes orders for each deal in the correct price order:
+        - For LONG deals: buy limit and sell stop (descending), then sell limit and buy stop (ascending)
+        - For SHORT deals: sell limit and buy stop (ascending), then buy limit and sell stop (descending)
+        
+        After each executed order, checks if deal is closed and stops processing if so.
+        
+        Args:
+            high: High price of current bar
+            low: Low price of current bar
+        """
+        # Get deals that have triggered orders
+        deal_ids = self._deals_of_triggered_orders(high, low)
+        
+        for deal_id in deal_ids:
             deal = self.get_deal_by_id(deal_id)
-            if deal.is_closed:
-                self._cancel_deal_orders(deal)
+            assert deal is not None, f"Deal {deal_id} not found, but was in triggered orders list"
+            
+            if deal.type == DealType.LONG:
+                self._execute_triggered_orders_for_long_deal(deal, high, low)
+            else:  # SHORT
+                self._execute_triggered_orders_for_short_deal(deal, high, low)
     
     def _find_extreme_stop_order(self, deal: Deal) -> Optional[Order]:
         """
@@ -1209,6 +1422,55 @@ class BrokerBacktesting(Broker):
         
         return new_takes
     
+    def _update_sltp_orders_for_deal(self, deal: Deal) -> None:
+        """
+        Update stop loss and take profit orders for a single deal.
+        Updates order volumes and activation status based on current deal position.
+        
+        Args:
+            deal: Deal to update SL/TP orders for
+        """
+        assert self.current_time is not None, "Cannot update SL/TP orders: current_time is not set"
+        assert self.price is not None, "Cannot update SL/TP orders: price is not set"
+        
+        # Safety check: deal should be open
+        assert not deal.is_closed, f"Deal {deal.deal_id} is closed but in active_deals"
+        
+        # 1. Update stop loss volumes
+        extreme_stop = self._find_extreme_stop_order(deal)
+        if extreme_stop is not None:
+            assert deal.enter_volume > 0, f"Deal {deal.deal_id} must have enter_volume > 0 for stop loss volume calculation"
+            # Calculate unexecuted entry limit volume (for range check)
+            extreme_stop_price = extreme_stop.trigger_price
+            if extreme_stop_price is not None:
+                unexecuted_entry_volume = self._get_unexecuted_entry_limit_volume(
+                    deal, self.price, extreme_stop_price
+                )
+                executed_take_volume = self._get_executed_take_profit_volume(deal)
+                # Target volume = initial entry volume - unexecuted entry limits - executed take volumes
+                target_volume = deal.enter_volume - unexecuted_entry_volume - executed_take_volume
+                # Current volume = current position size (abs(deal.quantity) for LONG/SHORT)
+                current_volume = abs(deal.quantity)
+                self._update_stop_loss_volumes(deal, target_volume, current_volume)
+        
+        # 2. Update take profit volumes (only if deal has position)
+        if abs(deal.quantity) > 0:
+            assert deal.enter_volume > 0, f"Deal {deal.deal_id} must have enter_volume > 0 for take profit volume calculation"
+            executed_stop_volume = self._get_executed_stop_loss_volume(deal)
+            # IMPORTANT: Take profit volumes are calculated from FULL ENTRY VOLUME (deal.enter_volume),
+            # MINUS executed stop volumes, NOT from current position size
+            # This is the same logic as stop losses: calculated from all requested entry volumes (including unexecuted limits)
+            # Target volume = initial entry volume - executed stop volumes
+            target_volume = deal.enter_volume - executed_stop_volume
+            # Current volume = current position size (abs(deal.quantity) for LONG/SHORT)
+            # Used only for calculating extreme take profit volume (remainder)
+            current_volume = abs(deal.quantity)
+            new_takes = self._update_take_profit_volumes(deal, target_volume, current_volume)
+            
+            # 3. Activate take profit orders in NEW status
+            if new_takes:
+                self.execute_orders_sltp(new_takes)
+    
     def _update_sltp_orders(self) -> None:
         """
         Update stop loss and take profit orders for active deals.
@@ -1217,50 +1479,10 @@ class BrokerBacktesting(Broker):
         This method iterates through all active deals and updates their exit orders
         (stop losses and take profits) to reflect current position sizes.
         """
-        assert self.current_time is not None, "Cannot update SL/TP orders: current_time is not set"
-        assert self.price is not None, "Cannot update SL/TP orders: price is not set"
-        
         # Iterate through active deals
         for deal_id in list(self.active_deals):  # Iterate over copy as set may change
             deal = self.get_deal_by_id(deal_id)
-            
-            # Safety check: deal should be open
-            assert not deal.is_closed, f"Deal {deal_id} is closed but in active_deals"
-            
-            # 1. Update stop loss volumes
-            extreme_stop = self._find_extreme_stop_order(deal)
-            if extreme_stop is not None:
-                assert deal.enter_volume > 0, f"Deal {deal_id} must have enter_volume > 0 for stop loss volume calculation"
-                # Calculate unexecuted entry limit volume (for range check)
-                extreme_stop_price = extreme_stop.trigger_price
-                if extreme_stop_price is not None:
-                    unexecuted_entry_volume = self._get_unexecuted_entry_limit_volume(
-                        deal, self.price, extreme_stop_price
-                    )
-                    executed_take_volume = self._get_executed_take_profit_volume(deal)
-                    # Target volume = initial entry volume - unexecuted entry limits - executed take volumes
-                    target_volume = deal.enter_volume - unexecuted_entry_volume - executed_take_volume
-                    # Current volume = current position size (abs(deal.quantity) for LONG/SHORT)
-                    current_volume = abs(deal.quantity)
-                    self._update_stop_loss_volumes(deal, target_volume, current_volume)
-            
-            # 2. Update take profit volumes (only if deal has position)
-            if abs(deal.quantity) > 0:
-                assert deal.enter_volume > 0, f"Deal {deal_id} must have enter_volume > 0 for take profit volume calculation"
-                executed_stop_volume = self._get_executed_stop_loss_volume(deal)
-                # IMPORTANT: Take profit volumes are calculated from FULL ENTRY VOLUME (deal.enter_volume),
-                # MINUS executed stop volumes, NOT from current position size
-                # This is the same logic as stop losses: calculated from all requested entry volumes (including unexecuted limits)
-                # Target volume = initial entry volume - executed stop volumes
-                target_volume = deal.enter_volume - executed_stop_volume
-                # Current volume = current position size (abs(deal.quantity) for LONG/SHORT)
-                # Used only for calculating extreme take profit volume (remainder)
-                current_volume = abs(deal.quantity)
-                new_takes = self._update_take_profit_volumes(deal, target_volume, current_volume)
-                
-                # 3. Activate take profit orders in NEW status
-                if new_takes:
-                    self.execute_orders_sltp(new_takes)
+            self._update_sltp_orders_for_deal(deal)
     
     def _check_and_execute_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> None:
         """
@@ -1276,8 +1498,8 @@ class BrokerBacktesting(Broker):
         # First: execute triggered orders
         self._execute_triggered_orders(high, low)
         
-        # Second: update stop loss and take profit orders for active deals
-        self._update_sltp_orders()
+        # # Second: update stop loss and take profit orders for active deals
+        # self._update_sltp_orders()
     
     def cancel_orders(self, order_ids: List[int]) -> List[Order]:
         """
@@ -1320,24 +1542,25 @@ class BrokerBacktesting(Broker):
         
         return canceled_orders
     
-    def _cancel_deal_orders(self, deal: Deal) -> None:
+    def ex_current_time(self) -> np.datetime64:
         """
-        Cancel all active and new orders in a deal.
+        Get current time for order modification.
         
-        Sets order.status = CANCELED for all orders with status ACTIVE or NEW,
-        updates modify_time, and removes orders from numpy arrays.
+        Returns:
+            Current time as np.datetime64
+        """
+        return self.current_time
+
+    def ex_cancel_order(self, order: Order) -> None:
+        """
+        Implementation-specific order cancellation logic for backtesting.
+        
+        Removes the order from numpy arrays used for efficient order matching.
         
         Args:
-            deal: Deal whose orders should be canceled
+            order: Order that was canceled
         """
-        assert self.current_time is not None, "Cannot cancel deal orders: current_time is not set"
-        
-        for order in deal.orders:
-            if order.status in [OrderStatus.ACTIVE, OrderStatus.NEW]:
-                order.status = OrderStatus.CANCELED
-                order.modify_time = self.current_time
-                # Remove from numpy arrays
-                self._remove_order_from_np_arrays(order)
+        self._remove_order_from_np_arrays(order)
     
     def close_deal(self, deal_id: int) -> None:
         """
@@ -1349,10 +1572,6 @@ class BrokerBacktesting(Broker):
         assert self.current_time is not None, "Cannot close deal: current_time is not set"
         
         deal = self.get_deal_by_id(deal_id)
-        
-        # Deactivate all active and new orders in the deal
-        self._cancel_deal_orders(deal)
-        self.check_closed(deal)
         
         # Close position if there is any
         # Use 1/10 of volume precision as tolerance for floating point comparison
@@ -1393,6 +1612,10 @@ class BrokerBacktesting(Broker):
             # Add order and execute
             self._add_order(close_order)
             self.execute_orders_sltp([close_order])
+
+        self._cancel_deal_orders(deal, self.current_time)
+        self.check_closed(deal)
+
     
     def close_deals(self):
         """

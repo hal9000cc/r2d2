@@ -93,6 +93,24 @@
 
 **IMPORTANT RULE**: When price hits both stops and take profits simultaneously, only stops are considered. Take profits may trigger on subsequent bars if the deal is not fully closed.
 
+**Volume Calculation Rules for Stop Loss and Take Profit Orders**:
+
+1. **Stop Loss Volume Calculation**:
+   - Stop loss volumes are calculated from the **entry volume** (sum of all entry order volumes), **minus executed take profit volumes**
+   - Each stop loss order's volume is calculated by applying its fraction to the target volume
+   - The last (extreme) stop loss order always closes all remaining volume
+
+2. **Take Profit Volume Calculation**:
+   - Take profit volumes are calculated from the **entry volume** (sum of all entry order volumes), **minus executed stop loss volumes**
+   - Each take profit order's volume is calculated by applying its fraction to the target volume
+   - The last (extreme) take profit order always closes all remaining volume
+
+3. **Key Points**:
+   - Both stop loss and take profit volumes are always calculated from the **full entry volume**, not from the current position size
+   - When calculating stop loss volumes, executed take profits are subtracted from the entry volume
+   - When calculating take profit volumes, executed stop losses are subtracted from the entry volume
+   - The last order (extreme stop or extreme take) always closes all remaining volume to ensure the position is fully closed
+
 #### E1. One Entry, One Stop, One Take Profit
 - **E1.1**: Limit entry, stop and take profit hit simultaneously → entry + stop trigger, take profit does NOT trigger
 - **E1.2**: Limit entry, stop and take profit hit simultaneously → entry + stop trigger, take profit triggers on next bar (if deal didn't close completely)

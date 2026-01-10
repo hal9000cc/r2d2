@@ -511,6 +511,63 @@ class Broker(ABC):
 
         raise NotImplementedError
 
+    def _cancel_deal_orders(self, deal: Deal, current_time: np.datetime64) -> None:
+        """
+        Cancel all active and new orders in a deal.
+        
+        Iterates through all orders in the deal and cancels those with
+        status ACTIVE or NEW by calling _cancel_order for each.
+        
+        Args:
+            deal: Deal whose orders should be canceled
+            current_time: Current time for order modification
+        """
+        for order in deal.orders:
+            if order.status in [OrderStatus.ACTIVE, OrderStatus.NEW]:
+                self._cancel_order(order, current_time)
+    
+    def _cancel_order(self, order: Order, current_time: np.datetime64) -> None:
+        """
+        Cancel a single order.
+        
+        Sets order status to CANCELED, updates modify_time, and calls
+        implementation-specific cancellation logic via ex_cancel_order.
+        
+        Args:
+            order: Order to cancel
+            current_time: Current time for order modification
+        """
+        # Update order status and modify time
+        order.status = OrderStatus.CANCELED
+        order.modify_time = current_time
+        
+        # Call implementation-specific cancellation logic
+        self.ex_cancel_order(order)
+    
+    @abstractmethod
+    def ex_cancel_order(self, order: Order) -> None:
+        """
+        Implementation-specific order cancellation logic.
+        
+        Called after order status is set to CANCELED and modify_time is updated.
+        This method should handle any implementation-specific cleanup, such as
+        removing the order from internal data structures.
+        
+        Args:
+            order: Order that was canceled
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def ex_current_time(self) -> np.datetime64:
+        """
+        Get current time for order modification.
+        
+        Returns:
+            Current time as np.datetime64
+        """
+        raise NotImplementedError
+
     def reset(self, initial_equity_usd: PRICE_TYPE = 0.0, *, task: 'Task') -> None:
         """
         Reset broker state. Initialize deals list and trades list.
@@ -717,15 +774,12 @@ class Broker(ABC):
         was_just_closed = deal.check_closed()
         
         if was_just_closed:
-            # Deal is closed, remove from active deals
             self.active_deals.discard(deal.deal_id)
-            # Register it in statistics
+            self._cancel_deal_orders(deal, self.ex_current_time())
             self.stats.add_deal(deal)
-            # If this was the last automatic deal, clear the reference
             if deal.deal_id == self.last_auto_deal_id:
                 self.last_auto_deal_id = None
         elif not deal.is_closed:
-            # Deal is open, ensure it's in active deals
             self.active_deals.add(deal.deal_id)
     
     def _add_trade_to_deal(self, deal: Deal, trade: Trade) -> None:
