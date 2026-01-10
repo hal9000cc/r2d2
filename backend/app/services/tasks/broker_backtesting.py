@@ -1556,11 +1556,14 @@ class BrokerBacktesting(Broker):
         Implementation-specific order cancellation logic for backtesting.
         
         Removes the order from numpy arrays used for efficient order matching.
+        Only LIMIT and STOP orders are stored in numpy arrays, so MARKET orders are skipped.
         
         Args:
             order: Order that was canceled
         """
-        self._remove_order_from_np_arrays(order)
+        # Only LIMIT and STOP orders are stored in numpy arrays
+        if order.order_type in [OrderType.LIMIT, OrderType.STOP]:
+            self._remove_order_from_np_arrays(order)
     
     def close_deal(self, deal_id: int) -> None:
         """
