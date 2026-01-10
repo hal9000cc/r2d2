@@ -1926,3 +1926,775 @@ class TestSellSltpOrderCancellation:
             take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
             # When entry is canceled, exit orders might also be canceled or removed
             # This depends on implementation - check what actually happens
+
+
+# ============================================================================
+# Group G4: Unclosed Deals at End of Test
+# ============================================================================
+
+class TestBuySltpUnclosedDealsAtEnd:
+    """Test G4: Unclosed deals at end of test scenarios for buy_sltp."""
+    
+    def test_buy_sltp_market_only_stops_dont_trigger_autoclosure(self, test_task):
+        """Test G4.1: Market entry, only stops → stops don't trigger → deal remains open → automatic closure at end of testing."""
+        # Prepare quotes data: price 100.0, stops at 90.0 won't trigger (price stays at 100.0)
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            lows=[99.0, 99.0, 99.0]  # Price stays at 100.0, stops at 90.0 won't trigger
+        )
+        
+        # Protocol: On bar 0, enter BUY market with stops only (no take profits)
+        # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
+        # Expected: entry executes, stops don't trigger, deal remains open, then autoclosed at end
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': 90.0,  # Stop at 90.0 won't trigger (price stays at 100.0)
+                    'take_profit': None  # No take profits
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_buy_g4_1_only_stops_autoclosure")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that entry triggers on bar 0, stops don't trigger
+        assert collected_data[0]['trades_count'] == 1, "Entry should trigger on bar 0"
+        assert collected_data[1]['trades_count'] == 1, "No execution on bar 1 (stops don't trigger)"
+        assert collected_data[2]['trades_count'] == 1, "No execution on bar 2 (before autoclosure)"
+        
+        # Check final state: deal should be fully closed after automatic closure at end of backtesting
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed after autoclosure"
+        
+        # Check total trades count: entry + autoclosure
+        assert len(broker.trades) == 2, f"Expected 2 trades total (entry + autoclosure), got {len(broker.trades)}"
+        
+        # Check that entry order and autoclosure order were executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE]
+        assert len(entry_orders) == 2, "Should have two orders without group (entry + autoclosure)"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 2, "Both entry and autoclosure orders should be executed"
+        
+        # Check that stop loss order was canceled by autoclosure
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 1, "Should have one stop loss order"
+        canceled_stops = [o for o in stop_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_stops) == 1, "Stop loss order should be canceled by autoclosure"
+    
+    def test_buy_sltp_market_only_takes_dont_trigger_autoclosure(self, test_task):
+        """Test G4.2: Market entry, only take profits → takes don't trigger → deal remains open → automatic closure at end of testing."""
+        # Prepare quotes data: price 100.0, takes at 110.0 won't trigger (price stays at 100.0)
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            highs=[101.0, 101.0, 101.0]  # Price stays at 100.0, takes at 110.0 won't trigger
+        )
+        
+        # Protocol: On bar 0, enter BUY market with take profits only (no stops)
+        # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
+        # Expected: entry executes, takes don't trigger, deal remains open, then autoclosed at end
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': None,  # No stops
+                    'take_profit': 110.0  # Take at 110.0 won't trigger (price stays at 100.0)
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_buy_g4_2_only_takes_autoclosure")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that entry triggers on bar 0, takes don't trigger
+        assert collected_data[0]['trades_count'] == 1, "Entry should trigger on bar 0"
+        assert collected_data[1]['trades_count'] == 1, "No execution on bar 1 (takes don't trigger)"
+        assert collected_data[2]['trades_count'] == 1, "No execution on bar 2 (before autoclosure)"
+        
+        # Check final state: deal should be fully closed after automatic closure at end of backtesting
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed after autoclosure"
+        
+        # Check total trades count: entry + autoclosure
+        assert len(broker.trades) == 2, f"Expected 2 trades total (entry + autoclosure), got {len(broker.trades)}"
+        
+        # Check that entry order and autoclosure order were executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE]
+        assert len(entry_orders) == 2, "Should have two orders without group (entry + autoclosure)"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 2, "Both entry and autoclosure orders should be executed"
+        
+        # Check that take profit order was canceled by autoclosure
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        canceled_takes = [o for o in take_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_takes) == 1, "Take profit order should be canceled by autoclosure"
+    
+    def test_buy_sltp_market_part_stops_part_takes_autoclosure(self, test_task):
+        """Test G4.3: Market entry, stops and take profits → part of stops trigger, part of takes don't trigger → deal partially closed → automatic closure of remainder at end of testing."""
+        # Prepare quotes data: price 100.0, then drops to trigger one stop, takes don't trigger
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            lows=[99.0, 94.0, 99.0],  # Bar 1 low=94.0 triggers first stop at 95.0, but not second stop at 90.0
+            highs=[101.0, 101.0, 101.0]  # Price stays at 100.0, takes at 110.0 won't trigger
+        )
+        
+        # Protocol: On bar 0, enter BUY market with two stops and one take
+        # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
+        # Expected: entry executes, first stop triggers on bar 1, second stop and take don't trigger, deal partially closed, then autoclosed at end
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': [(0.5, 95.0), (0.5, 90.0)],  # Two stops (0.5 + 0.5 = 1.0)
+                    'take_profit': 110.0  # Take at 110.0 won't trigger
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_buy_g4_3_part_stops_part_takes_autoclosure")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that entry triggers on bar 0, first stop triggers on bar 1
+        # Bar 0: entry triggers (1 trade)
+        # Bar 1: first stop triggers (2 trades total - entry + stop1)
+        # After backtesting ends: automatic closure closes remaining position (3 trades total)
+        assert collected_data[0]['trades_count'] == 1, "Entry should trigger on bar 0"
+        assert collected_data[1]['trades_count'] == 2, "First stop should trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "No execution on bar 2 (before autoclosure)"
+        
+        # Check final state: deal should be fully closed after automatic closure at end of backtesting
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed after autoclosure"
+        
+        # Check total trades count: entry + stop1 + autoclosure
+        assert len(broker.trades) == 3, f"Expected 3 trades total (entry + stop1 + autoclosure), got {len(broker.trades)}"
+        
+        # Check that entry order and autoclosure order were executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE]
+        assert len(entry_orders) == 2, "Should have two orders without group (entry + autoclosure)"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 2, "Both entry and autoclosure orders should be executed"
+        
+        # Check that one stop order was executed, others were canceled by autoclosure
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 2, "Should have two stop loss orders"
+        executed_stops = [o for o in stop_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_stops) == 1, "One stop loss order should be executed"
+        canceled_stops = [o for o in stop_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_stops) == 1, "One stop loss order should be canceled by autoclosure"
+        
+        # Check that take profit order was canceled by autoclosure
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        canceled_takes = [o for o in take_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_takes) == 1, "Take profit order should be canceled by autoclosure"
+
+
+class TestSellSltpUnclosedDealsAtEnd:
+    """Test G4: Unclosed deals at end of test scenarios for sell_sltp."""
+    
+    def test_sell_sltp_market_only_stops_dont_trigger_autoclosure(self, test_task):
+        """Test G4.1: Market entry, only stops → stops don't trigger → deal remains open → automatic closure at end of testing."""
+        # Prepare quotes data: price 100.0, stops at 110.0 won't trigger (price stays at 100.0)
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            highs=[101.0, 101.0, 101.0]  # Price stays at 100.0, stops at 110.0 won't trigger
+        )
+        
+        # Protocol: On bar 0, enter SELL market with stops only (no take profits)
+        # Entry price: 100.0 (market, with slippage -0.1 = 99.9)
+        # Expected: entry executes, stops don't trigger, deal remains open, then autoclosed at end
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': 110.0,  # Stop at 110.0 won't trigger (price stays at 100.0)
+                    'take_profit': None  # No take profits
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_g4_1_only_stops_autoclosure")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that entry triggers on bar 0, stops don't trigger
+        assert collected_data[0]['trades_count'] == 1, "Entry should trigger on bar 0"
+        assert collected_data[1]['trades_count'] == 1, "No execution on bar 1 (stops don't trigger)"
+        assert collected_data[2]['trades_count'] == 1, "No execution on bar 2 (before autoclosure)"
+        
+        # Check final state: deal should be fully closed after automatic closure at end of backtesting
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed after autoclosure"
+        
+        # Check total trades count: entry + autoclosure
+        assert len(broker.trades) == 2, f"Expected 2 trades total (entry + autoclosure), got {len(broker.trades)}"
+        
+        # Check that entry order and autoclosure order were executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE]
+        assert len(entry_orders) == 2, "Should have two orders without group (entry + autoclosure)"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 2, "Both entry and autoclosure orders should be executed"
+        
+        # Check that stop loss order was canceled by autoclosure
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 1, "Should have one stop loss order"
+        canceled_stops = [o for o in stop_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_stops) == 1, "Stop loss order should be canceled by autoclosure"
+    
+    def test_sell_sltp_market_only_takes_dont_trigger_autoclosure(self, test_task):
+        """Test G4.2: Market entry, only take profits → takes don't trigger → deal remains open → automatic closure at end of testing."""
+        # Prepare quotes data: price 100.0, takes at 90.0 won't trigger (price stays at 100.0)
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            lows=[99.0, 99.0, 99.0]  # Price stays at 100.0, takes at 90.0 won't trigger
+        )
+        
+        # Protocol: On bar 0, enter SELL market with take profits only (no stops)
+        # Entry price: 100.0 (market, with slippage -0.1 = 99.9)
+        # Expected: entry executes, takes don't trigger, deal remains open, then autoclosed at end
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': None,  # No stops
+                    'take_profit': 90.0  # Take at 90.0 won't trigger (price stays at 100.0)
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_g4_2_only_takes_autoclosure")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that entry triggers on bar 0, takes don't trigger
+        assert collected_data[0]['trades_count'] == 1, "Entry should trigger on bar 0"
+        assert collected_data[1]['trades_count'] == 1, "No execution on bar 1 (takes don't trigger)"
+        assert collected_data[2]['trades_count'] == 1, "No execution on bar 2 (before autoclosure)"
+        
+        # Check final state: deal should be fully closed after automatic closure at end of backtesting
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed after autoclosure"
+        
+        # Check total trades count: entry + autoclosure
+        assert len(broker.trades) == 2, f"Expected 2 trades total (entry + autoclosure), got {len(broker.trades)}"
+        
+        # Check that entry order and autoclosure order were executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE]
+        assert len(entry_orders) == 2, "Should have two orders without group (entry + autoclosure)"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 2, "Both entry and autoclosure orders should be executed"
+        
+        # Check that take profit order was canceled by autoclosure
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        canceled_takes = [o for o in take_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_takes) == 1, "Take profit order should be canceled by autoclosure"
+    
+    def test_sell_sltp_market_part_stops_part_takes_autoclosure(self, test_task):
+        """Test G4.3: Market entry, stops and take profits → part of stops trigger, part of takes don't trigger → deal partially closed → automatic closure of remainder at end of testing."""
+        # Prepare quotes data: price 100.0, then rises to trigger one stop, takes don't trigger
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            lows=[99.0, 99.0, 99.0],
+            highs=[101.0, 106.0, 101.0]  # Bar 1 high=106.0 triggers first stop at 105.0, but not second stop at 110.0
+        )
+        
+        # Protocol: On bar 0, enter SELL market with two stops and one take
+        # Entry price: 100.0 (market, with slippage -0.1 = 99.9)
+        # Expected: entry executes, first stop triggers on bar 1, second stop and take don't trigger, deal partially closed, then autoclosed at end
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': 1.0,
+                    'stop_loss': [(0.5, 105.0), (0.5, 110.0)],  # Two stops (0.5 + 0.5 = 1.0)
+                    'take_profit': 90.0  # Take at 90.0 won't trigger
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_g4_3_part_stops_part_takes_autoclosure")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that entry triggers on bar 0, first stop triggers on bar 1
+        # Bar 0: entry triggers (1 trade)
+        # Bar 1: first stop triggers (2 trades total - entry + stop1)
+        # After backtesting ends: automatic closure closes remaining position (3 trades total)
+        assert collected_data[0]['trades_count'] == 1, "Entry should trigger on bar 0"
+        assert collected_data[1]['trades_count'] == 2, "First stop should trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "No execution on bar 2 (before autoclosure)"
+        
+        # Check final state: deal should be fully closed after automatic closure at end of backtesting
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed after autoclosure"
+        
+        # Check total trades count: entry + stop1 + autoclosure
+        assert len(broker.trades) == 3, f"Expected 3 trades total (entry + stop1 + autoclosure), got {len(broker.trades)}"
+        
+        # Check that entry order and autoclosure order were executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE]
+        assert len(entry_orders) == 2, "Should have two orders without group (entry + autoclosure)"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 2, "Both entry and autoclosure orders should be executed"
+        
+        # Check that one stop order was executed, others were canceled by autoclosure
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 2, "Should have two stop loss orders"
+        executed_stops = [o for o in stop_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_stops) == 1, "One stop loss order should be executed"
+        canceled_stops = [o for o in stop_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_stops) == 1, "One stop loss order should be canceled by autoclosure"
+        
+        # Check that take profit order was canceled by autoclosure
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        canceled_takes = [o for o in take_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_takes) == 1, "Take profit order should be canceled by autoclosure"
+
+
+# ============================================================================
+# Group H: Interleaved Entry and Exit Orders
+# ============================================================================
+
+class TestBuySltpInterleavedStopsBetweenEntries:
+    """Test H1: Interleaved stops between entries for buy_sltp."""
+    
+    def test_buy_sltp_stops_between_entries_alternating_single(self, test_task):
+        """Test H1.1: BUY - Multiple limit entries with stops between them (alternating pattern: entry, stop, entry, stop, entry)."""
+        # Prepare quotes data: price 100.0, then drops to trigger entries and stops
+        # Entries: 100.0, 90.0, 80.0
+        # Stops: 95.0 (between 100 and 90), 85.0 (between 90 and 80), 75.0 (below 80 for protection)
+        # Bar 1: low=79.0 triggers all entries and stops
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            lows=[99.0, 79.0, 99.0]  # Bar 1 low=79.0 triggers all entries (100.0, 90.0, 80.0) and all stops (95.0, 85.0, 75.0)
+        )
+        
+        # Protocol: On bar 0, enter BUY with alternating entries and stops
+        # Entry prices: 100.0, 90.0, 80.0
+        # Stop prices: 95.0, 85.0, 75.0 (75.0 is below min entry 80.0 for protection)
+        # Expected: all entries and stops trigger on bar 1 simultaneously
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': [(1.0, 100.0), (1.0, 90.0), (1.0, 80.0)],  # Three entries
+                    'stop_loss': [(0.33, 95.0), (0.33, 85.0), (0.34, 75.0)],  # Three stops (0.33 + 0.33 + 0.34 = 1.0)
+                    'take_profit': 120.0
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_buy_h1_1_stops_between_entries")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that all entries and stops trigger on bar 1 (stops have priority, so all stops trigger, deal closes)
+        assert collected_data[0]['trades_count'] == 0, "No execution on bar 0 (limit entries)"
+        assert collected_data[1]['trades_count'] == 6, "All entries (3) and all stops (3) should trigger - 6 trades total"
+        assert collected_data[2]['trades_count'] == 6, "No execution on bar 2"
+        
+        # Check total trades count: 3 entries + 3 stops
+        assert len(broker.trades) == 6, f"Expected 6 trades total (3 entries + 3 stops), got {len(broker.trades)}"
+        
+        # Check final state: deal should be closed (all stops triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be closed (quantity=0.0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed"
+        
+        # Check that all entry orders were executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE]
+        assert len(entry_orders) == 3, "Should have three entry orders"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 3, "All entry orders should be executed"
+        
+        # Check that all stop orders were executed
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 3, "Should have three stop loss orders"
+        executed_stops = [o for o in stop_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_stops) == 3, "All stop loss orders should be executed"
+        
+        # Check that take profit order was canceled (deal closed by stops)
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        canceled_takes = [o for o in take_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_takes) == 1, "Take profit order should be canceled"
+
+
+class TestSellSltpInterleavedStopsBetweenEntries:
+    """Test H1: Interleaved stops between entries for sell_sltp."""
+    
+    def test_sell_sltp_stops_between_entries_alternating_single(self, test_task):
+        """Test H1.2: SELL - Multiple limit entries with stops between them (alternating pattern: entry, stop, entry, stop, entry)."""
+        # Prepare quotes data: price 100.0, then rises to trigger entries and stops
+        # Entries: 100.0, 110.0, 120.0
+        # Stops: 105.0 (between 100 and 110), 115.0 (between 110 and 120), 125.0 (above 120 for protection)
+        # Bar 1: high=126.0 triggers all entries and stops
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            highs=[101.0, 126.0, 101.0]  # Bar 1 high=126.0 triggers all entries (100.0, 110.0, 120.0) and all stops (105.0, 115.0, 125.0)
+        )
+        
+        # Protocol: On bar 0, enter SELL with alternating entries and stops
+        # Entry prices: 100.0, 110.0, 120.0
+        # Stop prices: 105.0, 115.0, 125.0 (125.0 is above max entry 120.0 for protection)
+        # Expected: all entries and stops trigger on bar 1 simultaneously
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': [(1.0, 100.0), (1.0, 110.0), (1.0, 120.0)],  # Three entries
+                    'stop_loss': [(0.33, 105.0), (0.33, 115.0), (0.34, 125.0)],  # Three stops (0.33 + 0.33 + 0.34 = 1.0)
+                    'take_profit': 80.0
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            data = {
+                'bar': bar_index,
+                'price': current_price,
+                'orders_count': len(strategy.broker.orders) if hasattr(strategy.broker, 'orders') else 0,
+                'trades_count': len(strategy.broker.trades),
+            }
+            if method_result:
+                data['method_result'] = method_result
+            collected_data.append(data)
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        # Create broker and run
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_sell_h1_2_stops_between_entries")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check method result on bar 0
+        assert collected_data[0]['method_result'] is not None
+        method_result = collected_data[0]['method_result']
+        assert isinstance(method_result, OrderOperationResult)
+        assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
+        assert method_result.deal_id > 0
+        
+        # Check that all entries and stops trigger on bar 1 (stops have priority, so all stops trigger, deal closes)
+        assert collected_data[0]['trades_count'] == 0, "No execution on bar 0 (limit entries)"
+        assert collected_data[1]['trades_count'] == 6, "All entries (3) and all stops (3) should trigger - 6 trades total"
+        assert collected_data[2]['trades_count'] == 6, "No execution on bar 2"
+        
+        # Check total trades count: 3 entries + 3 stops
+        assert len(broker.trades) == 6, f"Expected 6 trades total (3 entries + 3 stops), got {len(broker.trades)}"
+        
+        # Check final state: deal should be closed (all stops triggered)
+        deal = broker.get_deal_by_id(method_result.deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be closed (quantity=0.0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed"
+        
+        # Check that all entry orders were executed
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE]
+        assert len(entry_orders) == 3, "Should have three entry orders"
+        executed_entries = [o for o in entry_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_entries) == 3, "All entry orders should be executed"
+        
+        # Check that all stop orders were executed
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 3, "Should have three stop loss orders"
+        executed_stops = [o for o in stop_orders if o.status == OrderStatus.EXECUTED]
+        assert len(executed_stops) == 3, "All stop loss orders should be executed"
+        
+        # Check that take profit order was canceled (deal closed by stops)
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        canceled_takes = [o for o in take_orders if o.status == OrderStatus.CANCELED]
+        assert len(canceled_takes) == 1, "Take profit order should be canceled"
