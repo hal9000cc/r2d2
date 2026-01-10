@@ -1036,6 +1036,22 @@ class Strategy(ABC):
         deal = self.broker.get_deal_by_id(deal_id)
         return deal.model_copy(deep=True)
     
+    def deal_info(self, deal_id: int) -> Optional[Deal]:
+        """
+        Get information about a deal by its ID.
+        
+        Args:
+            deal_id: ID of the deal to get information about
+        
+        Returns:
+            Deal: Deep copy of the deal, or None if deal with specified deal_id does not exist
+        """
+        try:
+            deal = self.broker.get_deal_by_id(deal_id)
+            return deal.model_copy(deep=True)
+        except IndexError:
+            return None
+    
     def modify_deal(
         self,
         deal_id: int,

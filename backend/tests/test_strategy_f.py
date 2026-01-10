@@ -82,7 +82,7 @@ class TestBuySltpPriceValidation:
         
         # Should have validation errors
         assert len(method_result.error_messages) > 0, "Should have validation errors"
-        assert any("stop_loss" in msg and "BUY stop loss trigger price" in msg and "must be below" in msg for msg in method_result.error_messages), \
+        assert any("stop_loss" in msg and "LONG stop loss trigger price" in msg and "must be below" in msg for msg in method_result.error_messages), \
             f"Should have error about stop loss above current price, got: {method_result.error_messages}"
         
         # Should not create orders or deal
@@ -147,7 +147,7 @@ class TestBuySltpPriceValidation:
         
         # Should have validation errors
         assert len(method_result.error_messages) > 0, "Should have validation errors"
-        assert any("take_profit" in msg and "BUY take profit price" in msg and "must be above" in msg for msg in method_result.error_messages), \
+        assert any("take_profit" in msg and "LONG take profit price" in msg and "must be above" in msg for msg in method_result.error_messages), \
             f"Should have error about take profit below current price, got: {method_result.error_messages}"
         
         # Should not create orders or deal
@@ -212,7 +212,7 @@ class TestBuySltpPriceValidation:
         
         # Should have validation errors
         assert len(method_result.error_messages) > 0, "Should have validation errors"
-        assert any("Entry" in msg and "BUY limit order price" in msg and "must be below" in msg for msg in method_result.error_messages), \
+        assert any("Entry" in msg and "LONG buy limit order price" in msg and "must be below" in msg for msg in method_result.error_messages), \
             f"Should have error about limit entry above current price, got: {method_result.error_messages}"
         
         # Should not create orders or deal
@@ -281,7 +281,7 @@ class TestSellSltpPriceValidation:
         
         # Should have validation errors
         assert len(method_result.error_messages) > 0, "Should have validation errors"
-        assert any("stop_loss" in msg and "SELL stop loss trigger price" in msg and "must be above" in msg for msg in method_result.error_messages), \
+        assert any("stop_loss" in msg and "SHORT stop loss trigger price" in msg and "must be above" in msg for msg in method_result.error_messages), \
             f"Should have error about stop loss below current price, got: {method_result.error_messages}"
         
         # Should not create orders or deal
@@ -346,7 +346,7 @@ class TestSellSltpPriceValidation:
         
         # Should have validation errors
         assert len(method_result.error_messages) > 0, "Should have validation errors"
-        assert any("take_profit" in msg and "SELL take profit price" in msg and "must be below" in msg for msg in method_result.error_messages), \
+        assert any("take_profit" in msg and "SHORT take profit price" in msg and "must be below" in msg for msg in method_result.error_messages), \
             f"Should have error about take profit above current price, got: {method_result.error_messages}"
         
         # Should not create orders or deal
@@ -411,7 +411,7 @@ class TestSellSltpPriceValidation:
         
         # Should have validation errors
         assert len(method_result.error_messages) > 0, "Should have validation errors"
-        assert any("Entry" in msg and "SELL limit order price" in msg and "must be above" in msg for msg in method_result.error_messages), \
+        assert any("Entry" in msg and "SHORT sell limit order price" in msg and "must be above" in msg for msg in method_result.error_messages), \
             f"Should have error about limit entry below current price, got: {method_result.error_messages}"
         
         # Should not create orders or deal
