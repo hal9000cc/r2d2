@@ -670,6 +670,17 @@ const dealsColumns = [
     width: '80px',
     class: (row) => row.is_closed ? 'status-closed' : 'status-open',
     format: (value) => value ? 'Closed' : 'Open'
+  },
+  { 
+    key: 'close_type', 
+    label: 'Close Type',
+    width: '120px',
+    format: (value) => {
+      if (!value || value === 0) return '—'
+      if (value === 1) return 'Stop Loss'
+      if (value === 2) return 'Take Profit'
+      return '—'
+    }
   }
 ]
 
@@ -1871,6 +1882,7 @@ function copyRowToClipboard(row, tableType) {
       .join('\n')
   } else if (tableType === 'deals') {
     // Format deal data
+    const closeTypeMap = { 0: '—', 1: 'Stop Loss', 2: 'Take Profit' }
     const dealData = {
       'Deal ID': row.deal_id,
       'Side': row.side ? row.side.toUpperCase() : '—',
@@ -1880,7 +1892,8 @@ function copyRowToClipboard(row, tableType) {
       'Exit Price': row.exit_price ? parseFloat(row.exit_price).toFixed(8) : '—',
       'Max Volume': row.max_volume ? parseFloat(row.max_volume).toFixed(8) : '—',
       'Profit': row.profit !== null && row.profit !== undefined ? parseFloat(row.profit).toFixed(8) : '—',
-      'Fees': row.fees ? parseFloat(row.fees).toFixed(8) : '—'
+      'Fees': row.fees ? parseFloat(row.fees).toFixed(8) : '—',
+      'Close Type': closeTypeMap[row.close_type] !== undefined ? closeTypeMap[row.close_type] : '—'
     }
     
     text = Object.entries(dealData)

@@ -152,6 +152,9 @@ class Deal(BaseModel):
     # Deal closed status (set to True when quantity == 0 and no active entry orders)
     is_closed: bool = False
     
+    # Type of deal closure (copied from last exit order's order_group, or NONE if closed via regular buy/sell)
+    close_type: Optional[OrderGroup] = None
+    
     # Automatic deal flag (True for deals created via Strategy.buy/sell, False for buy_sltp/sell_sltp)
     auto: bool = False
     
@@ -220,6 +223,10 @@ class Deal(BaseModel):
         This method does not check is_closed status itself - it should be called
         only when is_closed is False.
         
+        When closing, sets close_type based on the last trade's order:
+        - If last trade has order_id != 0, finds the order and copies its order_group to close_type
+        - If order_id == 0 or order not found, sets close_type = OrderGroup.NONE
+        
         Returns:
             True if deal was just closed (status changed from open to closed), False otherwise
         """
@@ -232,6 +239,24 @@ class Deal(BaseModel):
             if not has_active_entry_orders:
                 was_closed = self.is_closed
                 self.is_closed = True
+                
+                # Set close_type based on last trade's order
+                if self.trades:
+                    # Find last trade by time (and by trade_id if times are equal)
+                    last_trade = max(self.trades, key=lambda t: (t.time, t.trade_id))
+                    
+                    if last_trade.order_id != 0:
+                        # Find order by order_id
+                        order = next((o for o in self.orders if o.order_id == last_trade.order_id), None)
+                        if order and order.order_group != OrderGroup.NONE:
+                            self.close_type = order.order_group
+                        else:
+                            self.close_type = OrderGroup.NONE
+                    else:
+                        self.close_type = OrderGroup.NONE
+                else:
+                    self.close_type = OrderGroup.NONE
+                
                 # Return True if status changed from open to closed
                 return not was_closed
         return False

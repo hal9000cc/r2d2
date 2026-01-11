@@ -301,7 +301,7 @@ class BackTestingResults:
         if deal_ids:
             for deal in broker.deals:
                 if deal.deal_id in deal_ids:
-                    # Format member: deal_id|type|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed
+                    # Format member: deal_id|type|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed|close_type
                     member = (
                         f"{deal.deal_id}|"
                         f"{deal.type.value if deal.type else ''}|"
@@ -310,7 +310,8 @@ class BackTestingResults:
                         f"{deal.quantity}|"
                         f"{deal.fee}|"
                         f"{self._format_value(deal.profit)}|"
-                        f"{self._format_value(deal.is_closed)}"
+                        f"{self._format_value(deal.is_closed)}|"
+                        f"{deal.close_type.value if deal.close_type else 0}"
                     )
                     
                     # Use deal_id as score (convert to int if needed)
@@ -750,18 +751,21 @@ class BackTestingResults:
                 member = deals_data[0]
                 parts = member.split('|')
                 
-                if len(parts) >= 8:
-                    deal_dict = {
-                        'deal_id': parts[0],
-                        'type': parts[1] if parts[1] else None,
-                        'avg_buy_price': parts[2] if parts[2] else None,
-                        'avg_sell_price': parts[3] if parts[3] else None,
-                        'quantity': parts[4],
-                        'fee': parts[5],
-                        'profit': parts[6] if parts[6] else None,
-                        'is_closed': parts[7] == '1' if parts[7] else False
-                    }
-                    deals.append(deal_dict)
+                # Format: deal_id|type|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed|close_type
+                assert len(parts) == 9, f"Expected 9 parts in deal data, got {len(parts)}: {member[:100]}"
+                
+                deal_dict = {
+                    'deal_id': parts[0],
+                    'type': parts[1] if parts[1] else None,
+                    'avg_buy_price': parts[2] if parts[2] else None,
+                    'avg_sell_price': parts[3] if parts[3] else None,
+                    'quantity': parts[4],
+                    'fee': parts[5],
+                    'profit': parts[6] if parts[6] else None,
+                    'is_closed': parts[7] == '1' if parts[7] else False,
+                    'close_type': int(parts[8]) if parts[8] else 0
+                }
+                deals.append(deal_dict)
             
         return deals
     
