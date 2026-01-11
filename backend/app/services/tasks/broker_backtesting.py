@@ -1054,21 +1054,23 @@ class BrokerBacktesting(Broker):
                     if order.order_group == order_group:
                         self._execute_triggered_order(order)
     
-    def _deals_of_triggered_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> set:
+    def _deals_of_triggered_orders(self, high: PRICE_TYPE, low: PRICE_TYPE) -> Tuple[set, List[Order]]:
         """
-        Get set of deal IDs for deals that have triggered orders on current bar.
+        Get set of deal IDs for deals that have triggered orders on current bar,
+        and list of orphan orders (deal_id == 0) that have triggered.
         
         Checks all four types of orders (long stop, short stop, long limit, short limit)
-        and collects deal IDs from orders that would trigger.
+        and collects deal IDs from orders that would trigger, as well as orphan orders.
         
         Args:
             high: High price of current bar
             low: Low price of current bar
         
         Returns:
-            Set of deal IDs that have triggered orders
+            Tuple of (set of deal IDs that have triggered orders, list of orphan orders with deal_id == 0)
         """
         deal_ids = set()
+        orphan_orders = []
         
         # Check long stop orders (BUY): triggered if high >= trigger_price
         if len(self.long_stop_order_ids) > 0:
@@ -1079,6 +1081,8 @@ class BrokerBacktesting(Broker):
                 order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                 if order.deal_id > 0:
                     deal_ids.add(order.deal_id)
+                else:
+                    orphan_orders.append(order)
         
         # Check short stop orders (SELL): triggered if low <= trigger_price
         if len(self.short_stop_order_ids) > 0:
@@ -1089,6 +1093,8 @@ class BrokerBacktesting(Broker):
                 order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                 if order.deal_id > 0:
                     deal_ids.add(order.deal_id)
+                else:
+                    orphan_orders.append(order)
         
         # Check long limit orders (BUY): triggered if low < price
         if len(self.long_order_ids) > 0:
@@ -1099,6 +1105,8 @@ class BrokerBacktesting(Broker):
                 order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                 if order.deal_id > 0:
                     deal_ids.add(order.deal_id)
+                else:
+                    orphan_orders.append(order)
         
         # Check short limit orders (SELL): triggered if high > price
         if len(self.short_order_ids) > 0:
@@ -1109,8 +1117,10 @@ class BrokerBacktesting(Broker):
                 order = self.orders[order_id - 1]  # order_id is 1-based, list is 0-based
                 if order.deal_id > 0:
                     deal_ids.add(order.deal_id)
+                else:
+                    orphan_orders.append(order)
         
-        return deal_ids
+        return (deal_ids, orphan_orders)
     
     def _check_order_trigger_condition(self, order: Order, high: PRICE_TYPE, low: PRICE_TYPE) -> bool:
         """
@@ -1264,13 +1274,16 @@ class BrokerBacktesting(Broker):
         
         After each executed order, checks if deal is closed and stops processing if so.
         
+        After processing all deals, executes orphan orders (deal_id == 0) that have triggered.
+        
         Args:
             high: High price of current bar
             low: Low price of current bar
         """
-        # Get deals that have triggered orders
-        deal_ids = self._deals_of_triggered_orders(high, low)
+        # Get deals that have triggered orders and orphan orders
+        deal_ids, orphan_orders = self._deals_of_triggered_orders(high, low)
         
+        # Process deals with deal_id > 0
         for deal_id in deal_ids:
             deal = self.get_deal_by_id(deal_id)
             assert deal is not None, f"Deal {deal_id} not found, but was in triggered orders list"
@@ -1279,6 +1292,10 @@ class BrokerBacktesting(Broker):
                 self._execute_triggered_orders_for_long_deal(deal, high, low)
             else:  # SHORT
                 self._execute_triggered_orders_for_short_deal(deal, high, low)
+        
+        # Execute orphan orders (deal_id == 0)
+        for order in orphan_orders:
+            self._execute_triggered_order(order)
     
     def _find_extreme_stop_order(self, deal: Deal) -> Optional[Order]:
         """
@@ -1703,14 +1720,15 @@ class BrokerBacktesting(Broker):
     def close_deals(self):
         """
         Close all open deals by executing market orders.
-        Iterates through all active deals and closes each one.
+        Iterates through all deals and closes each one that is not already closed.
         """
-        # Get copy of active deals list (it may change during iteration)
-        active_deal_ids = list(self.active_deals)
+        # Iterate through all deals (not just active ones)
+        if self.deals is None:
+            return
         
-        # Close each open deal
-        for deal_id in active_deal_ids:
-            self.close_deal(deal_id)
+        # Close each deal (close_deal handles already-closed deals gracefully)
+        for deal in self.deals:
+            self.close_deal(deal.deal_id)
     
     def update_state(self, results: Optional[BackTestingResults], is_finish: bool = False) -> None:
         """
@@ -1909,7 +1927,10 @@ class BrokerBacktesting(Broker):
         
         # Close all open positions
         self.close_deals()
-        assert self.equity_symbol == 0.0, "Equity symbol is not 0 after closing deals"
+        # Use 1/10 of price precision as tolerance for floating point comparison
+        equity_tolerance = self.precision_price / 10.0
+        assert abs(self.equity_symbol) <= equity_tolerance, \
+            f"Equity symbol should be 0 (within tolerance {equity_tolerance}), got {self.equity_symbol}"
         assert len(self.active_deals) == 0, f"Active deals set is not empty after closing: {self.active_deals}"
         
         # Check trading results for consistency (only in debug mode)

@@ -392,8 +392,24 @@ Tests for the `modify_deal()` method that modifies existing deals by canceling a
   - Verify position volume increases to 1.5 after new entry executes
   - Verify new exit orders are calculated based on total position
 
-#### I8. modify_deal - Interleaved Orders
-- **I8.1**: modify_deal to update interleaved orders
+#### I8. No Order Execution
+- **I8.1**: BUY - Deal opened with limit entries, stops, and takes, but no orders execute
+  - Place buy_sltp with limit entries, stop loss, and take profit
+  - Price stays stable and never reaches entry levels, stop, or take
+  - Verify deal is created, orders are placed
+  - Verify no trades occur (no orders execute)
+  - Verify all orders remain active until end of backtesting
+  - Verify deal is closed by autoclosure at the end, all orders are canceled
+- **I8.2**: SELL - Deal opened with limit entries, stops, and takes, but no orders execute
+  - Place sell_sltp with limit entries, stop loss, and take profit
+  - Price stays stable and never reaches entry levels, stop, or take
+  - Verify deal is created, orders are placed
+  - Verify no trades occur (no orders execute)
+  - Verify all orders remain active until end of backtesting
+  - Verify deal is closed by autoclosure at the end, all orders are canceled
+
+#### I9. modify_deal - Interleaved Orders
+- **I9.1**: modify_deal to update interleaved orders
   - Place sell_sltp with multiple limit entries and multiple take profits between them
   - modify_deal to update stop loss and take profit
   - Verify new orders maintain protection logic for all entries

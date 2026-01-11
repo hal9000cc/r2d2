@@ -780,6 +780,7 @@ class Broker(ABC):
         was_just_closed = deal.check_closed()
         
         if was_just_closed:
+            assert deal.is_closed, f"Deal {deal.deal_id} is not closed after check_closed()"
             self.active_deals.discard(deal.deal_id)
             self._cancel_deal_orders(deal, self.ex_current_time())
             self.stats.add_deal(deal)

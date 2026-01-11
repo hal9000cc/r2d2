@@ -123,6 +123,8 @@ def test_task():
         fee_maker=0.0005,  # 0.05%
         price_step=0.1,
         slippage_in_steps=1.0,
+        precision_amount=0.1,  # Volume precision
+        precision_price=0.01,  # Price precision
         parameters={}
     )
 
