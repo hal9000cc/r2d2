@@ -1104,7 +1104,7 @@ class Strategy(ABC):
             )
         
         # 2. Check if deal is closed
-        if deal.quantity == 0:
+        if deal.is_closed:
             return OrderOperationResult(
                 orders=[],
                 error_messages=[f"modify_deal(): Deal {deal_id} is already closed"],

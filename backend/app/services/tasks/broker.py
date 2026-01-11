@@ -128,6 +128,7 @@ class Deal(BaseModel):
     - Tracks average buy and sell prices across all trades.
     - Tracks current position quantity, total fees and profit.
     - Stores initial entry volume for deals created via buy_sltp/sell_sltp (used for calculating stop/take volumes).
+    - Marks automatic deals (auto=True) created via Strategy.buy/sell methods.
     """
 
     deal_id: int = Field(gt=0)
@@ -150,6 +151,9 @@ class Deal(BaseModel):
     
     # Deal closed status (set to True when quantity == 0 and no active entry orders)
     is_closed: bool = False
+    
+    # Automatic deal flag (True for deals created via Strategy.buy/sell, False for buy_sltp/sell_sltp)
+    auto: bool = False
     
     # Initial entry volume (sum of all entry order volumes) - set for deals created via buy_sltp/sell_sltp
     # Used for calculating stop loss and take profit order target volumes
@@ -647,10 +651,15 @@ class Broker(ABC):
         if len(trade_ids) != len(trade_id_set := set(trade_ids)):
             errors.append(f"Duplicate trade_id found: {[tid for tid in trade_id_set if trade_ids.count(tid) > 1]}")
         
-        # Check 3: All trade_id in ascending order by time
-        trades_by_time = sorted(all_trades, key=lambda t: t.time)
-        if trade_ids != [t.trade_id for t in trades_by_time]:
-            errors.append("trade_id are not in ascending order by time")
+        # Check 3: All trade_id in ascending order by time (only for automatic deals)
+        auto_deals = [deal for deal in self.deals if deal.auto]
+        if auto_deals:
+            auto_trades = [trade for deal in auto_deals for trade in deal.trades]
+            if auto_trades:
+                auto_trade_ids = [trade.trade_id for trade in auto_trades]
+                auto_trades_by_time = sorted(auto_trades, key=lambda t: t.time)
+                if auto_trade_ids != [t.trade_id for t in auto_trades_by_time]:
+                    errors.append("trade_id are not in ascending order by time in automatic deals")
         
         # Check 4: All deals are closed
         if unclosed := [deal.deal_id for deal in self.deals if not deal.is_closed]:
@@ -918,10 +927,10 @@ class Broker(ABC):
         Create a new automatic deal and update last_auto_deal_id.
         
         Returns:
-            Newly created Deal instance
+            Newly created Deal instance with auto=True
         """
         new_deal_id = len(self.deals) + 1
-        new_deal = Deal(deal_id=new_deal_id)
+        new_deal = Deal(deal_id=new_deal_id, auto=True)
         self.deals.append(new_deal)
         self.last_auto_deal_id = new_deal_id
         return new_deal

@@ -1334,7 +1334,7 @@ class BrokerBacktesting(Broker):
         Returns:
             Extreme take order or None if no take orders exist
         """
-        take_orders = [order for order in deal.orders if order.order_group == OrderGroup.TAKE_PROFIT]
+        take_orders = [order for order in deal.orders if order.order_group == OrderGroup.TAKE_PROFIT and order.status in [OrderStatus.NEW, OrderStatus.ACTIVE]]
         if not take_orders:
             return None
         
