@@ -389,10 +389,6 @@ class Strategy(ABC):
                 msg = f"Volume {original_vol} rounded down to {vol} due to precision_amount={self.precision_amount}"
                 logger.warning(msg)
                 print(msg)
-            if price is not None and not self.eq(float(price), float(original_price)):
-                msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
-                logger.warning(msg)
-                print(msg)
             # Validate negative volume if needed
             if allow_negative and vol < 0 and current_volume is not None:
                 if abs(vol) > abs(current_volume):
@@ -459,12 +455,7 @@ class Strategy(ABC):
         
         # Single price: full position at this price (fraction = 1.0)
         if isinstance(exit_param, (int, float)):
-            original_price = exit_param
             price = self.round_to_precision(exit_param, self.precision_price)
-            if not self.eq(float(price), float(original_price)):
-                msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
-                logger.warning(msg)
-                print(msg)
             return [(1.0, PRICE_TYPE(price))]
         
         if isinstance(exit_param, list):
@@ -478,44 +469,24 @@ class Strategy(ABC):
                 for f, p in exit_param:
                     if f is None:
                         raise ValueError("Fractions must be explicit for SL/TP orders; None is not allowed")
-                    original_price = p
                     rounded_price = self.round_to_precision(p, self.precision_price)
-                    if not self.eq(float(rounded_price), float(original_price)):
-                        msg = f"Price {original_price} rounded to {rounded_price} due to precision_price={self.precision_price}"
-                        logger.warning(msg)
-                        print(msg)
                     result.append((float(f), PRICE_TYPE(rounded_price)))
                 return result
             else:
                 # List of prices: distribute equally with explicit fractions summing to 1.0
                 num_prices = len(exit_param)
                 if num_prices == 1:
-                    original_price = exit_param[0]
                     price = self.round_to_precision(exit_param[0], self.precision_price)
-                    if not self.eq(float(price), float(original_price)):
-                        msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
-                        logger.warning(msg)
-                        print(msg)
                     return [(1.0, PRICE_TYPE(price))]
                 else:
                     base_fraction = 1.0 / num_prices
                     result: List[Tuple[float, PRICE_TYPE]] = []
                     # First n-1 prices get base_fraction, last gets the remainder to make sum exactly 1.0
                     for p in exit_param[:-1]:
-                        original_price = p
                         rounded_price = self.round_to_precision(p, self.precision_price)
-                        if not self.eq(float(rounded_price), float(original_price)):
-                            msg = f"Price {original_price} rounded to {rounded_price} due to precision_price={self.precision_price}"
-                            logger.warning(msg)
-                            print(msg)
                         result.append((base_fraction, PRICE_TYPE(rounded_price)))
                     # Last price
-                    original_price = exit_param[-1]
                     price = self.round_to_precision(exit_param[-1], self.precision_price)
-                    if not self.eq(float(price), float(original_price)):
-                        msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
-                        logger.warning(msg)
-                        print(msg)
                     used_fraction = base_fraction * (num_prices - 1)
                     last_fraction = 1.0 - used_fraction
                     result.append((last_fraction, PRICE_TYPE(price)))
