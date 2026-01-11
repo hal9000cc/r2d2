@@ -440,6 +440,8 @@ class BackTestingResults:
                 'loss_deals': broker.stats.loss_deals,
                 'profit_per_deal': broker.stats.profit_per_deal,
                 'profit_gross': broker.stats.profit_gross,
+                'avg_profit_per_winning_deal': broker.stats.avg_profit_per_winning_deal,
+                'avg_loss_per_losing_deal': broker.stats.avg_loss_per_losing_deal,
                 'profit_long': broker.stats.profit_long,
                 'profit_short': broker.stats.profit_short,
                 'fee_taker': broker.stats.fee_taker,

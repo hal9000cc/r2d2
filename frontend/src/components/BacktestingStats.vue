@@ -41,10 +41,15 @@
           </span>
         </div>
         
-        <!-- Profit per deal -->
+        <!-- Profit per deal with win/loss averages -->
         <div class="stats-row">
           <span class="stats-label">Profit per deal:</span>
-          <span class="stats-value">{{ formatCurrency(stats.profit_per_deal) }}</span>
+          <span class="stats-value">
+            {{ formatCurrency(stats.profit_per_deal) }}
+            <span class="stats-sub" v-if="(stats.avg_profit_per_winning_deal !== null && stats.avg_profit_per_winning_deal !== undefined) || (stats.avg_loss_per_losing_deal !== null && stats.avg_loss_per_losing_deal !== undefined)">
+              (win {{ formatCurrency(stats.avg_profit_per_winning_deal) }} | loss {{ formatCurrency(stats.avg_loss_per_losing_deal) }})
+            </span>
+          </span>
         </div>
         
         <!-- Maximum drawdown -->

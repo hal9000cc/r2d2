@@ -193,13 +193,7 @@ class Strategy(ABC):
             OrderOperationResult with orders, error_messages, and categorized order IDs
         """
         # Round quantity down to precision_amount
-        original_quantity = quantity
         quantity = self.floor_to_precision(quantity, self.precision_amount)
-        volume_eps = self.precision_amount * 1e-3
-        if abs(quantity - original_quantity) > volume_eps:
-            msg = f"Volume {original_quantity} rounded down to {quantity} due to precision_amount={self.precision_amount}"
-            logger.warning(msg)
-            print(msg)
         
         # Round price to precision_price if specified
         original_price = price
@@ -269,13 +263,7 @@ class Strategy(ABC):
             OrderOperationResult with orders, error_messages, and categorized order IDs
         """
         # Round quantity down to precision_amount
-        original_quantity = quantity
         quantity = self.floor_to_precision(quantity, self.precision_amount)
-        volume_eps = self.precision_amount * 1e-3
-        if abs(quantity - original_quantity) > volume_eps:
-            msg = f"Volume {original_quantity} rounded down to {quantity} due to precision_amount={self.precision_amount}"
-            logger.warning(msg)
-            print(msg)
         
         # Round price to precision_price if specified
         original_price = price
@@ -359,11 +347,6 @@ class Strategy(ABC):
                 vol = -rounded_abs  # Restore negative sign after rounding
             else:
                 vol = self.floor_to_precision(enter, self.precision_amount)
-            volume_eps = self.precision_amount * 1e-3
-            if abs(vol - original_vol) > volume_eps:
-                msg = f"Volume {original_vol} rounded down to {vol} due to precision_amount={self.precision_amount}"
-                logger.warning(msg)
-                print(msg)
             # Validate negative volume if needed
             if allow_negative and vol < 0 and current_volume is not None:
                 if abs(vol) > abs(current_volume):
@@ -384,11 +367,6 @@ class Strategy(ABC):
                 price = None
             else:
                 price = self.round_to_precision(enter[1], self.precision_price)
-            volume_eps = self.precision_amount * 1e-3
-            if abs(vol - original_vol) > volume_eps:
-                msg = f"Volume {original_vol} rounded down to {vol} due to precision_amount={self.precision_amount}"
-                logger.warning(msg)
-                print(msg)
             # Validate negative volume if needed
             if allow_negative and vol < 0 and current_volume is not None:
                 if abs(vol) > abs(current_volume):
@@ -411,15 +389,6 @@ class Strategy(ABC):
                     rounded_price = None
                 else:
                     rounded_price = self.round_to_precision(price, self.precision_price)
-                volume_eps = self.precision_amount * 1e-3
-                if abs(rounded_vol - original_vol) > volume_eps:
-                    msg = f"Volume {original_vol} rounded down to {rounded_vol} due to precision_amount={self.precision_amount}"
-                    logger.warning(msg)
-                    print(msg)
-                if rounded_price is not None and not self.eq(float(rounded_price), float(original_price)):
-                    msg = f"Price {original_price} rounded to {rounded_price} due to precision_price={self.precision_price}"
-                    logger.warning(msg)
-                    print(msg)
                 # Validate negative volume if needed
                 if allow_negative and rounded_vol < 0 and current_volume is not None:
                     if abs(rounded_vol) > abs(current_volume):

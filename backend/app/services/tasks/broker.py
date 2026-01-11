@@ -296,9 +296,17 @@ class TradingStats(BaseModel):
     profit_per_deal: Optional[PRICE_TYPE] = None  # Profit per deal (profit / total_deals)
     profit_gross: Optional[PRICE_TYPE] = None  # Gross profit (profit + total_fees)
     
+    # Average profit/loss per deal type (calculated in add_deal)
+    avg_profit_per_winning_deal: Optional[PRICE_TYPE] = None  # Average profit per winning deal
+    avg_loss_per_losing_deal: Optional[PRICE_TYPE] = None  # Average loss per losing deal
+    
     # Profit by deal type (calculated in add_deal)
     profit_long: PRICE_TYPE = 0.0  # Profit from long deals
     profit_short: PRICE_TYPE = 0.0  # Profit from short deals
+    
+    # Internal accumulators for average profit/loss calculation
+    total_profit_winning: PRICE_TYPE = 0.0  # Sum of profits from winning deals
+    total_loss_losing: PRICE_TYPE = 0.0  # Sum of losses from losing deals
     
     # Backtesting parameters (set from task)
     fee_taker: PRICE_TYPE = 0.0  # Taker fee rate (as fraction, e.g., 0.001 for 0.1%)
@@ -377,21 +385,45 @@ class TradingStats(BaseModel):
             # Add profit from closed long deal
             if deal.is_closed and deal.profit is not None:
                 self.profit_long += deal.profit
-                # Count profitable/losing deals
+                # Count profitable/losing deals and accumulate for averages
                 if deal.profit > 0:
                     self.profit_deals += 1
+                    self.total_profit_winning += deal.profit
+                    # Recalculate average profit per winning deal
+                    if self.profit_deals > 0:
+                        self.avg_profit_per_winning_deal = self.total_profit_winning / self.profit_deals
+                    else:
+                        self.avg_profit_per_winning_deal = None
                 elif deal.profit < 0:
                     self.loss_deals += 1
+                    self.total_loss_losing += deal.profit  # deal.profit is negative, so this accumulates losses
+                    # Recalculate average loss per losing deal
+                    if self.loss_deals > 0:
+                        self.avg_loss_per_losing_deal = self.total_loss_losing / self.loss_deals
+                    else:
+                        self.avg_loss_per_losing_deal = None
         elif deal.type == DealType.SHORT:
             self.short_deals += 1
             # Add profit from closed short deal
             if deal.is_closed and deal.profit is not None:
                 self.profit_short += deal.profit
-                # Count profitable/losing deals
+                # Count profitable/losing deals and accumulate for averages
                 if deal.profit > 0:
                     self.profit_deals += 1
+                    self.total_profit_winning += deal.profit
+                    # Recalculate average profit per winning deal
+                    if self.profit_deals > 0:
+                        self.avg_profit_per_winning_deal = self.total_profit_winning / self.profit_deals
+                    else:
+                        self.avg_profit_per_winning_deal = None
                 elif deal.profit < 0:
                     self.loss_deals += 1
+                    self.total_loss_losing += deal.profit  # deal.profit is negative, so this accumulates losses
+                    # Recalculate average loss per losing deal
+                    if self.loss_deals > 0:
+                        self.avg_loss_per_losing_deal = self.total_loss_losing / self.loss_deals
+                    else:
+                        self.avg_loss_per_losing_deal = None
     
     def calc_stat(self) -> None:
         """
