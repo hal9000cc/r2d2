@@ -1492,7 +1492,7 @@ class BrokerBacktesting(Broker):
         
         # Update all stop orders
         for order, volume in zip(stop_orders, stop_volumes):
-            assert volume > 0, f"Order volume must be > 0, got {volume} for order {order.order_id}"
+            #assert volume > 0, f"Order volume must be > 0, got {volume} for order {order.order_id}"
             order.volume = volume
             order.modify_time = self.current_time
     

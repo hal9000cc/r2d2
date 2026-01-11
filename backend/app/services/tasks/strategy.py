@@ -660,7 +660,11 @@ class Strategy(ABC):
         take_profits: List[Tuple[float, PRICE_TYPE]]
     ) -> List[str]:
         """
-        Validate prices relative to current market price.
+        Validate prices for entry, stop loss, and take profit orders.
+        
+        - Entry limit orders: validated relative to current market price
+        - Stop loss orders: validated by "protected by stop loss" check (not relative to current price)
+        - Take profit orders: validated relative to maximum (LONG) or minimum (SHORT) entry price
         
         Args:
             deal_type: Deal type (LONG or SHORT)
@@ -679,7 +683,7 @@ class Strategy(ABC):
         
         current_price = self.close[-1]
         
-        # Validate entry limit orders
+        # Validate entry limit orders relative to current price
         for i, (vol, price) in enumerate(entries):
             if price is not None:  # Limit order
                 if deal_type == DealType.LONG:
@@ -695,35 +699,49 @@ class Strategy(ABC):
                             f"Entry {i}: SHORT sell limit order price ({price}) must be above current price ({current_price})"
                         )
         
-        # Validate stop_losses
-        for i, (fraction, price) in enumerate(stop_losses):
-            if deal_type == DealType.LONG:
-                # LONG position: stop loss is SELL stop, trigger_price must be < current price
-                if self.gteq(price, current_price):
-                    errors.append(
-                        f"stop_loss {i}: LONG stop loss trigger price ({price}) must be below current price ({current_price})"
-                    )
-            else:  # SHORT
-                # SHORT position: stop loss is BUY stop, trigger_price must be > current price
-                if self.lteq(price, current_price):
-                    errors.append(
-                        f"stop_loss {i}: SHORT stop loss trigger price ({price}) must be above current price ({current_price})"
-                    )
+        # Stop loss validation is handled by "protected by stop loss" check below
+        # No need to validate stop loss relative to current price
         
-        # Validate take_profits
-        for i, (fraction, price) in enumerate(take_profits):
-            if deal_type == DealType.LONG:
-                # LONG position: take profit is SELL limit, price must be > current price
-                if self.lteq(price, current_price):
-                    errors.append(
-                        f"take_profit {i}: LONG take profit price ({price}) must be above current price ({current_price})"
-                    )
-            else:  # SHORT
-                # SHORT position: take profit is BUY limit, price must be < current price
-                if self.gteq(price, current_price):
-                    errors.append(
-                        f"take_profit {i}: SHORT take profit price ({price}) must be below current price ({current_price})"
-                    )
+        # Validate take_profits relative to maximum/minimum entry price
+        if take_profits:
+            # Find maximum (LONG) or minimum (SHORT) entry price
+            # Extract limit entry prices (skip market orders where price is None)
+            limit_entry_prices = [price for _, price in entries if price is not None]
+            
+            if limit_entry_prices:
+                # There are limit entry orders
+                if deal_type == DealType.LONG:
+                    # LONG: take profit must be > maximum entry limit price
+                    max_entry_price = max(limit_entry_prices)
+                    for i, (fraction, price) in enumerate(take_profits):
+                        if not self.gt(price, max_entry_price):
+                            errors.append(
+                                f"take_profit {i}: LONG take profit price ({price}) must be above maximum entry price ({max_entry_price})"
+                            )
+                else:  # SHORT
+                    # SHORT: take profit must be < minimum entry limit price
+                    min_entry_price = min(limit_entry_prices)
+                    for i, (fraction, price) in enumerate(take_profits):
+                        if not self.lt(price, min_entry_price):
+                            errors.append(
+                                f"take_profit {i}: SHORT take profit price ({price}) must be below minimum entry price ({min_entry_price})"
+                            )
+            else:
+                # All entries are market orders, use current_price as entry price
+                if deal_type == DealType.LONG:
+                    # LONG: take profit must be > current_price
+                    for i, (fraction, price) in enumerate(take_profits):
+                        if not self.gt(price, current_price):
+                            errors.append(
+                                f"take_profit {i}: LONG take profit price ({price}) must be above current price ({current_price})"
+                            )
+                else:  # SHORT
+                    # SHORT: take profit must be < current_price
+                    for i, (fraction, price) in enumerate(take_profits):
+                        if not self.lt(price, current_price):
+                            errors.append(
+                                f"take_profit {i}: SHORT take profit price ({price}) must be below current price ({current_price})"
+                            )
         
         # Validate that all entry limit orders are protected by stop loss
         # Extract limit entry prices (skip market orders where price is None)
