@@ -175,6 +175,8 @@ class Deal(BaseModel):
         - Updates quantity, avg_buy_price, avg_sell_price, fee and profit.
         """
 
+        assert trade.quantity > 0, f"Trade quantity must be greater than 0, got {trade.quantity}"
+        
         trade.deal_id = self.deal_id
         self.trades.append(trade)
 
@@ -359,10 +361,15 @@ class TradingStats(BaseModel):
         Add deal to statistics.
         
         Counts deals (total, long, short) and calculates profit by deal type.
+        Only adds deals that have at least one trade (non-empty deals).
         
         Args:
             deal: Deal to add
         """
+        # Skip empty deals (deals without any trades)
+        if len(deal.trades) == 0:
+            return
+        
         self.total_deals += 1
         
         if deal.type == DealType.LONG:
@@ -515,25 +522,48 @@ class Broker(ABC):
 
         raise NotImplementedError
 
-    def _cancel_deal_orders(self, deal: Deal, current_time: np.datetime64) -> List[Order]:
+    def _cancel_deal_orders(
+        self,
+        deal: Deal,
+        current_time: np.datetime64,
+        cancel_entry: bool = True,
+        cancel_stop_loss: bool = True,
+        cancel_take_profit: bool = True
+    ) -> List[Order]:
         """
-        Cancel all active and new orders in a deal.
+        Cancel active and new orders in a deal, optionally filtered by order group.
         
         Iterates through all orders in the deal and cancels those with
-        status ACTIVE or NEW by calling _cancel_order for each.
+        status ACTIVE or NEW that match the specified order groups.
         
         Args:
             deal: Deal whose orders should be canceled
             current_time: Current time for order modification
+            cancel_entry: If True, cancel entry orders (OrderGroup.NONE). Default: True.
+            cancel_stop_loss: If True, cancel stop loss orders (OrderGroup.STOP_LOSS). Default: True.
+            cancel_take_profit: If True, cancel take profit orders (OrderGroup.TAKE_PROFIT). Default: True.
         
         Returns:
             List of orders that were canceled
         """
         canceled_orders = []
         for order in deal.orders:
-            if order.status in [OrderStatus.ACTIVE, OrderStatus.NEW]:
+            if order.status not in [OrderStatus.ACTIVE, OrderStatus.NEW]:
+                continue
+            
+            # Check if this order group should be canceled
+            should_cancel = False
+            if order.order_group == OrderGroup.NONE and cancel_entry:
+                should_cancel = True
+            elif order.order_group == OrderGroup.STOP_LOSS and cancel_stop_loss:
+                should_cancel = True
+            elif order.order_group == OrderGroup.TAKE_PROFIT and cancel_take_profit:
+                should_cancel = True
+            
+            if should_cancel:
                 self._cancel_order(order, current_time)
                 canceled_orders.append(order)
+        
         return canceled_orders
     
     def _cancel_order(self, order: Order, current_time: np.datetime64) -> None:

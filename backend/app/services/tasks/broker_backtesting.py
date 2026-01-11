@@ -300,6 +300,7 @@ class BrokerBacktesting(Broker):
         Returns:
             int: Assigned order_id
         """
+
         # Assign order_id
         order.order_id = len(self.orders) + 1
         
@@ -631,7 +632,10 @@ class BrokerBacktesting(Broker):
         entries: List[Tuple[VOLUME_TYPE, Optional[PRICE_TYPE]]],
         stop_losses: List[Tuple[Optional[float], PRICE_TYPE]],
         take_profits: List[Tuple[Optional[float], PRICE_TYPE]],
-        existing_deal_id: Optional[int] = None
+        existing_deal_id: Optional[int] = None,
+        clear_enter: bool = False,
+        clear_stop_loss: bool = False,
+        clear_take_profit: bool = False
     ) -> Tuple[Optional[Deal], List[Order], List[int]]:
         """
         Execute a deal with entry orders, stop losses, and take profits.
@@ -656,6 +660,12 @@ class BrokerBacktesting(Broker):
                          For SHORT: farthest = minimum price.
             existing_deal_id: Optional existing deal ID for modification. If provided,
                              uses existing deal instead of creating new one.
+            clear_enter: If True, cancel all entry orders (OrderGroup.NONE) before creating new ones.
+                        Only used when existing_deal_id is provided.
+            clear_stop_loss: If True, cancel all stop loss orders (OrderGroup.STOP_LOSS) before creating new ones.
+                           Only used when existing_deal_id is provided.
+            clear_take_profit: If True, cancel all take profit orders (OrderGroup.TAKE_PROFIT) before creating new ones.
+                              Only used when existing_deal_id is provided.
         
         Returns:
             Tuple[Optional[Deal], List[Order], List[int]]: 
@@ -673,8 +683,14 @@ class BrokerBacktesting(Broker):
             deal = self.get_deal_by_id(existing_deal_id)
             deal_id = existing_deal_id
             
-            # Cancel all active orders for the deal
-            canceled_old_orders = self._cancel_deal_orders(deal, self.current_time)
+            # Cancel active orders selectively based on clear flags
+            canceled_old_orders = self._cancel_deal_orders(
+                deal,
+                self.current_time,
+                cancel_entry=clear_enter,
+                cancel_stop_loss=clear_stop_loss,
+                cancel_take_profit=clear_take_profit
+            )
             
             # Use deal type from existing deal (should match provided deal_type)
             deal_type = deal.type
@@ -779,11 +795,16 @@ class BrokerBacktesting(Broker):
         deal.type = deal_type
         if existing_deal_id is not None:
             # Update enter_volume: current_position_volume + new_positive_enter - closed_volume
-            deal.enter_volume = current_position_volume + new_positive_enter - closed_volume
+            if clear_enter:
+                deal.enter_volume = current_position_volume
+            else:
+                deal.enter_volume = deal.enter_volume + new_positive_enter - closed_volume
         else:
             # Store initial entry volume for calculating stop/take target volumes
             deal.enter_volume = new_positive_enter
         
+        assert deal.enter_volume > 0, f"Enter volume must be greater than 0, got {deal.enter_volume}"
+
         # 6. Create stop loss orders (with temporary volume=0, will be updated later)
         stop_orders = []
         opposite_side = OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY
@@ -982,6 +1003,8 @@ class BrokerBacktesting(Broker):
             order_id=order.order_id,
             is_market_order=is_market_order
         )
+
+        assert order.volume > 0, f"Order volume must be greater than 0, got {order.volume}"
         # Mark order as executed
         order.filled_volume = order.volume
         order.price = execution_price  # Set execution price
@@ -1208,6 +1231,8 @@ class BrokerBacktesting(Broker):
         if self._process_order_group(first_orders, high, low, deal, reverse=True):
             return  # Deal closed
         
+        if deal.quantity == 0:
+            return
         # Update SL/TP orders after first group processing
         self._update_sltp_orders_for_deal(deal)
         
@@ -1248,6 +1273,8 @@ class BrokerBacktesting(Broker):
         if self._process_order_group(first_orders, high, low, deal, reverse=False):
             return  # Deal closed
         
+        if deal.quantity == 0:
+            return
         # Update SL/TP orders after first group processing
         self._update_sltp_orders_for_deal(deal)
         
@@ -1436,6 +1463,8 @@ class BrokerBacktesting(Broker):
             target_volume: Target total volume for calculating regular stop volumes (based on fraction)
             current_volume: Current position volume for calculating extreme stop volume (remainder)
         """
+        assert target_volume >= 0, f"Target volume must be >= 0, got {target_volume}"
+
         stop_orders = [order for order in deal.orders if order.order_group == OrderGroup.STOP_LOSS and order.status in [OrderStatus.NEW, OrderStatus.ACTIVE]]
         if not stop_orders:
             return
@@ -1463,7 +1492,7 @@ class BrokerBacktesting(Broker):
         
         # Update all stop orders
         for order, volume in zip(stop_orders, stop_volumes):
-            assert volume >= 0, f"Order volume must be >= 0, got {volume} for order {order.order_id}"
+            assert volume > 0, f"Order volume must be > 0, got {volume} for order {order.order_id}"
             order.volume = volume
             order.modify_time = self.current_time
     
@@ -1513,7 +1542,7 @@ class BrokerBacktesting(Broker):
         
         # Update volumes for all NEW and ACTIVE take orders
         for order, volume in zip(take_orders, take_volumes):
-            assert volume >= 0, f"Order volume must be >= 0, got {volume} for order {order.order_id}"
+            #assert volume > 0, f"Order volume must be > 0, got {volume} for order {order.order_id}"
             order.volume = volume
             order.modify_time = self.current_time
         

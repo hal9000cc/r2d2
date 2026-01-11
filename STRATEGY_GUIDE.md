@@ -651,18 +651,29 @@ result = self.modify_deal(
 
 **Parameters:**
 - `deal_id`: ID of the deal to modify (required)
-- `enter`: Entry order(s) - same format as `buy_sltp()`/`sell_sltp()`, or `None`/`0` to skip adding new entry orders, or negative value to close part of position (optional)
-- `stop_loss`: Stop loss order(s) - same format as `buy_sltp()`/`sell_sltp()` (optional)
-- `take_profit`: Take profit order(s) - same format as `buy_sltp()`/`sell_sltp()` (optional)
+- `enter`: Entry order(s) - same format as `buy_sltp()`/`sell_sltp()`, or `None` to leave entry orders unchanged, or `0` to clear all entry orders, or negative value to close part of position (optional)
+- `stop_loss`: Stop loss order(s) - same format as `buy_sltp()`/`sell_sltp()`, or `None` to leave stop loss orders unchanged, or `0` to clear all stop loss orders (optional)
+- `take_profit`: Take profit order(s) - same format as `buy_sltp()`/`sell_sltp()`, or `None` to leave take profit orders unchanged, or `0` to clear all take profit orders (optional)
 
 **Returns:** `OrderOperationResult` with all orders (new entry + exit if specified), categorized by status.
 
 **Features:**
+- **Selective Order Modification**: Only the order groups whose parameters are provided are modified. If a parameter is not specified or is `None`, the corresponding order group remains unchanged. This allows modifying only specific parts of a deal:
+  - If only `enter` is provided → only entry orders are modified
+  - If only `stop_loss` is provided → only stop loss orders are modified
+  - If only `take_profit` is provided → only take profit orders are modified
+  - Any combination of parameters can be provided to modify multiple groups simultaneously
+- **Order Group Clearing**: Passing `0` for any parameter clears (removes) all active orders of that group:
+  - `enter=0` → clears all entry orders (active entry orders are canceled, no new ones are created)
+  - `stop_loss=0` → clears all stop loss orders (active stop loss orders are canceled, no new ones are created)
+  - `take_profit=0` → clears all take profit orders (active take profit orders are canceled, no new ones are created)
+  - If the specified group has no active orders, clearing has no effect (no error)
 - **Deal Direction Preservation**: The deal direction (long/short) cannot be changed. The function will validate that new orders match the existing deal type.
-- **Order Cancellation**: All active (ACTIVE/NEW) orders for the specified deal are canceled before placing new orders. Executed orders remain in the deal and are not canceled.
+- **Order Cancellation**: For order groups that are being modified (parameter provided and not `None`), all active (ACTIVE/NEW) orders of that group are canceled before placing new ones. Executed orders remain in the deal and are not canceled. Order groups with `None` parameter are not affected.
 - **Position Preservation**: The existing position volume (`deal.quantity`) in the market is preserved. New entry orders add to the position, negative values close part of the position.
 - **Enter Parameter**:
-  - If `enter` is not specified, `enter=None`, or `enter=0`, no new entry orders are created. The existing position volume is preserved.
+  - If `enter` is not specified or `enter=None`: entry orders remain unchanged
+  - If `enter=0`: all active entry orders are cleared (canceled), no new entry orders are created
   - If `enter` is a positive value, new entry orders are placed according to the same rules as `buy_sltp()`/`sell_sltp()`:
     - Market order: `enter=volume` (single positive value)
     - Limit order: `enter=(volume, price)` (single tuple with positive volume)
@@ -676,7 +687,9 @@ result = self.modify_deal(
     - For LONG deals: buy limit orders (price below current price) or buy market orders are allowed
     - For SHORT deals: sell limit orders (price above current price) or sell market orders are allowed
 - **Stop Loss and Take Profit**:
-  - Same format as `buy_sltp()`/`sell_sltp()`: single price, list of prices (equal parts), or list of (fraction, price) tuples
+  - If `stop_loss`/`take_profit` is not specified or is `None`: corresponding orders remain unchanged
+  - If `stop_loss=0`/`take_profit=0`: all active orders of that group are cleared (canceled), no new ones are created
+  - If a value is provided, same format as `buy_sltp()`/`sell_sltp()`: single price, list of prices (equal parts), or list of (fraction, price) tuples
   - **Direction Constraints** (automatically enforced based on deal type):
     - For LONG deals:
       - Stop loss orders: SELL STOP orders (trigger_price below current price)
@@ -742,11 +755,18 @@ result = self.modify_deal(
     take_profit=110.0
 )
 
-# Example 5: Only update stop loss, remove take profit
+# Example 5: Only update stop loss, clear take profit
 result = self.modify_deal(
     deal_id=5,
     stop_loss=92.0,  # New stop loss
-    take_profit=None  # No take profit (all take profit orders will be canceled)
+    take_profit=0  # Clear all take profit orders
+)
+
+# Example 5a: Only update stop loss, leave take profit unchanged
+result = self.modify_deal(
+    deal_id=5,
+    stop_loss=92.0,  # New stop loss
+    take_profit=None  # Leave take profit orders unchanged
 )
 
 # Example 6: Add volume and update exits in one call
@@ -755,6 +775,26 @@ result = self.modify_deal(
     enter=0.2,  # Add 0.2 more at market
     stop_loss=95.0,  # Update stop loss
     take_profit=[(0.5, 110.0), (0.5, 115.0)]  # Update take profit with multiple levels
+)
+
+# Example 7: Clear entry orders, update only stop loss
+result = self.modify_deal(
+    deal_id=5,
+    enter=0,  # Clear all entry orders
+    stop_loss=90.0  # Update stop loss
+)
+
+# Example 8: Clear stop loss and take profit, leave entry orders unchanged
+result = self.modify_deal(
+    deal_id=5,
+    stop_loss=0,  # Clear all stop loss orders
+    take_profit=0  # Clear all take profit orders
+)
+
+# Example 9: Selective modification - only update take profit
+result = self.modify_deal(
+    deal_id=5,
+    take_profit=115.0  # Only take profit is updated, entry and stop loss remain unchanged
 )
 ```
 

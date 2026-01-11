@@ -1072,21 +1072,33 @@ class Strategy(ABC):
         ]] = None
     ) -> OrderOperationResult:
         """
-        Modify an existing deal by canceling all active orders and placing new ones.
+        Modify an existing deal by selectively updating order groups.
         
-        The existing position volume in the market is preserved. The deal direction
-        (long/short) cannot be changed.
+        Only the order groups whose parameters are provided are modified. The existing
+        position volume in the market is preserved. The deal direction (long/short)
+        cannot be changed.
         
         Args:
             deal_id: ID of the deal to modify (required)
-            enter: Entry order(s) - same format as buy_sltp()/sell_sltp(), or None/0
-                   to skip adding new entry orders, or negative value to close part of position
-            stop_loss: Stop loss order(s) - same format as buy_sltp()/sell_sltp() (optional)
-            take_profit: Take profit order(s) - same format as buy_sltp()/sell_sltp() (optional)
+            enter: Entry order(s) - same format as buy_sltp()/sell_sltp(), or None to leave
+                   entry orders unchanged, or 0 to clear all entry orders, or negative value
+                   to close part of position (optional)
+            stop_loss: Stop loss order(s) - same format as buy_sltp()/sell_sltp(), or None to
+                       leave stop loss orders unchanged, or 0 to clear all stop loss orders (optional)
+            take_profit: Take profit order(s) - same format as buy_sltp()/sell_sltp(), or None
+                         to leave take profit orders unchanged, or 0 to clear all take profit orders (optional)
         
         Returns:
             OrderOperationResult with all orders (new entry + exit if specified),
             categorized by status.
+        
+        Features:
+        - Selective modification: only order groups with provided parameters are modified
+        - Order clearing: passing 0 for any parameter clears all active orders of that group
+        - Parameter values:
+          - None: leave the order group unchanged
+          - 0: clear all active orders of that group (cancel existing, create no new ones)
+          - Value: create new orders according to the provided specification
         """
         # 1. Get existing deal
         try:
@@ -1130,9 +1142,36 @@ class Strategy(ABC):
             )
         deal_type = deal.type
         
-        # 4. Normalize parameters
-        # Handle enter parameter: None, 0, or not specified means no new entry orders
-        if enter is None or enter == 0:
+        # 4. Determine which order groups to modify/clear
+        # Flags: True if parameter is provided (not None), False if None
+        clear_enter = enter is not None
+        clear_stop_loss = stop_loss is not None
+        clear_take_profit = take_profit is not None
+        
+        # 4.1. Check error: cannot clear entry orders if position volume is zero
+        if clear_enter and abs(deal.quantity) == 0:
+            return OrderOperationResult(
+                orders=[],
+                error_messages=[f"modify_deal(): Cannot clear entry orders when deal position volume is zero"],
+                active=[],
+                executed=[],
+                canceled=[],
+                error=[],
+                deal_id=deal_id,
+                volume=deal.quantity
+            )
+        
+        # 4.2. Convert 0 to None for normalization (0 means clear, None means unchanged)
+        if enter == 0:
+            enter = None
+        if stop_loss == 0:
+            stop_loss = None
+        if take_profit == 0:
+            take_profit = None
+        
+        # 5. Normalize parameters
+        # Handle enter parameter: None means no new entry orders
+        if enter is None:
             entries = []
         else:
             try:
@@ -1156,7 +1195,7 @@ class Strategy(ABC):
         stop_losses = self._normalize_sltp_exit(stop_loss)
         take_profits = self._normalize_sltp_exit(take_profit)
         
-        # 5. Validate structure
+        # 6. Validate structure
         structure_errors = self._validate_sltp_structure(
             entries,
             stop_losses,
@@ -1165,13 +1204,13 @@ class Strategy(ABC):
             allow_negative=True
         )
         
-        # 6. Validate prices relative to current price
+        # 7. Validate prices relative to current price
         price_errors = self._validate_sltp_prices(deal_type, entries, stop_losses, take_profits)
         
-        # 7. Combine all errors
+        # 8. Combine all errors
         all_errors = structure_errors + price_errors
         
-        # 8. If there are errors, return error result
+        # 9. If there are errors, return error result
         if all_errors:
             self._log_result_errors(all_errors, "modify_deal")
             return OrderOperationResult(
@@ -1185,13 +1224,16 @@ class Strategy(ABC):
                 volume=deal.quantity
             )
         
-        # 9. Execute deal through broker with existing deal_id
+        # 10. Execute deal through broker with existing deal_id
         deal_result, new_orders, canceled_order_ids = self.broker.execute_deal(
             deal_type,
             entries,
             stop_losses,
             take_profits,
-            existing_deal_id=deal_id
+            existing_deal_id=deal_id,
+            clear_enter=clear_enter,
+            clear_stop_loss=clear_stop_loss,
+            clear_take_profit=clear_take_profit
         )
         
         # 11. Get orders from new_orders (created in this call)
