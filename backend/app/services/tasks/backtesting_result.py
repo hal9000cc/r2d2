@@ -371,7 +371,13 @@ class BackTestingResults:
             # Format errors as JSON string
             errors_json = json.dumps(order.errors) if order.errors else ""
             
-            # Format member: order_id|deal_id|create_time_iso|modify_time_iso|side|order_type|price|volume|filled_volume|status|trigger_price|errors_json
+            # Format order_group as numeric value (0, 1, 2)
+            order_group_value = order.order_group.value if order.order_group else 0
+            
+            # Format fraction (None becomes empty string)
+            fraction_str = self._format_value(order.fraction)
+            
+            # Format member: order_id|deal_id|create_time_iso|modify_time_iso|side|order_type|price|volume|filled_volume|status|trigger_price|errors_json|order_group|fraction
             member = (
                 f"{order.order_id}|"
                 f"{self._format_value(order.deal_id)}|"
@@ -384,7 +390,9 @@ class BackTestingResults:
                 f"{order.filled_volume}|"
                 f"{order.status.value}|"
                 f"{trigger_price_str}|"
-                f"{errors_json}"
+                f"{errors_json}|"
+                f"{order_group_value}|"
+                f"{fraction_str}"
             )
             
             orders_hash_data[order_id_str] = member
@@ -785,68 +793,40 @@ class BackTestingResults:
                     if order_member:
                         parts = order_member.split('|')
                         
-                        if len(parts) >= 12:
-                            # New format with order_type and errors
-                            errors_list = []
-                            if parts[11]:
-                                try:
-                                    errors_list = json.loads(parts[11])
-                                except (json.JSONDecodeError, ValueError):
-                                    # If parsing fails, treat as empty list
-                                    errors_list = []
-                            
-                            order_dict = {
-                                'order_id': parts[0],
-                                'deal_id': parts[1] if parts[1] else None,
-                                'create_time': parts[2],
-                                'modify_time': parts[3],
-                                'side': parts[4],
-                                'order_type': parts[5],
-                                'price': parts[6],
-                                'volume': parts[7],
-                                'filled_volume': parts[8],
-                                'status': int(parts[9]) if parts[9] else 0,
-                                'trigger_price': parts[10] if parts[10] else None,
-                                'errors': errors_list
-                            }
-                            orders.append(order_dict)
-                        elif len(parts) >= 11:
-                            # Format with order_type but without errors (backward compatibility)
-                            order_dict = {
-                                'order_id': parts[0],
-                                'deal_id': parts[1] if parts[1] else None,
-                                'create_time': parts[2],
-                                'modify_time': parts[3],
-                                'side': parts[4],
-                                'order_type': parts[5],
-                                'price': parts[6],
-                                'volume': parts[7],
-                                'filled_volume': parts[8],
-                                'status': int(parts[9]) if parts[9] else 0,
-                                'trigger_price': parts[10] if parts[10] else None,
-                                'errors': []  # Default empty list for old format
-                            }
-                            orders.append(order_dict)
-                        elif len(parts) >= 10:
-                            # Backward compatibility: old format without order_type and errors
-                            order_dict = {
-                                'order_id': parts[0],
-                                'deal_id': parts[1] if parts[1] else None,
-                                'create_time': parts[2],
-                                'modify_time': parts[3],
-                                'side': parts[4],
-                                'order_type': 'limit',  # Default for old orders
-                                'price': parts[5],
-                                'volume': parts[6],
-                                'filled_volume': parts[7],
-                                'status': int(parts[8]) if parts[8] else 0,
-                                'trigger_price': parts[9] if parts[9] else None,
-                                'errors': []  # Default empty list for old format
-                            }
-                            # Determine order_type from trigger_price for backward compatibility
-                            if order_dict['trigger_price']:
-                                order_dict['order_type'] = 'stop'
-                            orders.append(order_dict)
+                        # Format: order_id|deal_id|create_time_iso|modify_time_iso|side|order_type|price|volume|filled_volume|status|trigger_price|errors_json|order_group|fraction
+                        assert len(parts) == 14, f"Expected 14 parts in order data, got {len(parts)}: {order_member[:100]}"
+                        
+                        errors_list = []
+                        if parts[11]:
+                            try:
+                                errors_list = json.loads(parts[11])
+                            except (json.JSONDecodeError, ValueError):
+                                # If parsing fails, treat as empty list
+                                errors_list = []
+                        
+                        # Parse order_group (numeric: 0, 1, 2)
+                        order_group = int(parts[12]) if parts[12] else 0
+                        
+                        # Parse fraction (can be None/empty)
+                        fraction = float(parts[13]) if parts[13] else None
+                        
+                        order_dict = {
+                            'order_id': parts[0],
+                            'deal_id': parts[1] if parts[1] else None,
+                            'create_time': parts[2],
+                            'modify_time': parts[3],
+                            'side': parts[4],
+                            'order_type': parts[5],
+                            'price': parts[6],
+                            'volume': parts[7],
+                            'filled_volume': parts[8],
+                            'status': int(parts[9]) if parts[9] else 0,
+                            'trigger_price': parts[10] if parts[10] else None,
+                            'errors': errors_list,
+                            'order_group': order_group,
+                            'fraction': fraction
+                        }
+                        orders.append(order_dict)
         except Exception as e:
             logger.warning(f"Failed to load orders from {orders_index_key}: {e}")
         

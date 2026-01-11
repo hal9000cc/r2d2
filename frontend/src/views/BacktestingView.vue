@@ -683,6 +683,19 @@ const ordersColumns = [
     format: (value) => value ? value.toUpperCase() : '—'
   },
   { 
+    key: 'order_group', 
+    label: 'Group',
+    width: '100px',
+    format: (value) => {
+      const groupMap = {
+        0: 'None',
+        1: 'Stop Loss',
+        2: 'Take Profit'
+      }
+      return groupMap[value] !== undefined ? groupMap[value] : '—'
+    }
+  },
+  { 
     key: 'create_time', 
     label: 'Create Time',
     format: (value) => {
@@ -717,6 +730,13 @@ const ordersColumns = [
     label: 'Trigger Price',
     class: 'align-right',
     format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'fraction', 
+    label: 'Fraction',
+    width: '100px',
+    class: 'align-right',
+    format: (value) => value !== null && value !== undefined ? parseFloat(value).toFixed(4) : '—'
   },
   { 
     key: 'volume', 
@@ -1808,10 +1828,13 @@ function copyRowToClipboard(row, tableType) {
   
   if (tableType === 'orders') {
     // Format order data as key-value pairs
+    const groupMap = { 0: 'None', 1: 'Stop Loss', 2: 'Take Profit' }
     const orderData = {
       'Order ID': row.order_id,
       'Deal ID': row.deal_id || '—',
       'Type': row.order_type ? row.order_type.toUpperCase() : '—',
+      'Group': groupMap[row.order_group] !== undefined ? groupMap[row.order_group] : '—',
+      'Fraction': row.fraction !== null && row.fraction !== undefined ? parseFloat(row.fraction).toFixed(4) : '—',
       'Create Time': row.create_time ? new Date(row.create_time).toISOString().replace('T', ' ').substring(0, 19) : '—',
       'Modify Time': row.modify_time ? new Date(row.modify_time).toISOString().replace('T', ' ').substring(0, 19) : '—',
       'Side': row.side ? row.side.toUpperCase() : '—',
