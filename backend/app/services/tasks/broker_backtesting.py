@@ -1492,7 +1492,7 @@ class BrokerBacktesting(Broker):
         
         # Update all stop orders
         for order, volume in zip(stop_orders, stop_volumes):
-            #assert volume > 0, f"Order volume must be > 0, got {volume} for order {order.order_id}"
+            assert volume >= 0, f"Order volume must be >= 0, got {volume} for order {order.order_id}"
             order.volume = volume
             order.modify_time = self.current_time
     
@@ -1530,19 +1530,20 @@ class BrokerBacktesting(Broker):
                 # Extreme take: will be calculated as remainder
                 take_volumes.append(0.0)
             else:
-                # Regular take: round to precision based on target_volume
+                # Regular take: round to precision based on target_volume (round up by adding half precision)
                 assert order.fraction is not None, f"Take order {order.order_id} must have fraction"
-                volume = self.round_to_precision(order.fraction * target_volume, self.precision_amount)
+                raw_volume = order.fraction * current_volume
+                volume = self.round_to_precision(raw_volume + self.precision_amount / 2.0, self.precision_amount)
                 take_volumes.append(volume)
         
         # Calculate extreme take volume as remainder from current position volume
         extreme_index = next(i for i, order in enumerate(take_orders) if order.order_id == extreme_take.order_id)
-        extreme_volume = current_volume - sum(take_volumes)
+        extreme_volume = self.round_to_precision(current_volume - sum(take_volumes), self.precision_amount)
         take_volumes[extreme_index] = extreme_volume
         
         # Update volumes for all NEW and ACTIVE take orders
         for order, volume in zip(take_orders, take_volumes):
-            #assert volume > 0, f"Order volume must be > 0, got {volume} for order {order.order_id}"
+            #assert volume >= 0, f"Order volume must be >= 0, got {volume} for order {order.order_id}"
             order.volume = volume
             order.modify_time = self.current_time
         
@@ -1574,7 +1575,7 @@ class BrokerBacktesting(Broker):
                 )
                 executed_take_volume = self._get_executed_take_profit_volume(deal)
                 # Target volume = initial entry volume - unexecuted entry limits - executed take volumes
-                target_volume = deal.enter_volume - unexecuted_entry_volume - executed_take_volume
+                target_volume = self.round_to_precision(deal.enter_volume - unexecuted_entry_volume - executed_take_volume, self.precision_amount)
                 # Current volume = current position size (abs(deal.quantity) for LONG/SHORT)
                 current_volume = abs(deal.quantity)
                 self._update_stop_loss_volumes(deal, target_volume, current_volume)

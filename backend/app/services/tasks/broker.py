@@ -169,13 +169,17 @@ class Deal(BaseModel):
     sell_quantity: VOLUME_TYPE = 0.0
     sell_proceeds: PRICE_TYPE = 0.0
 
-    def add_trade(self, trade: Trade) -> None:
+    def add_trade(self, trade: Trade, precision_amount: float) -> None:
         """
         Add trade to the deal and update aggregates incrementally.
 
         - Sets trade.deal_id to this deal_id.
         - Sets deal type (long/short) based on first trade if not set.
         - Updates quantity, avg_buy_price, avg_sell_price, fee and profit.
+        
+        Args:
+            trade: Trade to add
+            precision_amount: Precision for rounding quantity (default: 1e-8)
         """
 
         assert trade.quantity > 0, f"Trade quantity must be greater than 0, got {trade.quantity}"
@@ -195,11 +199,11 @@ class Deal(BaseModel):
         if trade.side == OrderSide.BUY:
             self.buy_quantity += trade.quantity
             self.buy_cost += trade.sum
-            self.quantity += trade.quantity
+            self.quantity = round((self.quantity + trade.quantity) / precision_amount) * precision_amount
         else:
             self.sell_quantity += trade.quantity
             self.sell_proceeds += trade.sum
-            self.quantity -= trade.quantity
+            self.quantity = round((self.quantity - trade.quantity) / precision_amount) * precision_amount
 
         self.avg_buy_price = (
             self.buy_cost / self.buy_quantity if self.buy_quantity > 0 else None
@@ -900,7 +904,7 @@ class Broker(ABC):
             trade: Trade to add
         """
         # Add trade to deal
-        deal.add_trade(trade)
+        deal.add_trade(trade, self.precision_amount)
         
         # Update trade statistics
         self.stats.add_trade(trade)
