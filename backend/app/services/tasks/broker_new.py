@@ -556,6 +556,162 @@ class Deal(BaseModel):
         
         # Assert that remain is 0 after processing all orders
         assert abs(remain) < 1e-10, f"Remain should be 0 after processing all orders, got {remain}"
+    
+    def update_orders(self) -> None:
+        """
+        Update volumes for stop loss and take profit orders.
+        
+        Calculates volumes based on simulated volume and fraction_remain.
+        First updates stop losses, then take profits.
+        """
+        self.update_stop_loss_volumes()
+        self.update_take_profit_volumes()
+    
+    def start(self) -> Tuple[List[str], List['Order']]:
+        """
+        Start deal: update orders and create entry and stop loss orders.
+        
+        First calls update_orders() to calculate volumes, then creates all entry orders,
+        then all stop loss orders via broker.create_order().
+        
+        Returns:
+            Tuple of (errors, created_orders):
+            - errors: List of error messages (empty if all orders created successfully)
+            - created_orders: List of successfully created Order objects
+        """
+        # Get broker
+        broker = self._broker_ref()
+        assert broker is not None, "Broker has been garbage collected"
+        
+        # 1. Update orders
+        self.update_orders()
+        
+        # 2. Collect entry and stop loss orders (ACTIVE or NEW only)
+        entry_orders = [
+            order for order in self.orders
+            if order.order_group == OrderGroup.NONE
+            and order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+        ]
+        
+        stop_orders = [
+            order for order in self.orders
+            if order.order_group == OrderGroup.STOP_LOSS
+            and order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+        ]
+        
+        # 3. Create orders and collect results
+        errors = []
+        created_orders = []
+        
+        # 3.1. Create entry orders first
+        for order in entry_orders:
+            order_errors = broker.create_order(order)
+            if order_errors:
+                errors.extend(order_errors)
+            else:
+                created_orders.append(order)
+        
+        # 3.2. Create stop loss orders
+        for order in stop_orders:
+            order_errors = broker.create_order(order)
+            if order_errors:
+                errors.extend(order_errors)
+            else:
+                created_orders.append(order)
+        
+        return (errors, created_orders)
+    
+    def update_stop_loss_volumes(self) -> None:
+        """
+        Update volumes for stop loss orders.
+        
+        Combines entry orders and stop loss orders, sorts them, and calculates
+        volumes based on simulated volume progression.
+        """
+        # Get broker for format_volume
+        broker = self._broker_ref()
+        assert broker is not None, "Broker has been garbage collected"
+        
+        # Collect entry and stop orders with sort keys in one pass
+        # For entry orders: use price, for stop orders: use trigger_price
+        orders_with_keys = []
+        has_stop_orders = False
+        
+        for order in self.orders:
+            if order.status not in (OrderStatus.ACTIVE, OrderStatus.NEW):
+                continue
+            
+            if order.order_group == OrderGroup.NONE:
+                # Entry order
+                assert order.price is not None, f"Entry order {order.order_id} must have price set"
+                orders_with_keys.append((order.price, order, 'entry'))
+            elif order.order_group == OrderGroup.STOP_LOSS:
+                # Stop loss order
+                assert order.trigger_price is not None, f"Stop order {order.order_id} must have trigger_price set"
+                orders_with_keys.append((order.trigger_price, order, 'stop'))
+                has_stop_orders = True
+        
+        if not has_stop_orders:
+            return
+        
+        # Determine sort direction: for LONG descending, for SHORT ascending
+        reverse = (self.type == DealType.LONG)
+        orders_with_keys.sort(key=lambda x: x[0], reverse=reverse)
+        
+        # Initialize simulated volume with current deal quantity
+        sim_volume = abs(self.quantity)
+        
+        # Process each order
+        for sort_key, order, order_type in orders_with_keys:
+            if order_type == 'entry':
+                # Entry order: add its volume to sim_volume
+                sim_volume += order.volume
+            else:  # stop
+                # Stop order: update volume = sim_volume * fraction_remain, then subtract from sim_volume
+                assert order.fraction_remain is not None, f"Stop order {order.order_id} must have fraction_remain set"
+                new_volume = sim_volume * order.fraction_remain
+                order.volume = broker.format_volume(new_volume)
+                sim_volume -= order.volume
+    
+    def update_take_profit_volumes(self) -> None:
+        """
+        Update volumes for take profit orders.
+        
+        Sorts take profit orders and calculates volumes based on simulated volume.
+        """
+        # Get broker for format_volume
+        broker = self._broker_ref()
+        assert broker is not None, "Broker has been garbage collected"
+        
+        # Get take profit orders (ACTIVE or NEW)
+        take_orders = [
+            order for order in self.orders
+            if order.order_group == OrderGroup.TAKE_PROFIT
+            and order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+        ]
+        
+        if not take_orders:
+            return
+        
+        # Determine sort direction: for LONG ascending, for SHORT descending
+        reverse = (self.type == DealType.SHORT)
+        # Sort by price
+        take_orders.sort(
+            key=lambda o: o.price if o.price is not None else float('-inf'),
+            reverse=reverse
+        )
+        
+        # Initialize simulated volume with current deal quantity
+        sim_volume = abs(self.quantity)
+        
+        # Process each order
+        for order in take_orders:
+            assert order.fraction_remain is not None, f"Take profit order {order.order_id} must have fraction_remain set"
+            # Update volume = sim_volume * fraction_remain
+            new_volume = sim_volume * order.fraction_remain
+            order.volume = broker.format_volume(new_volume)
+            # Subtract volume from sim_volume
+            sim_volume -= order.volume
 
 
 class Broker(ABC):
@@ -654,29 +810,15 @@ class Broker(ABC):
         return self.deals[index]
     
     @abstractmethod
-    def create_order(
-        self,
-        symbol: str,
-        type: OrderType,
-        side: OrderSide,
-        amount: VOLUME_TYPE,
-        price: Optional[PRICE_TYPE] = None,
-        params: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    def create_order(self, order: 'Order') -> List[str]:
         """
-        Create an order (abstract method, corresponds to exchange.create_order() from ccxt).
+        Create an order (abstract method).
         
         Args:
-            symbol: Trading symbol (e.g., 'BTC/USDT')
-            type: Order type (OrderType enum: MARKET, LIMIT, STOP)
-            side: Order side (OrderSide enum: BUY or SELL)
-            amount: Order amount (quantity) as VOLUME_TYPE
-            price: Optional price for limit orders as PRICE_TYPE
-            params: Optional additional parameters (e.g., {'stopPrice': 100.0} for stop orders)
+            order: Order object to create
         
         Returns:
-            Dictionary with order information (typically contains 'id', 'symbol', 'type', 'side', 
-            'amount', 'price', 'status', 'timestamp', etc.)
+            List of errors. Empty list if order was created successfully.
         
         Raises:
             NotImplementedError: Must be implemented by subclasses
@@ -760,7 +902,13 @@ class Broker(ABC):
         deal.calc_fraction_remain(OrderGroup.STOP_LOSS)
         deal.calc_fraction_remain(OrderGroup.TAKE_PROFIT)
         
-        return (deal, new_orders, canceled_order_ids, [])
+        # Start deal: send entry and stop loss orders to exchange
+        start_errors, _ = deal.start()
+        
+        # Combine all errors
+        all_errors = errors + start_errors
+        
+        return (deal, new_orders, canceled_order_ids, all_errors)
     
     def _prepare_deal(
         self,
