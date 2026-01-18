@@ -813,22 +813,6 @@ class Broker(ABC):
         
         return self.deals[index]
     
-    @abstractmethod
-    def create_order(self, order: 'Order') -> List[str]:
-        """
-        Create an order (abstract method).
-        
-        Args:
-            order: Order object to create
-        
-        Returns:
-            List of errors. Empty list if order was created successfully.
-        
-        Raises:
-            NotImplementedError: Must be implemented by subclasses
-        """
-        raise NotImplementedError("create_order must be implemented by subclass")
-    
     def execute_deal(
         self,
         deal_type: DealType,
@@ -1134,70 +1118,6 @@ class Broker(ABC):
         
         return order
     
-    @abstractmethod
-    def cancel_order(self, order_id: str, symbol: str) -> List[str]:
-        """
-        Cancel an order by its ID.
-        
-        Args:
-            order_id: Order ID to cancel
-            symbol: Trading symbol (e.g., 'BTC/USDT')
-        
-        Returns:
-            List of error messages. Empty list means success (order was canceled successfully).
-            Non-empty list contains error descriptions if cancellation failed.
-        
-        Raises:
-            NotImplementedError: Must be implemented by subclasses
-        """
-        raise NotImplementedError("cancel_order must be implemented by subclass")
-    
-    @abstractmethod
-    def initialize_run(self) -> None:
-        """
-        Initialize broker for running strategy.
-        
-        Called at the start of run() method to set up broker state.
-        Must be implemented by subclasses.
-        """
-        raise NotImplementedError("initialize_run must be implemented by subclass")
-    
-    @abstractmethod
-    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Initialize quotes data for strategy execution.
-        
-        Args:
-            history_size: Number of bars to load for strategy initialization
-            ta_proxies: Dictionary of TA proxies (e.g., {'talib': ta_proxy_talib(...)})
-                       Should call set_quotes() on each proxy with initial quotes data
-        
-        Returns:
-            Dictionary with quotes data (structure is implementation-specific)
-        """
-        raise NotImplementedError("initialize_quotes must be implemented by subclass")
-    
-    @abstractmethod
-    def get_next_bar(
-        self, 
-        quotes_data: Dict[str, Any], 
-        i_time: int, 
-        ta_proxies: Dict[str, Any]
-    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]:
-        """
-        Get next bar data for strategy execution.
-        
-        Args:
-            quotes_data: Quotes data dictionary (from initialize_quotes)
-            i_time: Current bar index
-            ta_proxies: Dictionary of TA proxies (for real trading, should call set_quotes() on each proxy)
-        
-        Returns:
-            Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price)
-            or None if no more data available
-        """
-        raise NotImplementedError("get_next_bar must be implemented by subclass")
-    
     def close_deals(self) -> None:
         """
         Close all open positions.
@@ -1328,6 +1248,88 @@ class Broker(ABC):
         # 11. Final update_state
         if hasattr(self, 'update_state') and hasattr(self, 'date_end'):
             self.current_time = self.date_end
-            self.update_state(results, is_finish=True) 
+            self.update_state(results, is_finish=True)
+    
+    # Abstract methods (must be implemented by subclasses)
+    
+    @abstractmethod
+    def create_order(self, order: 'Order') -> List[str]:
+        """
+        Create an order (abstract method).
+        
+        Args:
+            order: Order object to create
+        
+        Returns:
+            List of errors. Empty list if order was created successfully.
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("create_order must be implemented by subclass")
+    
+    @abstractmethod
+    def cancel_order(self, order_id: str, symbol: str) -> List[str]:
+        """
+        Cancel an order by its ID.
+        
+        Args:
+            order_id: Order ID to cancel
+            symbol: Trading symbol (e.g., 'BTC/USDT')
+        
+        Returns:
+            List of error messages. Empty list means success (order was canceled successfully).
+            Non-empty list contains error descriptions if cancellation failed.
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("cancel_order must be implemented by subclass")
+    
+    @abstractmethod
+    def initialize_run(self) -> None:
+        """
+        Initialize broker for running strategy.
+        
+        Called at the start of run() method to set up broker state.
+        Must be implemented by subclasses.
+        """
+        raise NotImplementedError("initialize_run must be implemented by subclass")
+    
+    @abstractmethod
+    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Initialize quotes data for strategy execution.
+        
+        Args:
+            history_size: Number of bars to load for strategy initialization
+            ta_proxies: Dictionary of TA proxies (e.g., {'talib': ta_proxy_talib(...)})
+                       Should call set_quotes() on each proxy with initial quotes data
+        
+        Returns:
+            Dictionary with quotes data (structure is implementation-specific)
+        """
+        raise NotImplementedError("initialize_quotes must be implemented by subclass")
+    
+    @abstractmethod
+    def get_next_bar(
+        self, 
+        quotes_data: Dict[str, Any], 
+        i_time: int, 
+        ta_proxies: Dict[str, Any]
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]:
+        """
+        Get next bar data for strategy execution.
+        
+        Args:
+            quotes_data: Quotes data dictionary (from initialize_quotes)
+            i_time: Current bar index
+            ta_proxies: Dictionary of TA proxies (for real trading, should call set_quotes() on each proxy)
+        
+        Returns:
+            Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price)
+            or None if no more data available
+        """
+        raise NotImplementedError("get_next_bar must be implemented by subclass")
         
 
