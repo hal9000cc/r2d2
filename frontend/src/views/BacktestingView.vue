@@ -400,8 +400,10 @@
               :parameters-description="strategyParametersDescription"
               :strategy-name="currentStrategyName"
               :initial-parameters="currentTaskParameters"
+              :history-size="currentTask?.history_size || 1000"
               @update-parameters="handleUpdateParameters"
               @parameters-changed="handleParametersChanged"
+              @history-size-changed="handleHistorySizeChanged"
             />
           </ResizablePanel>
           <div class="stats-panel">
@@ -2277,6 +2279,7 @@ function prepareTaskData() {
     precision_price: formData.precisionPrice !== undefined ? formData.precisionPrice : 0.0,
     price_step: formData.priceStep !== undefined ? formData.priceStep : 0.0,
     slippage_in_steps: formData.slippageInSteps !== undefined ? formData.slippageInSteps : 1.0,
+    history_size: currentTask.value?.history_size !== undefined ? currentTask.value.history_size : 1000,
       parameters: customParameters
   }
 }
@@ -2299,6 +2302,16 @@ async function saveCurrentTask() {
 
     ensureConnection()
     const updatedTask = await backtestingApi.updateTask(currentTaskId.value, taskData)
+    
+    // Update currentTask with updated data
+    if (updatedTask && currentTask.value) {
+      const timeframeStr = updatedTask.timeframe || ''
+      const timeframeObj = timeframesComposable?.getTimeframe(timeframeStr) || null
+      currentTask.value = {
+        ...updatedTask,
+        timeframe: timeframeObj
+      }
+    }
     
     // Update currentTaskParameters from response to keep it in sync
     // Create a new object to ensure Vue reactivity
@@ -2594,6 +2607,22 @@ function handleParametersChanged() {
   // Triggered when custom parameters change in StrategyParameters component
   // Auto-save task with debounce (5 seconds)
   // Only if task is fully loaded (not during loading) and backtesting is not running
+  if (currentTaskId.value && !isTaskLoading.value && !isBacktestingRunning.value) {
+    if (taskSaveTimeout.value) {
+      clearTimeout(taskSaveTimeout.value)
+    }
+    taskSaveTimeout.value = setTimeout(() => {
+      saveCurrentTask()
+    }, 5000)
+  }
+}
+
+function handleHistorySizeChanged(newValue) {
+  // Update currentTask history_size
+  if (currentTask.value) {
+    currentTask.value.history_size = parseInt(newValue, 10) || 1000
+  }
+  // Auto-save task with debounce (5 seconds)
   if (currentTaskId.value && !isTaskLoading.value && !isBacktestingRunning.value) {
     if (taskSaveTimeout.value) {
       clearTimeout(taskSaveTimeout.value)

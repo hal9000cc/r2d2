@@ -15,34 +15,52 @@
       <div v-if="!strategyName" class="empty-state">
         <p>No strategy selected</p>
       </div>
-      <div v-else-if="!parametersDescription || Object.keys(parametersDescription).length === 0" class="empty-state">
-        <p>No parameters available</p>
+      <div v-else>
+        <div v-if="strategyName" class="history-size-field">
+          <label for="history-size-input" class="history-size-label">
+            History Size
+          </label>
+          <input
+            id="history-size-input"
+            type="number"
+            :value="localHistorySize"
+            @input="handleHistorySizeInput"
+            @blur="handleHistorySizeBlur"
+            min="1"
+            step="1"
+            class="history-size-input"
+            title="Minimum history visible to strategy"
+          />
+        </div>
+        <div v-if="!parametersDescription || Object.keys(parametersDescription).length === 0" class="empty-state">
+          <p>No parameters available</p>
+        </div>
+        <table v-else class="parameters-table">
+          <thead>
+            <tr>
+              <th>Parameter</th>
+              <th>Value</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(paramDesc, paramName) in parametersDescription" :key="paramName">
+              <td class="param-name">{{ paramName }}</td>
+              <td class="param-value">
+                <input
+                  :value="getInputValue(paramName, paramDesc.type)"
+                  @input="handleValueInput(paramName, $event)"
+                  :type="getInputType(paramDesc.type)"
+                  :placeholder="getPlaceholder(paramDesc.type)"
+                  @blur="handleValueBlur(paramName, paramDesc.type)"
+                  class="param-input"
+                />
+              </td>
+              <td class="param-description">{{ paramDesc.description }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-      <table v-else class="parameters-table">
-        <thead>
-          <tr>
-            <th>Parameter</th>
-            <th>Value</th>
-            <th>Description</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(paramDesc, paramName) in parametersDescription" :key="paramName">
-            <td class="param-name">{{ paramName }}</td>
-            <td class="param-value">
-              <input
-                :value="getInputValue(paramName, paramDesc.type)"
-                @input="handleValueInput(paramName, $event)"
-                :type="getInputType(paramDesc.type)"
-                :placeholder="getPlaceholder(paramDesc.type)"
-                @blur="handleValueBlur(paramName, paramDesc.type)"
-                class="param-input"
-              />
-            </td>
-            <td class="param-description">{{ paramDesc.description }}</td>
-          </tr>
-        </tbody>
-      </table>
     </div>
   </div>
 </template>
@@ -62,12 +80,17 @@ export default {
     initialParameters: {
       type: Object,
       default: null
+    },
+    historySize: {
+      type: Number,
+      default: 1000
     }
   },
-  emits: ['update-parameters', 'parameters-changed'],
+  emits: ['update-parameters', 'parameters-changed', 'history-size-changed'],
   data() {
     return {
-      parameterValues: {}
+      parameterValues: {},
+      localHistorySize: 1000
     }
   },
   watch: {
@@ -118,6 +141,14 @@ export default {
         }
       },
       deep: true,
+      immediate: true
+    },
+    historySize: {
+      handler(newValue) {
+        if (newValue !== undefined && newValue !== null) {
+          this.localHistorySize = newValue
+        }
+      },
       immediate: true
     }
   },
@@ -335,6 +366,19 @@ export default {
       this.saveParameterValues()
       // Emit change event for auto-save
       this.$emit('parameters-changed')
+    },
+    handleHistorySizeInput(event) {
+      const value = event.target.value
+      this.localHistorySize = value
+      this.$emit('history-size-changed', value)
+    },
+    handleHistorySizeBlur(event) {
+      let value = parseInt(event.target.value, 10)
+      if (isNaN(value) || value < 1) {
+        value = this.historySize || 1000
+      }
+      this.localHistorySize = value
+      this.$emit('history-size-changed', value)
     }
   }
 }
@@ -466,5 +510,37 @@ export default {
 .param-description {
   color: var(--text-secondary);
   font-size: 11px;
+}
+
+.history-size-field {
+  margin-bottom: var(--spacing-md);
+  padding-bottom: var(--spacing-md);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.history-size-label {
+  display: block;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+  margin-bottom: var(--spacing-xs);
+}
+
+.history-size-input {
+  width: 100%;
+  max-width: 200px;
+  padding: var(--spacing-xs);
+  font-size: var(--font-size-xs);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  box-sizing: border-box;
+}
+
+.history-size-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 </style>

@@ -11,7 +11,7 @@ import redis.asyncio as redis_async
 from app.services.tasks.tasks import BacktestingTaskList, Task
 from app.services.tasks.strategy import Strategy
 from app.services.tasks.broker_backtesting import BrokerBacktesting
-from app.services.tasks.backtesting_result import BackTestingResults
+from app.services.tasks.task_results import TaskResults
 from app.core.datetime_utils import parse_utc_datetime64
 from app.services.strategies import validate_relative_path, load_strategy
 from app.services.strategies.exceptions import StrategyFileError, StrategyNotFoundError
@@ -388,8 +388,8 @@ async def get_backtesting_results(
             }
     
     try:
-        # Create BackTestingResults instance without broker (read-only mode)
-        results = BackTestingResults(task, broker=None)
+        # Create TaskResults instance without broker (read-only mode)
+        results = TaskResults(task, broker=None)
         
         # Get results
         data = results.get_results(result_id, time_begin_dt64)
@@ -454,8 +454,8 @@ async def get_backtesting_indicators(
         # Ensure result_id is a string (FastAPI should handle this, but be explicit)
         result_id_str = str(result_id)
         
-        # Create BackTestingResults instance without broker (read-only mode)
-        results = BackTestingResults(task, broker=None)
+        # Create TaskResults instance without broker (read-only mode)
+        results = TaskResults(task, broker=None)
         
         # Get indicators
         indicators_dict = results.get_indicators(result_id_str, date_start_dt64, date_end_dt64)
@@ -509,8 +509,8 @@ async def get_backtesting_indicator_keys(
         # Ensure result_id is a string (FastAPI should handle this, but be explicit)
         result_id_str = str(result_id)
         
-        # Create BackTestingResults instance without broker (read-only mode)
-        results = BackTestingResults(task, broker=None)
+        # Create TaskResults instance without broker (read-only mode)
+        results = TaskResults(task, broker=None)
         
         # Get indicator keys
         indicators_list = results.get_indicators_key(result_id_str)

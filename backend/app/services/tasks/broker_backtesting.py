@@ -10,7 +10,7 @@ from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
 from app.services.tasks.broker import Broker, OrderSide, OrderType, OrderStatus, OrderGroup, Trade, Order, Deal, DealType
-from app.services.tasks.backtesting_result import BackTestingResults
+from app.services.tasks.task_results import TaskResults
 from app.core.logger import get_logger
 from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64, datetime64_to_iso
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
@@ -1760,7 +1760,7 @@ class BrokerBacktesting(Broker):
         for deal in self.deals:
             self.close_deal(deal.deal_id)
     
-    def update_state(self, results: Optional[BackTestingResults], is_finish: bool = False) -> None:
+    def update_state(self, results: Optional[TaskResults], is_finish: bool = False) -> None:
         """
         Update task state and progress.
         Checks if task is still running by reading isRunning flag from Redis.
@@ -1768,7 +1768,7 @@ class BrokerBacktesting(Broker):
         If isRunning is False, sends error notification and raises exception to stop backtesting.
         
         Args:
-            results: BackTestingResults instance to save results to Redis, or None if results should not be saved
+            results: TaskResults instance to save results to Redis, or None if results should not be saved
             is_finish: If True, marks the backtesting result as completed. Default: False.
         
         Raises:
@@ -1858,7 +1858,7 @@ class BrokerBacktesting(Broker):
         Uses self.task to get symbol, timeframe, dateStart, dateEnd, source.
         
         Args:
-            save_results: If True, creates BackTestingResults and saves results to Redis.
+            save_results: If True, creates TaskResults and saves results to Redis.
                          If False, results are not saved. Default: True.
         """
         # Reset broker state
@@ -1902,10 +1902,10 @@ class BrokerBacktesting(Broker):
             'talib': ta_proxy_talib(broker=self, quotes_data=quotes_data)
         }
         
-        # Create BackTestingResults instance (after ta_proxies are created) if save_results is True
+        # Create TaskResults instance (after ta_proxies are created) if save_results is True
         results = None
         if save_results:
-            results = BackTestingResults(self.task, self, ta_proxies)
+            results = TaskResults(self.task, self, ta_proxies)
         
         state_update_period = 1.0
         last_update_time = time.time()
