@@ -2,12 +2,15 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Optional, Set, Dict, Any, Tuple, TYPE_CHECKING
 import math
+import time
 import weakref
 
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
+from app.services.tasks.indicator_proxy import ta_proxy_talib
+from app.services.tasks.backtesting_result import Results
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
@@ -742,6 +745,7 @@ class Broker(ABC):
         self.last_auto_deal_id: Optional[int] = None
         self.active_deals: Set[int] = set()  # Set of deal_id for active (open) deals
         self.current_time: Optional[np.datetime64] = None
+        self.i_time: int = task.history_size  # Current bar index, initialized with history_size
         
         # Precision for amount and price
         self.precision_amount: float = task.precision_amount
@@ -1147,4 +1151,183 @@ class Broker(ABC):
             NotImplementedError: Must be implemented by subclasses
         """
         raise NotImplementedError("cancel_order must be implemented by subclass")
+    
+    @abstractmethod
+    def initialize_run(self) -> None:
+        """
+        Initialize broker for running strategy.
+        
+        Called at the start of run() method to set up broker state.
+        Must be implemented by subclasses.
+        """
+        raise NotImplementedError("initialize_run must be implemented by subclass")
+    
+    @abstractmethod
+    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Initialize quotes data for strategy execution.
+        
+        Args:
+            history_size: Number of bars to load for strategy initialization
+            ta_proxies: Dictionary of TA proxies (e.g., {'talib': ta_proxy_talib(...)})
+                       Should call set_quotes() on each proxy with initial quotes data
+        
+        Returns:
+            Dictionary with quotes data (structure is implementation-specific)
+        """
+        raise NotImplementedError("initialize_quotes must be implemented by subclass")
+    
+    @abstractmethod
+    def get_next_bar(
+        self, 
+        quotes_data: Dict[str, Any], 
+        i_time: int, 
+        ta_proxies: Dict[str, Any]
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]:
+        """
+        Get next bar data for strategy execution.
+        
+        Args:
+            quotes_data: Quotes data dictionary (from initialize_quotes)
+            i_time: Current bar index
+            ta_proxies: Dictionary of TA proxies (for real trading, should call set_quotes() on each proxy)
+        
+        Returns:
+            Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price)
+            or None if no more data available
+        """
+        raise NotImplementedError("get_next_bar must be implemented by subclass")
+    
+    def close_deals(self) -> None:
+        """
+        Close all open positions.
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
+        """
+        pass
+    
+    def check_trading_results(self) -> List[str]:
+        """
+        Check trading results for consistency.
+        
+        Returns:
+            List of error messages (empty if no errors found)
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
+        """
+        return []
+    
+    def fetch_orders(self) -> None:
+        """
+        Fetch and execute orders (check for triggered limit/stop orders).
+        
+        Default implementation (stub). Should be overridden in subclasses.
+        """
+        pass
+
+    def run(self, save_results: bool = True):
+        """
+        Run strategy execution.
+        Iterates through bars, calling on_bar for each bar.
+        Periodically updates state and progress based on results_save_period.
+        
+        Args:
+            save_results: If True, creates Results and saves results to Redis.
+                         If False, results are not saved. Default: True.
+        """
+        # 1. Initialize broker for running strategy
+        self.initialize_run()
+        
+        # 2. Create TA proxies dictionary (structure as in old implementation)
+        ta_proxies = {
+            'talib': ta_proxy_talib(broker=self)
+        }
+        
+        # 3. Initialize quotes data (calls set_quotes on proxies inside)
+        quotes_data = self.initialize_quotes(self.task.history_size, ta_proxies)
+        
+        # 4. Create Results instance (after ta_proxies are created) if save_results is True
+        results = None
+        if save_results:
+            results = Results(self.task, self, ta_proxies)
+        
+        # 5. Initialize i_time with history_size
+        self.i_time = self.task.history_size
+        
+        # 6. Call on_start callback with task parameters and TA proxies
+        if hasattr(self, 'callbacks') and 'on_start' in self.callbacks:
+            self.callbacks['on_start'](self.task.parameters, ta_proxies)
+        
+        # 7. Main loop: iterate through bars
+        state_update_period = 1.0
+        last_update_time = time.time()
+        
+        while True:
+            # Get next bar data
+            bar_data = self.get_next_bar(quotes_data, self.i_time, ta_proxies)
+            if bar_data is None:
+                break
+            
+            # Unpack bar data
+            (time_array, open_array, high_array, low_array, close_array, 
+             volume_array, current_time, current_price) = bar_data
+            
+            # Update current time and price
+            self.current_time = current_time
+            if hasattr(self, 'price'):
+                self.price = current_price
+            
+            # Fetch and execute orders (check for triggered limit/stop orders)
+            self.fetch_orders()
+            
+            # Call on_bar callback with all necessary data
+            if hasattr(self, 'callbacks') and 'on_bar' in self.callbacks:
+                equity_usd = getattr(self, 'equity_usd', 0.0)
+                equity_symbol = getattr(self, 'equity_symbol', 0.0)
+                self.callbacks['on_bar'](
+                    current_price,
+                    current_time,
+                    time_array,
+                    open_array,
+                    high_array,
+                    low_array,
+                    close_array,
+                    volume_array,
+                    equity_usd,
+                    equity_symbol
+                )
+            
+            # Check if it's time to update state and progress
+            current_time_real = time.time()
+            if hasattr(self, 'results_save_period'):
+                if current_time_real - last_update_time >= self.results_save_period:
+                    if hasattr(self, 'update_state'):
+                        self.update_state(results)
+                    last_update_time = current_time_real
+                    state_update_period = min(state_update_period + 1.0, self.results_save_period)
+            
+            # Increment bar index
+            self.i_time += 1
+        
+        # 8. Close all open positions
+        self.close_deals()
+        
+        # 9. Check trading results for consistency (only in debug mode)
+        if __debug__:
+            errors = self.check_trading_results()
+            if errors:
+                error_message = f"Trading results validation failed:\n" + "\n".join(errors)
+                if hasattr(self, 'task') and hasattr(self.task, 'backtesting_error'):
+                    self.task.backtesting_error(error_message)
+                raise RuntimeError(error_message)
+        
+        # 10. Call on_finish callback
+        if hasattr(self, 'callbacks') and 'on_finish' in self.callbacks:
+            self.callbacks['on_finish']()
+        
+        # 11. Final update_state
+        if hasattr(self, 'update_state') and hasattr(self, 'date_end'):
+            self.current_time = self.date_end
+            self.update_state(results, is_finish=True) 
+        
 

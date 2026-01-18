@@ -153,16 +153,26 @@ class ta_proxy(ABC):
     Different implementations for different TA libraries (talib, ta, etc.)
     """
     
-    def __init__(self, broker, quotes_data: dict):
+    def __init__(self, broker):
         """
         Initialize TA proxy.
         
         Args:
             broker: Reference to broker instance
-            quotes_data: Dictionary with quotes data (time, open, high, low, close, volume)
         """
         self.broker = broker
+        self.quotes_data: Optional[dict] = None
+        self.cache = {}
+    
+    def set_quotes(self, quotes_data: dict) -> None:
+        """
+        Set or update quotes data.
+        
+        Args:
+            quotes_data: Dictionary with quotes data (time, open, high, low, close, volume)
+        """
         self.quotes_data = quotes_data
+        # Clear cache when quotes are updated
         self.cache = {}
     
     @abstractmethod
@@ -351,16 +361,15 @@ class ta_proxy_talib(ta_proxy):
         'SUM': {'is_price': False},
     }
 
-    def __init__(self, broker, quotes_data: dict):
+    def __init__(self, broker):
         """
         Initialize TA-Lib proxy.
         Analyzes talib functions and builds indicator descriptions.
         
         Args:
             broker: Reference to broker instance
-            quotes_data: Dictionary with quotes data (time, open, high, low, close, volume)
         """
-        super().__init__(broker, quotes_data)
+        super().__init__(broker)
         
         # Dictionary to store indicator descriptions
         self._indicator_descriptions: Dict[str, IndicatorDescription] = {}

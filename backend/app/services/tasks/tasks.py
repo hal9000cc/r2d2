@@ -36,6 +36,7 @@ class Task(Objects2Redis):
     precision_price: float = 0.0  # Minimum step size for price/quote currency (e.g., 0.1, 0.001)
     slippage_in_steps: float = 1.0  # Slippage in price steps (e.g., 1.0 means 1 step)
     parameters: Dict[str, Any] = Field(default_factory=dict)
+    history_size: int = 100  # Number of bars to load for strategy initialization
     
     def get_key(self) -> str:
         """

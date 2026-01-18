@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-class BackTestingResults:
+class Results:
     """
     Class for writing and reading backtesting results to/from Redis.
     Uses Sorted Set (ZADD) to store trades and deals.
