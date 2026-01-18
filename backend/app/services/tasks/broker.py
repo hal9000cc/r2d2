@@ -6,16 +6,16 @@ import time
 import weakref
 
 import numpy as np
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, model_validator, PrivateAttr
 
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.indicator_proxy import ta_proxy_talib
-from app.services.tasks.task_results import TaskResults
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
+    from app.services.tasks.task_results import TaskResults
 
 
 class OrderSide(Enum):
@@ -116,7 +116,7 @@ class Order(BaseModel):
     trigger_price: Optional[PRICE_TYPE] = None
     
     # Weak reference to broker (internal, set at creation)
-    _broker_ref: weakref.ref = Field(exclude=True)
+    _broker_ref: weakref.ref = PrivateAttr()
     
     # Mutable fields
     modify_time: np.datetime64
@@ -348,7 +348,7 @@ class Deal(BaseModel):
     sell_proceeds: PRICE_TYPE = 0.0
     
     # Weak reference to broker (internal, set at creation)
-    _broker_ref: weakref.ref = Field(exclude=True)
+    _broker_ref: weakref.ref = PrivateAttr()
     
     def __init__(self, broker: 'Broker', **data):
         """
@@ -1308,6 +1308,7 @@ class Broker(ABC):
         
         results = None
         if save_results:
+            from app.services.tasks.task_results import TaskResults
             results = TaskResults(self.task, self, ta_proxies)
         
         self.i_time = self.task.history_size

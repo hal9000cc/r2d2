@@ -2,18 +2,18 @@
 Class for writing and reading backtesting results to/from Redis.
 Uses Sorted Set to store trades and deals.
 """
-from typing import Optional, Dict, Any, Tuple, Union, List, TYPE_CHECKING
+from typing import Optional, Dict, Any, Tuple, List, TYPE_CHECKING
 import json
 import weakref
 import numpy as np
 import msgpack
 import redis
 from app.services.tasks.tasks import Task
-from app.services.tasks.broker import Broker, OrderSide, DealType
 from app.core.logger import get_logger
 from app.core.datetime_utils import datetime64_to_iso
 
 if TYPE_CHECKING:
+    from app.services.tasks.broker import Broker
     from app.services.tasks.broker_backtesting import UsedIndicatorDescription
 
 logger = get_logger(__name__)
@@ -25,7 +25,7 @@ class TaskResults:
     Uses Sorted Set (ZADD) to store trades and deals.
     """
     
-    def __init__(self, task: Task, broker: Optional[Broker] = None, ta_proxies: Optional[Dict[str, Any]] = None):
+    def __init__(self, task: Task, broker: Optional['Broker'] = None, ta_proxies: Optional[Dict[str, Any]] = None):
         """
         Constructor.
         
@@ -41,7 +41,7 @@ class TaskResults:
         """
         self.task = task
         self._redis_client = None
-        self._broker_ref: Optional[weakref.ReferenceType[Broker]] = None
+        self._broker_ref: Optional[weakref.ReferenceType['Broker']] = None
         self._trades_start_index: int = 0
         self._last_orders_save_time: Optional[np.datetime64] = None
         self.ta_proxies: Optional[Dict[str, Any]] = ta_proxies  # Store TA proxies for access to indicator cache
