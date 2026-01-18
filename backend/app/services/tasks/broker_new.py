@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.indicator_proxy import ta_proxy_talib
 from app.services.tasks.task_results import TaskResults
+from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
+from app.core.objects2redis import MessageType
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
@@ -722,13 +724,21 @@ class Broker(ABC):
     Generic broker base class.
     """
     
-    def __init__(self, task: 'Task', result_id: str):
+    def __init__(
+        self, 
+        task: 'Task', 
+        result_id: str,
+        callbacks_dict: Dict[str, Any] = None,
+        results_save_period: float = TRADE_RESULTS_SAVE_PERIOD
+    ):
         """
         Initialize broker.
         
         Args:
             task: Task instance (must contain precision_amount and precision_price > 0)
             result_id: Unique ID for this backtesting run
+            callbacks_dict: Dictionary with callback functions (optional)
+            results_save_period: Period for saving results in seconds (default: TRADE_RESULTS_SAVE_PERIOD)
         """
         if task.precision_amount <= 0.0:
             raise ValueError("precision_amount must be greater than 0")
@@ -746,10 +756,15 @@ class Broker(ABC):
         self.active_deals: Set[int] = set()  # Set of deal_id for active (open) deals
         self.current_time: Optional[np.datetime64] = None
         self.i_time: int = task.history_size  # Current bar index, initialized with history_size
+        self.price: Optional[PRICE_TYPE] = None  # Current price
         
         # Precision for amount and price
         self.precision_amount: float = task.precision_amount
         self.precision_price: float = task.precision_price
+        
+        # Callbacks and results save period
+        self.callbacks: Dict[str, Any] = callbacks_dict if callbacks_dict is not None else {}
+        self.results_save_period: float = results_save_period
     
     def format_volume(self, value: VOLUME_TYPE) -> VOLUME_TYPE:
         """
@@ -792,6 +807,85 @@ class Broker(ABC):
             return PRICE_TYPE(0.0)
         
         return PRICE_TYPE(round(value / self.precision_price) * self.precision_price)
+    
+    # ------------------------------------------------------------------
+    # Price comparison helpers (with precision tolerance)
+    # ------------------------------------------------------------------
+    
+    def _price_eps(self) -> float:
+        """
+        Get epsilon for price comparisons based on precision_price.
+        We treat prices as equal if they differ by no more than precision_price / 10.
+        
+        Returns:
+            Epsilon value for price comparisons
+        """
+        return self.precision_price / 10.0
+    
+    def eq(self, a: float, b: float) -> bool:
+        """
+        Return True if prices a and b are equal within price epsilon.
+        
+        Args:
+            a: First price
+            b: Second price
+        
+        Returns:
+            True if prices are equal within tolerance
+        """
+        return abs(a - b) <= self._price_eps()
+    
+    def gt(self, a: float, b: float) -> bool:
+        """
+        Return True if price a is greater than price b beyond price epsilon.
+        
+        Args:
+            a: First price
+            b: Second price
+        
+        Returns:
+            True if a > b (beyond tolerance)
+        """
+        return (a - b) > self._price_eps()
+    
+    def lt(self, a: float, b: float) -> bool:
+        """
+        Return True if price a is less than price b beyond price epsilon.
+        
+        Args:
+            a: First price
+            b: Second price
+        
+        Returns:
+            True if a < b (beyond tolerance)
+        """
+        return (b - a) > self._price_eps()
+    
+    def gteq(self, a: float, b: float) -> bool:
+        """
+        Return True if price a is greater than or equal to price b within price epsilon.
+        
+        Args:
+            a: First price
+            b: Second price
+        
+        Returns:
+            True if a >= b (within tolerance)
+        """
+        return self.gt(a, b) or self.eq(a, b)
+    
+    def lteq(self, a: float, b: float) -> bool:
+        """
+        Return True if price a is less than or equal to price b within price epsilon.
+        
+        Args:
+            a: First price
+            b: Second price
+        
+        Returns:
+            True if a <= b (within tolerance)
+        """
+        return self.lt(a, b) or self.eq(a, b)
     
     def get_deal(self, deal_id: int) -> 'Deal':
         """
@@ -1126,6 +1220,55 @@ class Broker(ABC):
         """
         pass
     
+    def close_deal(self, deal_id: int) -> None:
+        """
+        Close a specific deal by canceling all active orders and closing position.
+        
+        Args:
+            deal_id: ID of the deal to close
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
+        """
+        raise NotImplementedError("close_deal must be implemented by subclass")
+    
+    def cancel_orders(self, order_ids: List[int]) -> List['Order']:
+        """
+        Cancel orders by their IDs.
+        
+        Args:
+            order_ids: List of order IDs to cancel
+        
+        Returns:
+            List of canceled orders
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
+        """
+        raise NotImplementedError("cancel_orders must be implemented by subclass")
+    
+    def logging(self, message: str, level: str = "info") -> None:
+        """
+        Send log message to frontend via task.
+        
+        Args:
+            message: Message text (required)
+            level: Message level (optional, default: "info")
+                  Valid levels: info, warning, error, success, debug
+        """
+        if hasattr(self.task, 'send_message'):
+            self.task.send_message(MessageType.MESSAGE, {"level": level, "message": message})
+    
+    def update_state(self, results: Optional['TaskResults'], is_finish: bool = False) -> None:
+        """
+        Update task state and progress.
+        
+        Args:
+            results: TaskResults instance to save results to Redis, or None if results should not be saved
+            is_finish: If True, marks the backtesting result as completed. Default: False.
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
+        """
+        raise NotImplementedError("update_state must be implemented by subclass")
+    
     def check_trading_results(self) -> List[str]:
         """
         Check trading results for consistency.
@@ -1314,5 +1457,55 @@ class Broker(ABC):
             or None if no more data available
         """
         raise NotImplementedError("get_next_bar must be implemented by subclass")
+    
+    def buy(
+        self,
+        quantity: VOLUME_TYPE,
+        price: Optional[PRICE_TYPE] = None,
+        trigger_price: Optional[PRICE_TYPE] = None
+    ) -> List['Order']:
+        """
+        Create buy order(s) and execute/place them.
+        If price is specified, creates a limit order.
+        If trigger_price is specified, creates a stop order.
+        Otherwise creates a market order.
+        
+        Args:
+            quantity: Quantity to buy
+            price: Optional limit price. If None and trigger_price is None, creates market order.
+            trigger_price: Optional trigger price for stop order.
+        
+        Returns:
+            List of copies of executed/placed orders
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("buy must be implemented by subclass")
+    
+    def sell(
+        self,
+        quantity: VOLUME_TYPE,
+        price: Optional[PRICE_TYPE] = None,
+        trigger_price: Optional[PRICE_TYPE] = None
+    ) -> List['Order']:
+        """
+        Create sell order(s) and execute/place them.
+        If price is specified, creates a limit order.
+        If trigger_price is specified, creates a stop order.
+        Otherwise creates a market order.
+        
+        Args:
+            quantity: Quantity to sell
+            price: Optional limit price. If None and trigger_price is None, creates market order.
+            trigger_price: Optional trigger price for stop order.
+        
+        Returns:
+            List of copies of executed/placed orders
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("sell must be implemented by subclass")
         
 

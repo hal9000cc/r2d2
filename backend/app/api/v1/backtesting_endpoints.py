@@ -10,7 +10,7 @@ from multiprocessing import Process
 import redis.asyncio as redis_async
 from app.services.tasks.tasks import BacktestingTaskList, Task
 from app.services.tasks.strategy import Strategy
-from app.services.tasks.broker_backtesting import BrokerBacktesting
+from app.services.tasks.broker_backtesting_new import BrokerBacktesting
 from app.services.tasks.task_results import TaskResults
 from app.core.datetime_utils import parse_utc_datetime64
 from app.services.strategies import validate_relative_path, load_strategy

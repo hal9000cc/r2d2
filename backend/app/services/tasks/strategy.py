@@ -126,38 +126,6 @@ class Strategy(ABC):
         """
         pass
     
-    def round_to_precision(self, value: float, precision: float) -> float:
-        """
-        Round value to nearest multiple of precision.
-        Delegates to broker's round_to_precision method.
-        
-        Args:
-            value: Value to round
-            precision: Precision step (e.g., 0.01, 0.001)
-        
-        Returns:
-            Rounded value
-        """
-        if self.broker is None:
-            return value
-        return self.broker.round_to_precision(value, precision)
-    
-    def floor_to_precision(self, value: float, precision: float) -> float:
-        """
-        Round value down to nearest multiple of precision.
-        Delegates to broker's floor_to_precision method.
-        
-        Args:
-            value: Value to round down
-            precision: Precision step (e.g., 0.01, 0.001)
-        
-        Returns:
-            Rounded down value
-        """
-        if self.broker is None:
-            return value
-        return self.broker.floor_to_precision(value, precision)
-    
     @staticmethod
     def get_parameters_description() -> Dict[str, Tuple[Any, str]]:
         """
@@ -193,26 +161,16 @@ class Strategy(ABC):
             OrderOperationResult with orders, error_messages, and categorized order IDs
         """
         # Round quantity down to precision_amount
-        quantity = self.floor_to_precision(quantity, self.precision_amount)
+        if self.broker is not None:
+            quantity = self.broker.format_volume(quantity)
         
         # Round price to precision_price if specified
-        original_price = price
-        if price is not None:
-            price = self.round_to_precision(price, self.precision_price)
-            # Use price comparison helper to detect actual change
-            if not self.eq(float(price), float(original_price)):
-                msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
-                logger.warning(msg)
-                print(msg)
+        if price is not None and self.broker is not None:
+            price = self.broker.format_price(price)
         
         # Round trigger_price to precision_price if specified
-        original_trigger_price = trigger_price
-        if trigger_price is not None:
-            trigger_price = self.round_to_precision(trigger_price, self.precision_price)
-            if not self.eq(float(trigger_price), float(original_trigger_price)):
-                msg = f"Trigger price {original_trigger_price} rounded to {trigger_price} due to precision_price={self.precision_price}"
-                logger.warning(msg)
-                print(msg)
+        if trigger_price is not None and self.broker is not None:
+            trigger_price = self.broker.format_price(trigger_price)
         
         # Execute through broker (returns List[Order])
         orders = self.broker.buy(quantity, price=price, trigger_price=trigger_price)
@@ -263,25 +221,16 @@ class Strategy(ABC):
             OrderOperationResult with orders, error_messages, and categorized order IDs
         """
         # Round quantity down to precision_amount
-        quantity = self.floor_to_precision(quantity, self.precision_amount)
+        if self.broker is not None:
+            quantity = self.broker.format_volume(quantity)
         
         # Round price to precision_price if specified
-        original_price = price
-        if price is not None:
-            price = self.round_to_precision(price, self.precision_price)
-            if not self.eq(float(price), float(original_price)):
-                msg = f"Price {original_price} rounded to {price} due to precision_price={self.precision_price}"
-                logger.warning(msg)
-                print(msg)
+        if price is not None and self.broker is not None:
+            price = self.broker.format_price(price)
         
         # Round trigger_price to precision_price if specified
-        original_trigger_price = trigger_price
-        if trigger_price is not None:
-            trigger_price = self.round_to_precision(trigger_price, self.precision_price)
-            if not self.eq(float(trigger_price), float(original_trigger_price)):
-                msg = f"Trigger price {original_trigger_price} rounded to {trigger_price} due to precision_price={self.precision_price}"
-                logger.warning(msg)
-                print(msg)
+        if trigger_price is not None and self.broker is not None:
+            trigger_price = self.broker.format_price(trigger_price)
         
         # Execute through broker (returns List[Order])
         orders = self.broker.sell(quantity, price=price, trigger_price=trigger_price)
@@ -343,10 +292,16 @@ class Strategy(ABC):
             original_vol = enter
             # For negative volumes, round absolute value then restore sign
             if allow_negative and enter < 0:
-                rounded_abs = self.floor_to_precision(abs(enter), self.precision_amount)
-                vol = -rounded_abs  # Restore negative sign after rounding
+                if self.broker is not None:
+                    rounded_abs = self.broker.format_volume(abs(enter))
+                    vol = -rounded_abs  # Restore negative sign after rounding
+                else:
+                    vol = enter
             else:
-                vol = self.floor_to_precision(enter, self.precision_amount)
+                if self.broker is not None:
+                    vol = self.broker.format_volume(enter)
+                else:
+                    vol = enter
             # Validate negative volume if needed
             if allow_negative and vol < 0 and current_volume is not None:
                 if abs(vol) > abs(current_volume):
@@ -358,15 +313,24 @@ class Strategy(ABC):
             original_price = enter[1]
             # For negative volumes, round absolute value then restore sign
             if allow_negative and enter[0] < 0:
-                rounded_abs = self.floor_to_precision(abs(enter[0]), self.precision_amount)
-                vol = -rounded_abs  # Restore negative sign after rounding
+                if self.broker is not None:
+                    rounded_abs = self.broker.format_volume(abs(enter[0]))
+                    vol = -rounded_abs  # Restore negative sign after rounding
+                else:
+                    vol = enter[0]
             else:
-                vol = self.floor_to_precision(enter[0], self.precision_amount)
+                if self.broker is not None:
+                    vol = self.broker.format_volume(enter[0])
+                else:
+                    vol = enter[0]
             # Handle None price for market orders
             if original_price is None:
                 price = None
             else:
-                price = self.round_to_precision(enter[1], self.precision_price)
+                if self.broker is not None:
+                    price = self.broker.format_price(enter[1])
+                else:
+                    price = enter[1]
             # Validate negative volume if needed
             if allow_negative and vol < 0 and current_volume is not None:
                 if abs(vol) > abs(current_volume):
@@ -380,15 +344,24 @@ class Strategy(ABC):
                 original_price = price
                 # For negative volumes, round absolute value then restore sign
                 if allow_negative and vol < 0:
-                    rounded_abs = self.floor_to_precision(abs(vol), self.precision_amount)
-                    rounded_vol = -rounded_abs  # Restore negative sign after rounding
+                    if self.broker is not None:
+                        rounded_abs = self.broker.format_volume(abs(vol))
+                        rounded_vol = -rounded_abs  # Restore negative sign after rounding
+                    else:
+                        rounded_vol = vol
                 else:
-                    rounded_vol = self.floor_to_precision(vol, self.precision_amount)
+                    if self.broker is not None:
+                        rounded_vol = self.broker.format_volume(vol)
+                    else:
+                        rounded_vol = vol
                 # Handle None price for market orders
                 if original_price is None:
                     rounded_price = None
                 else:
-                    rounded_price = self.round_to_precision(price, self.precision_price)
+                    if self.broker is not None:
+                        rounded_price = self.broker.format_price(price)
+                    else:
+                        rounded_price = price
                 # Validate negative volume if needed
                 if allow_negative and rounded_vol < 0 and current_volume is not None:
                     if abs(rounded_vol) > abs(current_volume):
@@ -424,7 +397,10 @@ class Strategy(ABC):
         
         # Single price: full position at this price (fraction = 1.0)
         if isinstance(exit_param, (int, float)):
-            price = self.round_to_precision(exit_param, self.precision_price)
+            if self.broker is not None:
+                price = self.broker.format_price(exit_param)
+            else:
+                price = exit_param
             return [(1.0, PRICE_TYPE(price))]
         
         if isinstance(exit_param, list):
@@ -438,24 +414,36 @@ class Strategy(ABC):
                 for f, p in exit_param:
                     if f is None:
                         raise ValueError("Fractions must be explicit for SL/TP orders; None is not allowed")
-                    rounded_price = self.round_to_precision(p, self.precision_price)
+                    if self.broker is not None:
+                        rounded_price = self.broker.format_price(p)
+                    else:
+                        rounded_price = p
                     result.append((float(f), PRICE_TYPE(rounded_price)))
                 return result
             else:
                 # List of prices: distribute equally with explicit fractions summing to 1.0
                 num_prices = len(exit_param)
                 if num_prices == 1:
-                    price = self.round_to_precision(exit_param[0], self.precision_price)
+                    if self.broker is not None:
+                        price = self.broker.format_price(exit_param[0])
+                    else:
+                        price = exit_param[0]
                     return [(1.0, PRICE_TYPE(price))]
                 else:
                     base_fraction = 1.0 / num_prices
                     result: List[Tuple[float, PRICE_TYPE]] = []
                     # First n-1 prices get base_fraction, last gets the remainder to make sum exactly 1.0
                     for p in exit_param[:-1]:
-                        rounded_price = self.round_to_precision(p, self.precision_price)
+                        if self.broker is not None:
+                            rounded_price = self.broker.format_price(p)
+                        else:
+                            rounded_price = p
                         result.append((base_fraction, PRICE_TYPE(rounded_price)))
                     # Last price
-                    price = self.round_to_precision(exit_param[-1], self.precision_price)
+                    if self.broker is not None:
+                        price = self.broker.format_price(exit_param[-1])
+                    else:
+                        price = exit_param[-1]
                     used_fraction = base_fraction * (num_prices - 1)
                     last_fraction = 1.0 - used_fraction
                     result.append((last_fraction, PRICE_TYPE(price)))
@@ -991,7 +979,7 @@ class Strategy(ABC):
         self.broker.close_deal(deal_id)
         
         # Get deal and return deep copy
-        deal = self.broker.get_deal_by_id(deal_id)
+        deal = self.broker.get_deal(deal_id)
         return deal.model_copy(deep=True)
     
     def deal_info(self, deal_id: int) -> Optional[Deal]:
@@ -1005,7 +993,7 @@ class Strategy(ABC):
             Deal: Deep copy of the deal, or None if deal with specified deal_id does not exist
         """
         try:
-            deal = self.broker.get_deal_by_id(deal_id)
+            deal = self.broker.get_deal(deal_id)
             return deal.model_copy(deep=True)
         except IndexError:
             return None
@@ -1060,7 +1048,7 @@ class Strategy(ABC):
         """
         # 1. Get existing deal
         try:
-            deal = self.broker.get_deal_by_id(deal_id)
+            deal = self.broker.get_deal(deal_id)
         except IndexError:
             return OrderOperationResult(
                 orders=[],
