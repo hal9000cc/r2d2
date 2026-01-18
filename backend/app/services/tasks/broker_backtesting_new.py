@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict, Any, Tuple, Callable
 import numpy as np
 
-from app.services.tasks.broker_new import Broker, Order
+from app.services.tasks.broker import Broker, Order
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.services.tasks.tasks import Task

@@ -1,20 +1,21 @@
-"""
-Generic broker classes for handling trading operations.
-"""
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import List, Optional, Dict, Tuple, Set, TYPE_CHECKING
+from typing import List, Optional, Set, Dict, Any, Tuple, TYPE_CHECKING
 import math
+import time
+import weakref
+
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
-from app.core.logger import get_logger
+from app.services.tasks.indicator_proxy import ta_proxy_talib
+from app.services.tasks.task_results import TaskResults
+from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
+from app.core.objects2redis import MessageType
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
-
-logger = get_logger(__name__)
 
 
 class OrderSide(Enum):
@@ -50,19 +51,39 @@ class DealType(Enum):
 class Trade(BaseModel):
     """
     Represents a single trade (buy or sell operation).
-    """
     
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    Immutable class - once created, fields cannot be modified.
+    """
 
-    trade_id: int = Field(gt=0)
-    deal_id: int = 0  # Will be set when trade is added to deal
-    order_id: int
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        frozen=True  # Make class immutable
+    )
+
+    trade_id: int = Field(gt=0, description="Trade ID, must be greater than 0")
+    deal_id: int = Field(gt=0, description="Deal ID, must be greater than 0")
+    order_id: int = Field(gt=0, description="Order ID, must be greater than 0")
     time: np.datetime64
     side: OrderSide
     price: PRICE_TYPE
     quantity: VOLUME_TYPE
     fee: PRICE_TYPE
     sum: PRICE_TYPE
+    
+    @model_validator(mode='after')
+    def validate_trade(self):
+        """Validate that all required fields are filled."""
+        # Check that numeric fields are not None and have valid values
+        if self.price is None:
+            raise ValueError("price must be set")
+        if self.quantity is None:
+            raise ValueError("quantity must be set")
+        if self.fee is None:
+            raise ValueError("fee must be set")
+        if self.sum is None:
+            raise ValueError("sum must be set")
+        
+        return self
 
 
 class Order(BaseModel):
@@ -75,48 +96,213 @@ class Order(BaseModel):
     - Stop-limit order: both `price` and `trigger_price` are set. When trigger_price is reached,
       a limit order at `price` is placed.
     
-    The `modify_time` field is updated whenever the order is modified (executed, cancelled, etc.).
-    This allows filtering orders by modification time for efficient retrieval.
-    
-    The `fraction` field is used for stop loss and take profit orders to specify what fraction
-    of the position should be closed when the order executes. For entry orders, this field is None.
+    The `modify_time` field is updated automatically whenever any field is modified.
+    Immutable fields: create_time, side, price, trigger_price.
     """
-    model_config = ConfigDict(arbitrary_types_allowed=True)
     
-    order_id: int = Field(description="Order ID (assigned when order is added to orders list)")
-    deal_id: int = 0  # Deal ID (0 means no deal)
-    order_type: OrderType  # Type of order: limit or stop (market orders are not stored as Order objects)
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        frozen=False,  # Allow field modifications
+        validate_assignment=True  # Validate on field assignment
+    )
+    
+    # Immutable fields (set at creation, cannot be changed)
+    order_id: int = Field(gt=0, description="Order ID, must be greater than 0")
+    deal_id: int = Field(gt=0, description="Deal ID, must be greater than 0")
+    order_type: OrderType
     create_time: np.datetime64
-    modify_time: np.datetime64
     side: OrderSide
     price: Optional[PRICE_TYPE] = None
     trigger_price: Optional[PRICE_TYPE] = None
+    
+    # Weak reference to broker (internal, set at creation)
+    _broker_ref: weakref.ref = Field(exclude=True)
+    
+    # Mutable fields
+    modify_time: np.datetime64
     volume: VOLUME_TYPE
     filled_volume: VOLUME_TYPE = 0.0
     status: OrderStatus = OrderStatus.NEW
-    order_group: OrderGroup = OrderGroup.NONE  # Order group: 0 - none, 1 - stop loss, 2 - take profit
-    fraction: Optional[float] = None  # Fraction of position to close (for stop loss and take profit orders)
-    errors: List[str] = Field(default_factory=list)  # List of validation/execution errors
+    order_group: OrderGroup = OrderGroup.NONE
+    fraction: Optional[float] = None
+    fraction_remain: Optional[float] = None
+    errors: List[str] = Field(default_factory=list)
+    
+    def __init__(self, broker: 'Broker', **data):
+        """
+        Initialize Order with broker.
+        
+        Args:
+            broker: Broker instance (required, stored as weak reference)
+            **data: Other Order fields
+        """
+        # Create weak reference to broker immediately
+        if broker is None:
+            raise ValueError("broker must be provided and cannot be None")
+        self._broker_ref = weakref.ref(broker)
+        
+        # Initialize Pydantic model without broker field
+        super().__init__(**data)
+    
+    def __setattr__(self, name: str, value) -> None:
+        """
+        Override __setattr__ to:
+        1. Protect immutable fields from modification
+        2. Automatically update modify_time when any mutable field changes
+        """
+        # List of immutable fields
+        immutable_fields = {'order_id', 'deal_id', 'order_type', 'create_time', 'side', 'price', 'trigger_price'}
+        
+        # Check if object is already initialized by checking if __pydantic_fields_set__ exists
+        # This is set by Pydantic after model initialization
+        is_initialized = hasattr(self, '__pydantic_fields_set__')
+        
+        if is_initialized:
+            # Protect immutable fields
+            if name in immutable_fields:
+                # Get current value if field exists
+                try:
+                    current_value = object.__getattribute__(self, name)
+                    if current_value is not None and current_value != value:
+                        raise ValueError(f"Cannot modify immutable field '{name}' after object creation")
+                except AttributeError:
+                    # Field doesn't exist yet, allow setting during initialization
+                    pass
+            
+            # Protect modify_time from direct modification
+            if name == 'modify_time':
+                raise ValueError("Cannot modify 'modify_time' directly. It is updated automatically when other fields change.")
+            
+            # Update modify_time when mutable field changes (except modify_time itself)
+            if name != 'modify_time' and name not in immutable_fields:
+                # Get broker from weak reference
+                broker = self._broker_ref()
+                if broker is None:
+                    raise RuntimeError("Cannot update modify_time: broker has been garbage collected")
+                
+                # Get current_time from broker
+                current_time = broker.current_time
+                assert current_time is not None, "Broker's current_time is not set"
+                
+                # Use BaseModel's __setattr__ to allow Pydantic validation
+                # This will trigger validate_assignment=True validation
+                BaseModel.__setattr__(self, name, value)
+                
+                # Then update modify_time using BaseModel.__setattr__ to bypass our __setattr__
+                # This avoids recursion and allows Pydantic to handle it
+                BaseModel.__setattr__(self, 'modify_time', current_time)
+                return
+        
+        # For initial assignment (during __init__), use BaseModel's __setattr__
+        # Pydantic will handle validation through its normal mechanism
+        BaseModel.__setattr__(self, name, value)
     
     @model_validator(mode='after')
     def validate_order(self):
         """Validate order fields.
         
-        - order_id must be greater than 0 if order is not in NEW or ERROR status.
-        - fraction must be set (not None) for orders with order_group != NONE.
+        - order_id and deal_id must be greater than 0
+        - Either price or trigger_price must be set (not both None)
+        - If status is ACTIVE, volume must be greater than 0
+        - fraction must be set for orders with order_group != NONE
+        - price, trigger_price, and volume must be properly rounded according to broker precision
         """
-        # Validate order_id
-        if self.order_id <= 0 and self.status not in (OrderStatus.NEW, OrderStatus.ERROR):
-            raise ValueError(f"order_id must be greater than 0 for orders with status {self.status}")
+        # Validate order_id and deal_id (already checked by Field(gt=0), but double-check)
+        if self.order_id <= 0:
+            raise ValueError(f"order_id must be greater than 0, got {self.order_id}")
+        if self.deal_id <= 0:
+            raise ValueError(f"deal_id must be greater than 0, got {self.deal_id}")
+        
+        # Validate that either price or trigger_price is set
+        if self.price is None and self.trigger_price is None:
+            raise ValueError("Either 'price' or 'trigger_price' must be set (not both None)")
+        
+        # Validate volume for ACTIVE orders
+        if self.status == OrderStatus.ACTIVE and self.volume <= 0:
+            raise ValueError(f"volume must be greater than 0 for orders with status ACTIVE, got {self.volume}")
         
         # Validate fraction for exit orders
         if self.order_group != OrderGroup.NONE and self.fraction is None:
             raise ValueError(f"fraction must be set for orders with order_group={self.order_group}")
-
+        
+        # Validate volume is non-negative
         if self.volume < 0:
             raise ValueError(f"volume must be greater than or equal to 0, got {self.volume}")
         
+        # Validate rounding: price, trigger_price, and volume must be properly rounded
+        broker = self._broker_ref()
+        if broker is None:
+            raise RuntimeError("Cannot validate rounding: broker has been garbage collected")
+        
+        # Validate price rounding
+        if self.price is not None:
+            formatted_price = broker.format_price(self.price)
+            assert self.price == formatted_price, \
+                f"price must be properly rounded (got {self.price}, expected {formatted_price})"
+        
+        # Validate trigger_price rounding
+        if self.trigger_price is not None:
+            formatted_trigger_price = broker.format_price(self.trigger_price)
+            assert self.trigger_price == formatted_trigger_price, \
+                f"trigger_price must be properly rounded (got {self.trigger_price}, expected {formatted_trigger_price})"
+        
+        # Validate volume rounding
+        formatted_volume = broker.format_volume(self.volume)
+        assert self.volume == formatted_volume, \
+            f"volume must be properly rounded (got {self.volume}, expected {formatted_volume})"
+        
         return self
+    
+    def broker(self) -> 'Broker':
+        """
+        Get broker instance from weak reference.
+        
+        Returns:
+            Broker instance
+        
+        Raises:
+            RuntimeError: If broker has been garbage collected
+        """
+        broker = self._broker_ref()
+        if broker is None:
+            raise RuntimeError("Broker has been garbage collected")
+        return broker
+    
+    def cancel(self) -> List[str]:
+        """
+        Cancel this order.
+        
+        Calls broker.cancel_order() and updates order status based on result.
+        If cancellation is successful and filled_volume == 0, sets status to CANCELED.
+        If cancellation is successful and filled_volume > 0, sets status to EXECUTED.
+        If there are errors, adds them to order.errors and returns the error list.
+        
+        Returns:
+            List of error messages. Empty list means success.
+        
+        Raises:
+            AssertionError: If order status is not ACTIVE or NEW
+            RuntimeError: If broker has been garbage collected
+        """
+        # Check that order can be canceled
+        assert self.status in (OrderStatus.ACTIVE, OrderStatus.NEW), \
+            f"Cannot cancel order with status {self.status}"
+        
+        # Get broker and call cancel_order
+        broker = self.broker()
+        errors = broker.cancel_order(str(self.order_id), broker.symbol)
+        
+        # If no errors, update status
+        if not errors:
+            if self.filled_volume == 0:
+                self.status = OrderStatus.CANCELED
+            else:
+                self.status = OrderStatus.EXECUTED
+        else:
+            # Add errors to order.errors
+            self.errors.extend(errors)
+        
+        return errors
 
 
 class Deal(BaseModel):
@@ -155,20 +341,31 @@ class Deal(BaseModel):
     # Type of deal closure (copied from last exit order's order_group, or NONE if closed via regular buy/sell)
     close_type: Optional[OrderGroup] = None
     
-    # Automatic deal flag (True for deals created via Strategy.buy/sell, False for buy_sltp/sell_sltp)
-    auto: bool = False
-    
-    # Initial entry volume (sum of all entry order volumes) - set for deals created via buy_sltp/sell_sltp
-    # Used for calculating stop loss and take profit order target volumes
-    # Defaults to 0.0 for automatic deals (created via regular buy/sell methods)
-    enter_volume: VOLUME_TYPE = 0.0
-
     # Internal accumulators for efficient incremental updates
     buy_quantity: VOLUME_TYPE = 0.0
     buy_cost: PRICE_TYPE = 0.0
     sell_quantity: VOLUME_TYPE = 0.0
     sell_proceeds: PRICE_TYPE = 0.0
-
+    
+    # Weak reference to broker (internal, set at creation)
+    _broker_ref: weakref.ref = Field(exclude=True)
+    
+    def __init__(self, broker: 'Broker', **data):
+        """
+        Initialize Deal with broker.
+        
+        Args:
+            broker: Broker instance (required, stored as weak reference)
+            **data: Other Deal fields
+        """
+        # Create weak reference to broker immediately
+        if broker is None:
+            raise ValueError("broker must be provided and cannot be None")
+        self._broker_ref = weakref.ref(broker)
+        
+        # Initialize Pydantic model without broker field
+        super().__init__(**data)
+    
     def add_trade(self, trade: Trade, precision_amount: float) -> None:
         """
         Add trade to the deal and update aggregates incrementally.
@@ -186,13 +383,6 @@ class Deal(BaseModel):
         
         trade.deal_id = self.deal_id
         self.trades.append(trade)
-
-        # Set deal type based on first trade
-        if self.type is None:
-            if trade.side == OrderSide.BUY:
-                self.type = DealType.LONG
-            else:
-                self.type = DealType.SHORT
 
         self.fee += trade.fee
 
@@ -219,257 +409,313 @@ class Deal(BaseModel):
             self.profit = None
         
 
-    def check_closed(self) -> bool:
+    @property
+    def unrealized_profit(self) -> Optional[PRICE_TYPE]:
         """
-        Check if deal should be closed and set is_closed to True if conditions are met.
-        
-        Deal is closed if quantity == 0 and there are no active entry orders.
-        This method does not check is_closed status itself - it should be called
-        only when is_closed is False.
-        
-        When closing, sets close_type based on the last trade's order:
-        - If last trade has order_id != 0, finds the order and copies its order_group to close_type
-        - If order_id == 0 or order not found, sets close_type = OrderGroup.NONE
-        
-        Returns:
-            True if deal was just closed (status changed from open to closed), False otherwise
-        """
-        if self.quantity == 0:
-            # Check if there are any active entry orders (OrderGroup.NONE and status ACTIVE)
-            has_active_entry_orders = any(
-                order.order_group == OrderGroup.NONE and order.status == OrderStatus.ACTIVE
-                for order in self.orders
-            )
-            if not has_active_entry_orders:
-                was_closed = self.is_closed
-                self.is_closed = True
-                
-                # Set close_type based on last trade's order
-                if self.trades:
-                    # Find last trade by time (and by trade_id if times are equal)
-                    last_trade = max(self.trades, key=lambda t: (t.time, t.trade_id))
-                    
-                    if last_trade.order_id != 0:
-                        # Find order by order_id
-                        order = next((o for o in self.orders if o.order_id == last_trade.order_id), None)
-                        if order and order.order_group != OrderGroup.NONE:
-                            self.close_type = order.order_group
-                        else:
-                            self.close_type = OrderGroup.NONE
-                    else:
-                        self.close_type = OrderGroup.NONE
-                else:
-                    self.close_type = OrderGroup.NONE
-                
-                # Return True if status changed from open to closed
-                return not was_closed
-        return False
-
-    def get_unrealized_profit(self, current_price: PRICE_TYPE) -> Optional[PRICE_TYPE]:
-        """
-        Calculate unrealized profit for an open position at the given price.
+        Calculate unrealized profit for an open position at current_price from broker.
 
         For closed positions, the result matches the realized profit.
+        
+        Returns:
+            Unrealized profit if broker and current_price are available, None otherwise
         """
+        # Get broker from weak reference
+        broker = self._broker_ref()
+        if broker is None:
+            return None
+        
+        current_price = broker.current_price
+        
         # Value of current open position at market price
         current_value = self.quantity * current_price
 
         # Hypothetical total PnL if we closed the position now:
         # (all sells done + value of remaining position) - all buys - all fees
         return self.sell_proceeds + current_value - self.buy_cost - self.fee
-
-
-class TradingStats(BaseModel):
-    """
-    Trading statistics.
     
-    Tracks:
-    - Equity in symbol and USD (similar to broker mechanism)
-    - Trade counts (total, buys, sells)
-    - Maximum market volume (max absolute equity_symbol)
-    - Total fees
-    - Deal counts (total, long, short)
-    """
-    
-    # Initial equity in USD
-    initial_equity_usd: PRICE_TYPE = 0.0
-    
-    # Equity tracking (same mechanism as broker) - internal fields
-    _equity_symbol: VOLUME_TYPE = 0.0
-    _equity_usd: PRICE_TYPE = 0.0
-    
-    # Trade statistics
-    total_trades: int = 0
-    buy_trades: int = 0
-    sell_trades: int = 0
-    
-    # Maximum market volume (max absolute value of equity_symbol)
-    max_market_volume: VOLUME_TYPE = 0.0
-    
-    # Total fees
-    total_fees: PRICE_TYPE = 0.0
-    
-    # Profit tracking
-    profit: PRICE_TYPE = 0.0  # Current profit: _equity_symbol * price + _equity_usd - initial_equity_usd
-    _profit_max: PRICE_TYPE = 0.0  # Maximum profit value (internal)
-    drawdown_max: PRICE_TYPE = 0.0  # Maximum drawdown (_profit_max - profit)
-    
-    # Deal statistics
-    total_deals: int = 0
-    long_deals: int = 0
-    short_deals: int = 0
-    profit_deals: int = 0  # Number of profitable deals
-    loss_deals: int = 0  # Number of losing deals
-    
-    # Calculated statistics (set by calc_stat method)
-    profit_per_deal: Optional[PRICE_TYPE] = None  # Profit per deal (profit / total_deals)
-    profit_gross: Optional[PRICE_TYPE] = None  # Gross profit (profit + total_fees)
-    
-    # Average profit/loss per deal type (calculated in add_deal)
-    avg_profit_per_winning_deal: Optional[PRICE_TYPE] = None  # Average profit per winning deal
-    avg_loss_per_losing_deal: Optional[PRICE_TYPE] = None  # Average loss per losing deal
-    
-    # Profit by deal type (calculated in add_deal)
-    profit_long: PRICE_TYPE = 0.0  # Profit from long deals
-    profit_short: PRICE_TYPE = 0.0  # Profit from short deals
-    
-    # Internal accumulators for average profit/loss calculation
-    total_profit_winning: PRICE_TYPE = 0.0  # Sum of profits from winning deals
-    total_loss_losing: PRICE_TYPE = 0.0  # Sum of losses from losing deals
-    
-    # Backtesting parameters (set from task)
-    fee_taker: PRICE_TYPE = 0.0  # Taker fee rate (as fraction, e.g., 0.001 for 0.1%)
-    fee_maker: PRICE_TYPE = 0.0  # Maker fee rate (as fraction, e.g., 0.001 for 0.1%)
-    slippage: PRICE_TYPE = 0.0  # Slippage value (absolute, in currency, e.g., 0.001 USD)
-    price_step: PRICE_TYPE = 0.0  # Price step (minimum step size, e.g., 0.1, 0.001)
-    source: str  # Data source (exchange name)
-    symbol: str  # Trading symbol
-    timeframe: str  # Timeframe
-    date_start: str  # Start date (ISO format)
-    date_end: str  # End date (ISO format)
-    
-    def add_trade(self, trade: Trade) -> None:
+    def cancel_orders(self, group: Optional[OrderGroup] = None) -> Tuple[List[str], List['Order']]:
         """
-        Add trade to statistics.
+        Cancel orders in this deal by specified group.
         
-        Updates equity, trade counts, max market volume, and fees.
+        Iterates through orders, canceling each one. If cancellation is successful
+        and order status is CANCELED or EXECUTED, removes it from deal's orders list.
+        Continues on errors, collecting all errors. Repeats the cycle if there are errors,
+        stopping only when all orders are canceled or no orders were canceled in a cycle.
         
         Args:
-            trade: Trade to add
-        """
-        self.total_trades += 1
+            group: OrderGroup to filter by. If None, cancels all orders.
         
-        # Update trade counts by side
-        if trade.side == OrderSide.BUY:
-            self.buy_trades += 1
-            # Buy: increase equity_symbol, decrease equity_usd
-            self._equity_symbol += trade.quantity
-            self._equity_usd -= trade.sum + trade.fee
+        Returns:
+            Tuple[List[str], List[Order]]:
+            - List of error messages remaining after last pass. Empty list means all orders were canceled.
+            - List of orders that were successfully canceled/executed and removed from this deal during this call.
+        """
+        # Filter orders by group (if specified)
+        if group is None:
+            orders_to_cancel = list(self.orders)
         else:
-            self.sell_trades += 1
-            # Sell: decrease equity_symbol, increase equity_usd
-            self._equity_symbol -= trade.quantity
-            self._equity_usd += trade.sum - trade.fee
+            orders_to_cancel = [order for order in self.orders if order.order_group == group]
         
-        # Update max market volume (absolute value)
-        abs_equity_symbol = abs(self._equity_symbol)
-        if abs_equity_symbol > self.max_market_volume:
-            self.max_market_volume = abs_equity_symbol
+        all_errors: List[str] = []
+        canceled_orders: List['Order'] = []
         
-        # Accumulate fees
-        self.total_fees += trade.fee
+        while True:
+            # Clear errors before each pass
+            all_errors.clear()
+            
+            # Count canceled orders in this pass
+            canceled_count = 0
+            
+            # Process each order
+            for order in list(orders_to_cancel):  # Use list() to avoid modification during iteration
+                # Skip already canceled/executed orders
+                if order.status in (OrderStatus.CANCELED, OrderStatus.EXECUTED):
+                    orders_to_cancel.remove(order)
+                    continue
+                
+                # Try to cancel order
+                errors = order.cancel()
+                
+                if not errors:
+                    # Success: check if order should be removed
+                    if order.status in (OrderStatus.CANCELED, OrderStatus.EXECUTED):
+                        self.orders.remove(order)
+                        orders_to_cancel.remove(order)
+                        canceled_count += 1
+                        canceled_orders.append(order)
+                else:
+                    # Errors occurred: add to error list
+                    all_errors.extend(errors)
+            
+            # Check exit conditions
+            if not orders_to_cancel:
+                # All orders canceled
+                break
+            
+            if canceled_count == 0:
+                # No orders were canceled in this pass
+                break
         
-        # Calculate current profit: _equity_symbol * price + _equity_usd - initial_equity_usd
-        # Use trade price as current market price
-        current_profit = self._equity_symbol * trade.price + self._equity_usd - self.initial_equity_usd
-        self.profit = current_profit
-        
-        # Update maximum profit
-        if current_profit > self._profit_max:
-            self._profit_max = current_profit
-        
-        # Calculate drawdown: _profit_max - profit
-        current_drawdown = self._profit_max - current_profit
-        if current_drawdown > self.drawdown_max:
-            self.drawdown_max = current_drawdown
+        return all_errors, canceled_orders
     
-    def add_deal(self, deal: Deal) -> None:
+    def add_order(self, order: 'Order') -> None:
         """
-        Add deal to statistics.
+        Add order to deal's orders list.
         
-        Counts deals (total, long, short) and calculates profit by deal type.
-        Only adds deals that have at least one trade (non-empty deals).
+        Adds order to self.orders and sets order.deal_id to this deal_id.
         
         Args:
-            deal: Deal to add
+            order: Order to add
         """
-        # Skip empty deals (deals without any trades)
-        if len(deal.trades) == 0:
+        order.deal_id = self.deal_id
+        self.orders.append(order)
+    
+    def calc_fraction_remain(self, order_group: OrderGroup) -> None:
+        """
+        Calculate fraction_remain for orders of specified group.
+        
+        Sorts orders by price/trigger_price and calculates fraction_remain using
+        cumulative remain algorithm. For stop losses: fraction must be set (assert).
+        For take profits: fraction must be set (assert).
+        
+        Args:
+            order_group: OrderGroup to process (STOP_LOSS or TAKE_PROFIT)
+        """
+        # Filter orders by group and status
+        orders = [
+            order for order in self.orders
+            if order.order_group == order_group and order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+        ]
+        
+        if not orders:
             return
         
-        self.total_deals += 1
+        # Determine sort direction based on deal type and order group
+        if order_group == OrderGroup.STOP_LOSS:
+            # For LONG: sort by trigger_price descending (farthest down first)
+            # For SHORT: sort by trigger_price ascending (farthest up first)
+            reverse = (self.type == DealType.LONG)
+            # Sort by trigger_price
+            orders.sort(key=lambda o: o.trigger_price if o.trigger_price is not None else float('-inf'), reverse=reverse)
+        else:  # TAKE_PROFIT
+            # For LONG: sort by price ascending (farthest up first)
+            # For SHORT: sort by price descending (farthest down first)
+            reverse = (self.type == DealType.SHORT)
+            # Sort by price
+            orders.sort(key=lambda o: o.price if o.price is not None else float('-inf'), reverse=reverse)
         
-        if deal.type == DealType.LONG:
-            self.long_deals += 1
-            # Add profit from closed long deal
-            if deal.is_closed and deal.profit is not None:
-                self.profit_long += deal.profit
-                # Count profitable/losing deals and accumulate for averages
-                if deal.profit > 0:
-                    self.profit_deals += 1
-                    self.total_profit_winning += deal.profit
-                    # Recalculate average profit per winning deal
-                    if self.profit_deals > 0:
-                        self.avg_profit_per_winning_deal = self.total_profit_winning / self.profit_deals
-                    else:
-                        self.avg_profit_per_winning_deal = None
-                elif deal.profit < 0:
-                    self.loss_deals += 1
-                    self.total_loss_losing += deal.profit  # deal.profit is negative, so this accumulates losses
-                    # Recalculate average loss per losing deal
-                    if self.loss_deals > 0:
-                        self.avg_loss_per_losing_deal = self.total_loss_losing / self.loss_deals
-                    else:
-                        self.avg_loss_per_losing_deal = None
-        elif deal.type == DealType.SHORT:
-            self.short_deals += 1
-            # Add profit from closed short deal
-            if deal.is_closed and deal.profit is not None:
-                self.profit_short += deal.profit
-                # Count profitable/losing deals and accumulate for averages
-                if deal.profit > 0:
-                    self.profit_deals += 1
-                    self.total_profit_winning += deal.profit
-                    # Recalculate average profit per winning deal
-                    if self.profit_deals > 0:
-                        self.avg_profit_per_winning_deal = self.total_profit_winning / self.profit_deals
-                    else:
-                        self.avg_profit_per_winning_deal = None
-                elif deal.profit < 0:
-                    self.loss_deals += 1
-                    self.total_loss_losing += deal.profit  # deal.profit is negative, so this accumulates losses
-                    # Recalculate average loss per losing deal
-                    if self.loss_deals > 0:
-                        self.avg_loss_per_losing_deal = self.total_loss_losing / self.loss_deals
-                    else:
-                        self.avg_loss_per_losing_deal = None
+        # Initialize remain
+        remain = 1.0
+        
+        # Process each order
+        for order in orders:
+            # Assert that fraction is set for stop/take orders
+            assert order.fraction is not None, f"Order {order.order_id} must have fraction set for order_group {order_group}"
+            
+            # Calculate fraction_remain
+            order.fraction_remain = order.fraction / remain
+            
+            # Update remain
+            remain = remain - order.fraction
+        
+        # Assert that remain is 0 after processing all orders
+        assert abs(remain) < 1e-10, f"Remain should be 0 after processing all orders, got {remain}"
     
-    def calc_stat(self) -> None:
+    def update_orders(self) -> None:
         """
-        Calculate additional statistics.
+        Update volumes for stop loss and take profit orders.
         
-        Calculates:
-        - profit_per_deal: profit / total_deals
-        - profit_gross: profit + total_fees
+        Calculates volumes based on simulated volume and fraction_remain.
+        First updates stop losses, then take profits.
         """
-        # Profit per deal
-        if self.total_deals > 0:
-            self.profit_per_deal = self.profit / self.total_deals
-        else:
-            self.profit_per_deal = None
+        self.update_stop_loss_volumes()
+        self.update_take_profit_volumes()
+    
+    def start(self) -> Tuple[List[str], List['Order']]:
+        """
+        Start deal: update orders and create entry and stop loss orders.
         
-        # Gross profit (profit + fees)
-        self.profit_gross = self.profit + self.total_fees
+        First calls update_orders() to calculate volumes, then creates all entry orders,
+        then all stop loss orders via broker.create_order().
+        
+        Returns:
+            Tuple of (errors, created_orders):
+            - errors: List of error messages (empty if all orders created successfully)
+            - created_orders: List of successfully created Order objects
+        """
+        # Get broker
+        broker = self._broker_ref()
+        assert broker is not None, "Broker has been garbage collected"
+        
+        # 1. Update orders
+        self.update_orders()
+        
+        # 2. Collect entry and stop loss orders (ACTIVE or NEW only)
+        entry_orders = [
+            order for order in self.orders
+            if order.order_group == OrderGroup.NONE
+            and order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+        ]
+        
+        stop_orders = [
+            order for order in self.orders
+            if order.order_group == OrderGroup.STOP_LOSS
+            and order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+        ]
+        
+        # 3. Create orders and collect results
+        errors = []
+        created_orders = []
+        
+        # 3.1. Create entry orders first
+        for order in entry_orders:
+            order_errors = broker.create_order(order)
+            if order_errors:
+                errors.extend(order_errors)
+            else:
+                created_orders.append(order)
+        
+        # 3.2. Create stop loss orders
+        for order in stop_orders:
+            order_errors = broker.create_order(order)
+            if order_errors:
+                errors.extend(order_errors)
+            else:
+                created_orders.append(order)
+        
+        return (errors, created_orders)
+    
+    def update_stop_loss_volumes(self) -> None:
+        """
+        Update volumes for stop loss orders.
+        
+        Combines entry orders and stop loss orders, sorts them, and calculates
+        volumes based on simulated volume progression.
+        """
+        # Get broker for format_volume
+        broker = self._broker_ref()
+        assert broker is not None, "Broker has been garbage collected"
+        
+        # Collect entry and stop orders with sort keys in one pass
+        # For entry orders: use price, for stop orders: use trigger_price
+        orders_with_keys = []
+        has_stop_orders = False
+        
+        for order in self.orders:
+            if order.status not in (OrderStatus.ACTIVE, OrderStatus.NEW):
+                continue
+            
+            if order.order_group == OrderGroup.NONE:
+                # Entry order
+                assert order.price is not None, f"Entry order {order.order_id} must have price set"
+                orders_with_keys.append((order.price, order, 'entry'))
+            elif order.order_group == OrderGroup.STOP_LOSS:
+                # Stop loss order
+                assert order.trigger_price is not None, f"Stop order {order.order_id} must have trigger_price set"
+                orders_with_keys.append((order.trigger_price, order, 'stop'))
+                has_stop_orders = True
+        
+        if not has_stop_orders:
+            return
+        
+        # Determine sort direction: for LONG descending, for SHORT ascending
+        reverse = (self.type == DealType.LONG)
+        orders_with_keys.sort(key=lambda x: x[0], reverse=reverse)
+        
+        # Initialize simulated volume with current deal quantity
+        sim_volume = abs(self.quantity)
+        
+        # Process each order
+        for sort_key, order, order_type in orders_with_keys:
+            if order_type == 'entry':
+                # Entry order: add its volume to sim_volume
+                sim_volume += order.volume
+            else:  # stop
+                # Stop order: update volume = sim_volume * fraction_remain, then subtract from sim_volume
+                assert order.fraction_remain is not None, f"Stop order {order.order_id} must have fraction_remain set"
+                new_volume = sim_volume * order.fraction_remain
+                order.volume = broker.format_volume(new_volume)
+                sim_volume -= order.volume
+    
+    def update_take_profit_volumes(self) -> None:
+        """
+        Update volumes for take profit orders.
+        
+        Sorts take profit orders and calculates volumes based on simulated volume.
+        """
+        # Get broker for format_volume
+        broker = self._broker_ref()
+        assert broker is not None, "Broker has been garbage collected"
+        
+        # Get take profit orders (ACTIVE or NEW)
+        take_orders = [
+            order for order in self.orders
+            if order.order_group == OrderGroup.TAKE_PROFIT
+            and order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+        ]
+        
+        if not take_orders:
+            return
+        
+        # Determine sort direction: for LONG ascending, for SHORT descending
+        reverse = (self.type == DealType.SHORT)
+        # Sort by price
+        take_orders.sort(
+            key=lambda o: o.price if o.price is not None else float('-inf'),
+            reverse=reverse
+        )
+        
+        # Initialize simulated volume with current deal quantity
+        sim_volume = abs(self.quantity)
+        
+        # Process each order
+        for order in take_orders:
+            assert order.fraction_remain is not None, f"Take profit order {order.order_id} must have fraction_remain set"
+            # Update volume = sim_volume * fraction_remain
+            new_volume = sim_volume * order.fraction_remain
+            order.volume = broker.format_volume(new_volume)
+            # Subtract volume from sim_volume
+            sim_volume -= order.volume
 
 
 class Broker(ABC):
@@ -477,655 +723,788 @@ class Broker(ABC):
     Generic broker base class.
     """
     
-    def __init__(self, task: 'Task', result_id: str):
+    def __init__(
+        self, 
+        task: 'Task', 
+        result_id: str,
+        callbacks_dict: Dict[str, Any] = None,
+        results_save_period: float = TRADE_RESULTS_SAVE_PERIOD
+    ):
         """
         Initialize broker.
         
         Args:
             task: Task instance (must contain precision_amount and precision_price > 0)
             result_id: Unique ID for this backtesting run
+            callbacks_dict: Dictionary with callback functions (optional)
+            results_save_period: Period for saving results in seconds (default: TRADE_RESULTS_SAVE_PERIOD)
         """
         if task.precision_amount <= 0.0:
             raise ValueError("precision_amount must be greater than 0")
         if task.precision_price <= 0.0:
             raise ValueError("precision_price must be greater than 0")
         
-        self.task: Task = task
-        self.deals: Optional[List[Deal]] = None
-        self.trades: List[Trade] = []
+        self.task: 'Task' = task
+        self.source: str = task.source
+        self.symbol: str = task.symbol
+        self.deals: List['Deal'] = []
+        self.orders: List['Order'] = []
+        self.trades: List['Trade'] = []
         self.result_id = result_id
         self.last_auto_deal_id: Optional[int] = None
         self.active_deals: Set[int] = set()  # Set of deal_id for active (open) deals
+        self.current_time: Optional[np.datetime64] = None
+        self.i_time: int = task.history_size  # Current bar index, initialized with history_size
+        self.price: Optional[PRICE_TYPE] = None  # Current price
         
         # Precision for amount and price
         self.precision_amount: float = task.precision_amount
         self.precision_price: float = task.precision_price
+        
+        # Callbacks and results save period
+        self.callbacks: Dict[str, Any] = callbacks_dict if callbacks_dict is not None else {}
+        self.results_save_period: float = results_save_period
     
-    # ------------------------------------------------------------------
-    # Precision-based rounding helpers
-    # ------------------------------------------------------------------
-    
-    def round_to_precision(self, value: float, precision: float) -> float:
+    def format_volume(self, value: VOLUME_TYPE) -> VOLUME_TYPE:
         """
-        Round value to nearest multiple of precision.
+        Format volume by rounding down to nearest multiple of precision_amount.
         
         Args:
-            value: Value to round
-            precision: Precision step (e.g., 0.01, 0.001)
+            value: Volume value to format (must be >= 0)
         
         Returns:
-            Rounded value
+            Formatted volume rounded down to precision_amount
+        
+        Raises:
+            AssertionError: If value < 0 or precision_amount <= 0
         """
-        return round(value / precision) * precision
+        assert value >= 0, f"Volume must be >= 0, got {value}"
+        assert self.precision_amount > 0, f"precision_amount must be > 0, got {self.precision_amount}"
+        
+        if value == 0:
+            return VOLUME_TYPE(0.0)
+        
+        return VOLUME_TYPE(math.floor(value / self.precision_amount) * self.precision_amount)
     
-    def floor_to_precision(self, value: float, precision: float) -> float:
+    def format_price(self, value: PRICE_TYPE) -> PRICE_TYPE:
         """
-        Round value down to nearest multiple of precision.
+        Format price by rounding to nearest multiple of precision_price.
         
         Args:
-            value: Value to round down
-            precision: Precision step (e.g., 0.01, 0.001)
+            value: Price value to format (must be >= 0)
         
         Returns:
-            Rounded down value
+            Formatted price rounded to nearest precision_price
+        
+        Raises:
+            AssertionError: If value < 0 or precision_price <= 0
         """
-        return math.floor(value / precision) * precision
-
+        assert value >= 0, f"Price must be >= 0, got {value}"
+        assert self.precision_price > 0, f"precision_price must be > 0, got {self.precision_price}"
+        
+        if value == 0:
+            return PRICE_TYPE(0.0)
+        
+        return PRICE_TYPE(round(value / self.precision_price) * self.precision_price)
+    
     # ------------------------------------------------------------------
     # Price comparison helpers (with precision tolerance)
     # ------------------------------------------------------------------
+    
     def _price_eps(self) -> float:
         """
         Get epsilon for price comparisons based on precision_price.
         We treat prices as equal if they differ by no more than precision_price / 10.
+        
+        Returns:
+            Epsilon value for price comparisons
         """
         return self.precision_price / 10.0
-
+    
     def eq(self, a: float, b: float) -> bool:
-        """Return True if prices a and b are equal within price epsilon."""
+        """
+        Return True if prices a and b are equal within price epsilon.
+        
+        Args:
+            a: First price
+            b: Second price
+        
+        Returns:
+            True if prices are equal within tolerance
+        """
         return abs(a - b) <= self._price_eps()
-
+    
     def gt(self, a: float, b: float) -> bool:
-        """Return True if price a is greater than price b beyond price epsilon."""
+        """
+        Return True if price a is greater than price b beyond price epsilon.
+        
+        Args:
+            a: First price
+            b: Second price
+        
+        Returns:
+            True if a > b (beyond tolerance)
+        """
         return (a - b) > self._price_eps()
-
+    
     def lt(self, a: float, b: float) -> bool:
-        """Return True if price a is less than price b beyond price epsilon."""
+        """
+        Return True if price a is less than price b beyond price epsilon.
+        
+        Args:
+            a: First price
+            b: Second price
+        
+        Returns:
+            True if a < b (beyond tolerance)
+        """
         return (b - a) > self._price_eps()
-
+    
     def gteq(self, a: float, b: float) -> bool:
-        """Return True if price a is greater than or equal to price b within price epsilon."""
+        """
+        Return True if price a is greater than or equal to price b within price epsilon.
+        
+        Args:
+            a: First price
+            b: Second price
+        
+        Returns:
+            True if a >= b (within tolerance)
+        """
         return self.gt(a, b) or self.eq(a, b)
-
+    
     def lteq(self, a: float, b: float) -> bool:
-        """Return True if price a is less than or equal to price b within price epsilon."""
+        """
+        Return True if price a is less than or equal to price b within price epsilon.
+        
+        Args:
+            a: First price
+            b: Second price
+        
+        Returns:
+            True if a <= b (within tolerance)
+        """
         return self.lt(a, b) or self.eq(a, b)
-
-    @abstractmethod
-    def buy(self, quantity: VOLUME_TYPE, deal_id: Optional[int] = None):
-        """
-        Execute buy operation.
-
-        Args:
-            quantity: Quantity to buy
-        """
-
-        raise NotImplementedError
-
-    @abstractmethod
-    def sell(self, quantity: VOLUME_TYPE, deal_id: Optional[int] = None):
-        """
-        Execute sell operation.
-
-        Args:
-            quantity: Quantity to sell
-        """
-
-        raise NotImplementedError
-
-    def _cancel_deal_orders(
-        self,
-        deal: Deal,
-        current_time: np.datetime64,
-        cancel_entry: bool = True,
-        cancel_stop_loss: bool = True,
-        cancel_take_profit: bool = True
-    ) -> List[Order]:
-        """
-        Cancel active and new orders in a deal, optionally filtered by order group.
-        
-        Iterates through all orders in the deal and cancels those with
-        status ACTIVE or NEW that match the specified order groups.
-        
-        Args:
-            deal: Deal whose orders should be canceled
-            current_time: Current time for order modification
-            cancel_entry: If True, cancel entry orders (OrderGroup.NONE). Default: True.
-            cancel_stop_loss: If True, cancel stop loss orders (OrderGroup.STOP_LOSS). Default: True.
-            cancel_take_profit: If True, cancel take profit orders (OrderGroup.TAKE_PROFIT). Default: True.
-        
-        Returns:
-            List of orders that were canceled
-        """
-        canceled_orders = []
-        for order in deal.orders:
-            if order.status not in [OrderStatus.ACTIVE, OrderStatus.NEW]:
-                continue
-            
-            # Check if this order group should be canceled
-            should_cancel = False
-            if order.order_group == OrderGroup.NONE and cancel_entry:
-                should_cancel = True
-            elif order.order_group == OrderGroup.STOP_LOSS and cancel_stop_loss:
-                should_cancel = True
-            elif order.order_group == OrderGroup.TAKE_PROFIT and cancel_take_profit:
-                should_cancel = True
-            
-            if should_cancel:
-                self._cancel_order(order, current_time)
-                canceled_orders.append(order)
-        
-        return canceled_orders
     
-    def _cancel_order(self, order: Order, current_time: np.datetime64) -> None:
-        """
-        Cancel a single order.
-        
-        Sets order status to CANCELED, updates modify_time, and calls
-        implementation-specific cancellation logic via ex_cancel_order.
-        
-        Args:
-            order: Order to cancel
-            current_time: Current time for order modification
-        """
-        # Update order status and modify time
-        order.status = OrderStatus.CANCELED
-        order.modify_time = current_time
-        
-        # Call implementation-specific cancellation logic
-        self.ex_cancel_order(order)
-    
-    @abstractmethod
-    def ex_cancel_order(self, order: Order) -> None:
-        """
-        Implementation-specific order cancellation logic.
-        
-        Called after order status is set to CANCELED and modify_time is updated.
-        This method should handle any implementation-specific cleanup, such as
-        removing the order from internal data structures.
-        
-        Args:
-            order: Order that was canceled
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def ex_current_time(self) -> np.datetime64:
-        """
-        Get current time for order modification.
-        
-        Returns:
-            Current time as np.datetime64
-        """
-        raise NotImplementedError
-
-    def reset(self, initial_equity_usd: PRICE_TYPE = 0.0, *, task: 'Task') -> None:
-        """
-        Reset broker state. Initialize deals list and trades list.
-        
-        Args:
-            initial_equity_usd: Initial capital in USD for statistics
-            task: Task instance to populate backtesting parameters in stats
-        """
-        self.deals = []
-        self.trades = []
-        self.active_deals = set()  # Reset active deals set
-        
-        # Get fee and slippage values (with defaults if not set)
-        fee_taker = task.fee_taker if task.fee_taker > 0 else 0.001
-        fee_maker = task.fee_maker if task.fee_maker > 0 else 0.001
-        slippage = (task.slippage_in_steps * task.price_step) if task.price_step > 0 else 0.0
-        
-        # Create stats with all backtesting parameters from task
-        self.stats = TradingStats(
-            initial_equity_usd=initial_equity_usd,
-            fee_taker=fee_taker,
-            fee_maker=fee_maker,
-            slippage=slippage,
-            price_step=task.price_step,
-            source=task.source,
-            symbol=task.symbol,
-            timeframe=task.timeframe,
-            date_start=task.dateStart,
-            date_end=task.dateEnd
-        )
-        
-        self.last_auto_deal_id = None
-
-    def check_trading_results(self) -> List[str]:
-        """
-        Check trading results for consistency and correctness.
-        
-        Validates:
-        - All deal_id correspond to their index (deal_id = index + 1)
-        - All trade_id are > 0 and unique
-        - All trade_id are in ascending order by time
-        - All deals are closed
-        - Recalculates and compares average buy/sell prices and profit
-        
-        Returns:
-            List of error messages. Empty list means no errors.
-        """
-        if self.deals is None or not self.deals:
-            return []
-        
-        errors = []
-        
-        # Check 1: All deal_id correspond to index (deal_id = index + 1)
-        errors.extend([
-            f"Deal at index {i} has deal_id={deal.deal_id}, expected {i + 1}"
-            for i, deal in enumerate(self.deals)
-            if deal.deal_id != i + 1
-        ])
-        
-        # Collect all trades from all deals
-        all_trades = [trade for deal in self.deals for trade in deal.trades]
-        
-        if not all_trades:
-            return errors
-        
-        # Check 2: All trade_id > 0 and unique
-        trade_ids = [trade.trade_id for trade in all_trades]
-        if invalid := [tid for tid in trade_ids if tid <= 0]:
-            errors.append(f"Found trade_id <= 0: {invalid}")
-        
-        if len(trade_ids) != len(trade_id_set := set(trade_ids)):
-            errors.append(f"Duplicate trade_id found: {[tid for tid in trade_id_set if trade_ids.count(tid) > 1]}")
-        
-        # Check 3: All trade_id in ascending order by time (only for automatic deals)
-        auto_deals = [deal for deal in self.deals if deal.auto]
-        if auto_deals:
-            auto_trades = [trade for deal in auto_deals for trade in deal.trades]
-            if auto_trades:
-                auto_trade_ids = [trade.trade_id for trade in auto_trades]
-                auto_trades_by_time = sorted(auto_trades, key=lambda t: t.time)
-                if auto_trade_ids != [t.trade_id for t in auto_trades_by_time]:
-                    errors.append("trade_id are not in ascending order by time in automatic deals")
-        
-        # Check 4: All deals are closed
-        if unclosed := [deal.deal_id for deal in self.deals if not deal.is_closed]:
-            errors.append(f"Unclosed deals found: {unclosed}")
-        
-        # Check 5: Recalculate and compare average prices and profit
-        for deal in self.deals:
-            if not deal.trades:
-                continue
-            
-            buy_trades = [t for t in deal.trades if t.side == OrderSide.BUY]
-            sell_trades = [t for t in deal.trades if t.side == OrderSide.SELL]
-            
-            recalc_buy_quantity = sum(t.quantity for t in buy_trades)
-            recalc_buy_cost = sum(t.sum for t in buy_trades)
-            recalc_avg_buy_price = recalc_buy_cost / recalc_buy_quantity if recalc_buy_quantity > 0 else None
-            
-            recalc_sell_quantity = sum(t.quantity for t in sell_trades)
-            recalc_sell_proceeds = sum(t.sum for t in sell_trades)
-            recalc_avg_sell_price = recalc_sell_proceeds / recalc_sell_quantity if recalc_sell_quantity > 0 else None
-            
-            recalc_fee = sum(t.fee for t in deal.trades)
-            recalc_profit = (recalc_sell_proceeds - recalc_buy_cost - recalc_fee) if deal.is_closed else None
-            
-            # Compare with stored values using tolerance for floating point
-            # Use 1/10 of precision as tolerance: precision_amount for volumes, precision_price for prices/sums
-            volume_tolerance = self.precision_amount / 10.0
-            price_tolerance = self._price_eps()  # precision_price / 10.0
-            
-            # Compare volumes (use volume_tolerance)
-            volume_comparisons = [
-                    ('buy_quantity', deal.buy_quantity, recalc_buy_quantity),
-                    ('sell_quantity', deal.sell_quantity, recalc_sell_quantity),
-                ]
-            for field, stored, recalc in volume_comparisons:
-                if abs(stored - recalc) > volume_tolerance:
-                    errors.append(f"Deal {deal.deal_id}: {field} mismatch (stored={stored}, recalc={recalc})")
-            
-            # Compare prices/sums (use price_tolerance)
-            price_comparisons = [
-                    ('buy_cost', deal.buy_cost, recalc_buy_cost),
-                    ('sell_proceeds', deal.sell_proceeds, recalc_sell_proceeds),
-                    ('fee', deal.fee, recalc_fee),
-                ]
-            for field, stored, recalc in price_comparisons:
-                if abs(stored - recalc) > price_tolerance:
-                    errors.append(f"Deal {deal.deal_id}: {field} mismatch (stored={stored}, recalc={recalc})")
-            
-            # Compare prices with tolerance for floating point
-            if recalc_avg_buy_price is not None and deal.avg_buy_price is not None:
-                if abs(recalc_avg_buy_price - deal.avg_buy_price) > price_tolerance:
-                    errors.append(f"Deal {deal.deal_id}: avg_buy_price mismatch (stored={deal.avg_buy_price}, recalc={recalc_avg_buy_price})")
-            elif recalc_avg_buy_price != deal.avg_buy_price:
-                errors.append(f"Deal {deal.deal_id}: avg_buy_price mismatch (stored={deal.avg_buy_price}, recalc={recalc_avg_buy_price})")
-            
-            if recalc_avg_sell_price is not None and deal.avg_sell_price is not None:
-                if abs(recalc_avg_sell_price - deal.avg_sell_price) > price_tolerance:
-                    errors.append(f"Deal {deal.deal_id}: avg_sell_price mismatch (stored={deal.avg_sell_price}, recalc={recalc_avg_sell_price})")
-            elif recalc_avg_sell_price != deal.avg_sell_price:
-                errors.append(f"Deal {deal.deal_id}: avg_sell_price mismatch (stored={deal.avg_sell_price}, recalc={recalc_avg_sell_price})")
-            
-            # Compare profit for closed deals
-            if deal.is_closed and recalc_profit is not None and deal.profit is not None:
-                if abs(recalc_profit - deal.profit) > price_tolerance:
-                    errors.append(f"Deal {deal.deal_id}: profit mismatch (stored={deal.profit}, recalc={recalc_profit})")
-            elif deal.is_closed and recalc_profit != deal.profit:
-                errors.append(f"Deal {deal.deal_id}: profit mismatch (stored={deal.profit}, recalc={recalc_profit})")
-        
-        return errors
-
-
-    def get_deal_by_id(self, deal_id: int) -> Deal:
+    def get_deal(self, deal_id: int) -> 'Deal':
         """
         Get deal by deal_id (deal_id = index + 1).
-        Raises IndexError if deal with such deal_id does not exist.
+        
+        Args:
+            deal_id: Deal ID (1-based)
+        
+        Returns:
+            Deal instance
+        
+        Raises:
+            IndexError: If deal with such deal_id does not exist
         """
-
         # Convert deal_id to index (deal_id = index + 1, so index = deal_id - 1)
         index = deal_id - 1
         if index < 0 or index >= len(self.deals):
             raise IndexError(f"Deal with deal_id {deal_id} does not exist (len={len(self.deals)})")
-
+        
         return self.deals[index]
-
-    def create_deal(self) -> int:
+    
+    def execute_deal(
+        self,
+        deal_type: DealType,
+        entries: List[Tuple[VOLUME_TYPE, Optional[PRICE_TYPE]]],
+        stop_losses: List[Tuple[Optional[float], PRICE_TYPE]],
+        take_profits: List[Tuple[Optional[float], PRICE_TYPE]],
+        existing_deal_id: Optional[int] = None,
+        clear_enter: bool = False,
+        clear_stop_loss: bool = False,
+        clear_take_profit: bool = False
+    ) -> Tuple[Optional['Deal'], List['Order'], List[int], List[str]]:
         """
-        Create a new empty deal for special grouping of trades.
-        Returns deal_id of the created deal.
+        Execute a deal with entry orders, stop losses, and take profits.
+        
+        This is an internal method used by buy_sltp(), sell_sltp(), and modify_deal() methods.
+        
+        Args:
+            deal_type: Deal type (LONG or SHORT)
+            entries: List of entry orders as (volume, price) tuples.
+                    Price can be None for market orders. If price is None (market order),
+                    the list must contain only one element.
+                    Volume can be negative for closing position (only for existing deals).
+            stop_losses: List of stop loss orders as (fraction, price) tuples.
+                        Fraction can be None for "all remaining" - this should be
+                        the order with the farthest price from entry points.
+                        For LONG: farthest = minimum price.
+                        For SHORT: farthest = maximum price.
+            take_profits: List of take profit orders as (fraction, price) tuples.
+                         Fraction can be None for "all remaining" - this should be
+                         the order with the farthest price from entry points.
+                         For LONG: farthest = maximum price.
+                         For SHORT: farthest = minimum price.
+            existing_deal_id: Optional existing deal ID for modification. If provided,
+                             uses existing deal instead of creating new one.
+            clear_enter: If True, cancel all entry orders (OrderGroup.NONE) before creating new ones.
+                        Only used when existing_deal_id is provided.
+            clear_stop_loss: If True, cancel all stop loss orders (OrderGroup.STOP_LOSS) before creating new ones.
+                           Only used when existing_deal_id is provided.
+            clear_take_profit: If True, cancel all take profit orders (OrderGroup.TAKE_PROFIT) before creating new ones.
+                              Only used when existing_deal_id is provided.
         
         Returns:
-            deal_id: Unique deal identifier
+            Tuple[Optional[Deal], List[Order], List[int], List[str]]: 
+            - Deal that groups all orders (or None if deal was not created due to errors)
+            - List of new orders created in this call
+            - List of canceled order IDs (old orders canceled when modifying existing deal, or new orders canceled on error)
+            - List of error messages (empty if no errors occurred)
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
         """
-        new_deal_id = len(self.deals) + 1
-        new_deal = Deal(deal_id=new_deal_id)
-        self.deals.append(new_deal)
-        return new_deal_id
+        assert self.current_time is not None, "current_time must be set before executing deal"
+        
+        deal, canceled_order_ids, errors = self._prepare_deal(
+            deal_type, existing_deal_id, clear_enter, clear_stop_loss, clear_take_profit
+        )
+        
+        # If there are errors during order cancellation, stop and return errors
+        if errors:
+            return (deal, [], canceled_order_ids, errors)
+        
+        new_orders = []
+        entry_side = OrderSide.BUY if deal_type == DealType.LONG else OrderSide.SELL
+        opposite_side = OrderSide.SELL if deal_type == DealType.LONG else OrderSide.BUY
+        
+        entry_orders = self._create_entry_orders(deal, entries, entry_side, opposite_side)
+        new_orders.extend(entry_orders)
+        
+        stop_orders = self._create_stop_loss_orders(deal, stop_losses, opposite_side)
+        new_orders.extend(stop_orders)
+        
+        take_orders = self._create_take_profit_orders(deal, take_profits, opposite_side)
+        new_orders.extend(take_orders)
+        
+        deal.calc_fraction_remain(OrderGroup.STOP_LOSS)
+        deal.calc_fraction_remain(OrderGroup.TAKE_PROFIT)
+        
+        # Start deal: send entry and stop loss orders to exchange
+        start_errors, _ = deal.start()
+        
+        # Combine all errors
+        all_errors = errors + start_errors
+        
+        return (deal, new_orders, canceled_order_ids, all_errors)
     
-    def get_last_open_auto_deal(self) -> Optional[Deal]:
-        """
-        Return last not-closed automatic deal or None.
-        Automatic deals are tracked via last_auto_deal_id.
-        """
-        if self.last_auto_deal_id is None:
-            return None
-        
-        try:
-            deal = self.get_deal_by_id(self.last_auto_deal_id)
-            return None if deal.is_closed else deal
-        except IndexError:
-            # Deal was removed or doesn't exist
-            self.last_auto_deal_id = None
-            return None
-    
-    def check_closed(self, deal: Deal) -> None:
-        """
-        Check if deal should be closed and update broker state accordingly.
-        
-        Calls deal.check_closed() to check and update deal status.
-        If deal was just closed, updates active_deals, registers deal in statistics,
-        and clears last_auto_deal_id if needed.
-        If deal is open, ensures it's in active_deals.
-        
-        Args:
-            deal: Deal to check
-        """
-        # Check if deal should be closed (returns True if status changed from open to closed)
-        was_just_closed = deal.check_closed()
-        
-        if was_just_closed:
-            assert deal.is_closed, f"Deal {deal.deal_id} is not closed after check_closed()"
-            self.active_deals.discard(deal.deal_id)
-            self._cancel_deal_orders(deal, self.ex_current_time())
-            self.stats.add_deal(deal)
-            if deal.deal_id == self.last_auto_deal_id:
-                self.last_auto_deal_id = None
-        elif not deal.is_closed:
-            self.active_deals.add(deal.deal_id)
-    
-    def _add_trade_to_deal(self, deal: Deal, trade: Trade) -> None:
-        """
-        Add trade to deal and update statistics.
-        
-        This is the only method that should be used to add trades to deals.
-        It handles:
-        - Adding trade to deal
-        - Updating trade statistics
-        - Checking if deal should be closed and updating broker state
-        
-        Args:
-            deal: Deal to add trade to
-            trade: Trade to add
-        """
-        # Add trade to deal
-        deal.add_trade(trade, self.precision_amount)
-        
-        # Update trade statistics
-        self.stats.add_trade(trade)
-        
-        # Check if deal should be closed and update broker state
-        self.check_closed(deal)
-
-    def reg_buy(
+    def _prepare_deal(
         self,
-        quantity: VOLUME_TYPE,
-        fee: PRICE_TYPE,
-        price: PRICE_TYPE,
-        time: np.datetime64,
-        deal_id: Optional[int] = None,
-        order_id: Optional[int] = None,
-    ) -> Tuple[List[int], List[int]]:
+        deal_type: DealType,
+        existing_deal_id: Optional[int],
+        clear_enter: bool,
+        clear_stop_loss: bool,
+        clear_take_profit: bool
+    ) -> Tuple['Deal', List[int], List[str]]:
         """
-        Register buy trade in deals structure.
-
-        1) If deal_id is specified — just add trade to this deal.
-        2) If deal_id is None:
-           - Take last open deal (create new if none or last is closed).
-           - If adding trade doesn't flip position side — just add it.
-           - If flip would occur — split trade:
-                * part closes current deal;
-                * remainder opens a new deal with same side.
-
-        Args:
-            quantity: Quantity to buy
-            fee: Fee for this trade
-            price: Price for this trade
-            deal_id: Optional deal index to register trade in
-            order_id: Optional order ID that triggered this trade
+        Prepare deal for execution: create new or get existing and clear orders if needed.
         
         Returns:
-            Tuple of (trades: List[int], deals: List[int]) containing IDs
+            Tuple of (deal, canceled_order_ids, errors)
         """
-        trade = self.create_trade(OrderSide.BUY, quantity, price=price, fee=fee, time=time, order_id=order_id)
-        result = self.register_trade(trade, deal_id)
-        return (result['trades'], result['deals'])
-
-    def reg_sell(
+        if existing_deal_id is not None:
+            deal = self.get_deal(existing_deal_id)
+            canceled_order_ids, errors = self._clear_deal_orders(deal, clear_enter, clear_stop_loss, clear_take_profit)
+        else:
+            new_deal_id = len(self.deals) + 1
+            deal = Deal(
+                broker=self,
+                deal_id=new_deal_id,
+                type=deal_type
+            )
+            self.deals.append(deal)
+            canceled_order_ids = []
+            errors = []
+        
+        return (deal, canceled_order_ids, errors)
+    
+    def _clear_deal_orders(
         self,
-        quantity: VOLUME_TYPE,
-        fee: PRICE_TYPE,
-        price: PRICE_TYPE,
-        time: np.datetime64,
-        deal_id: Optional[int] = None,
-        order_id: Optional[int] = None,
-    ) -> Tuple[List[int], List[int]]:
+        deal: 'Deal',
+        clear_enter: bool,
+        clear_stop_loss: bool,
+        clear_take_profit: bool
+    ) -> Tuple[List[int], List[str]]:
         """
-        Register sell trade in deals structure.
-
-        See reg_buy() for detailed behaviour description.
-
-        Args:
-            quantity: Quantity to sell
-            fee: Fee for this trade
-            price: Price for this trade
-            deal_id: Optional deal index to register trade in
-            order_id: Optional order ID that triggered this trade
+        Clear order groups from deal according to flags.
         
         Returns:
-            Tuple of (trades: List[int], deals: List[int]) containing IDs
+            Tuple of (canceled_order_ids, errors)
         """
-        trade = self.create_trade(OrderSide.SELL, quantity, price=price, fee=fee, time=time, order_id=order_id)
-        result = self.register_trade(trade, deal_id)
-        return (result['trades'], result['deals'])
-
-    def create_trade(
+        canceled_order_ids = []
+        all_errors = []
+        
+        # Cancel in order: take profits, entries, stop losses
+        if clear_take_profit:
+            errors, canceled = deal.cancel_orders(OrderGroup.TAKE_PROFIT)
+            canceled_order_ids.extend([o.order_id for o in canceled])
+            all_errors.extend(errors)
+        
+        if clear_enter:
+            errors, canceled = deal.cancel_orders(OrderGroup.NONE)
+            canceled_order_ids.extend([o.order_id for o in canceled])
+            all_errors.extend(errors)
+        
+        if clear_stop_loss:
+            errors, canceled = deal.cancel_orders(OrderGroup.STOP_LOSS)
+            canceled_order_ids.extend([o.order_id for o in canceled])
+            all_errors.extend(errors)
+        
+        return (canceled_order_ids, all_errors)
+    
+    def _create_entry_orders(
         self,
+        deal: 'Deal',
+        entries: List[Tuple[VOLUME_TYPE, Optional[PRICE_TYPE]]],
+        entry_side: OrderSide,
+        opposite_side: OrderSide
+    ) -> List['Order']:
+        """
+        Create entry orders from entries list.
+        
+        Returns:
+            List of created orders
+        """
+        orders = []
+        
+        for volume, price in entries:
+            if volume < 0:
+                # Negative volume: market order opposite to deal direction
+                order = self._create_order(
+                    deal=deal,
+                    order_type=OrderType.MARKET,
+                    side=opposite_side,
+                    price=None,
+                    trigger_price=None,
+                    volume=abs(volume),
+                    order_group=OrderGroup.NONE,
+                    fraction=None
+                )
+            elif price is None:
+                # Market order
+                order = self._create_order(
+                    deal=deal,
+                    order_type=OrderType.MARKET,
+                    side=entry_side,
+                    price=None,
+                    trigger_price=None,
+                    volume=volume,
+                    order_group=OrderGroup.NONE,
+                    fraction=None
+                )
+            else:
+                # Limit order
+                order = self._create_order(
+                    deal=deal,
+                    order_type=OrderType.LIMIT,
+                    side=entry_side,
+                    price=self.format_price(price),
+                    trigger_price=None,
+                    volume=self.format_volume(volume),
+                    order_group=OrderGroup.NONE,
+                    fraction=None
+                )
+            
+            orders.append(order)
+        
+        return orders
+    
+    def _create_stop_loss_orders(
+        self,
+        deal: 'Deal',
+        stop_losses: List[Tuple[Optional[float], PRICE_TYPE]],
+        opposite_side: OrderSide
+    ) -> List['Order']:
+        """
+        Create stop loss orders from stop_losses list.
+        
+        Returns:
+            List of created orders
+        """
+        orders = []
+        
+        for fraction, price in stop_losses:
+            order = self._create_order(
+                deal=deal,
+                order_type=OrderType.STOP,
+                side=opposite_side,
+                price=None,
+                trigger_price=self.format_price(price),
+                volume=0.0,  # Will be set later
+                order_group=OrderGroup.STOP_LOSS,
+                fraction=fraction
+            )
+            orders.append(order)
+        
+        return orders
+    
+    def _create_take_profit_orders(
+        self,
+        deal: 'Deal',
+        take_profits: List[Tuple[Optional[float], PRICE_TYPE]],
+        opposite_side: OrderSide
+    ) -> List['Order']:
+        """
+        Create take profit orders from take_profits list.
+        
+        Returns:
+            List of created orders
+        """
+        orders = []
+        
+        for fraction, price in take_profits:
+            order = self._create_order(
+                deal=deal,
+                order_type=OrderType.LIMIT,
+                side=opposite_side,
+                price=self.format_price(price),
+                trigger_price=None,
+                volume=0.0,  # Will be set later
+                order_group=OrderGroup.TAKE_PROFIT,
+                fraction=fraction
+            )
+            orders.append(order)
+        
+        return orders
+    
+    def _create_order(
+        self,
+        deal: 'Deal',
+        order_type: OrderType,
         side: OrderSide,
-        quantity: VOLUME_TYPE,
-        price: PRICE_TYPE,
-        fee: PRICE_TYPE,
-        time: np.datetime64,
-        order_id: Optional[int] = None,
-    ) -> Trade:
+        volume: VOLUME_TYPE,
+        order_group: OrderGroup,
+        price: Optional[PRICE_TYPE] = None,
+        trigger_price: Optional[PRICE_TYPE] = None,
+        fraction: Optional[float] = None
+    ) -> 'Order':
         """
-        Create Trade object from quantity, price, fee and time.
-        Assigns trade_id based on trades list size and adds trade to the list.
+        Create order and add it to broker's orders list and deal.
         
-        Args:
-            side: Order side (BUY or SELL)
-            quantity: Trade quantity
-            price: Trade price
-            fee: Trade fee
-            time: Trade time
-            order_id: Optional order ID that triggered this trade. If None, defaults to 0 (market order).
+        Returns:
+            Created order
         """
-        trade_id = len(self.trades) + 1
-        trade_amount = quantity * price
-
-        trade = Trade(
-            trade_id=trade_id,
-            deal_id=0,  # Will be set by deal
-            order_id=order_id if order_id is not None else 0,
-            time=time,
+        order_id = len(self.orders) + 1
+        order = Order(
+            broker=self,
+            order_id=order_id,
+            deal_id=deal.deal_id,
+            order_type=order_type,
+            create_time=self.current_time,
+            modify_time=self.current_time,
             side=side,
             price=price,
-            quantity=quantity,
-            fee=fee,
-            sum=trade_amount
+            trigger_price=trigger_price,
+            volume=volume,
+            filled_volume=0.0,
+            status=OrderStatus.NEW,
+            order_group=order_group,
+            fraction=fraction,
+            errors=[]
         )
         
-        self.trades.append(trade)
-        return trade
-
-    def _create_auto_deal(self) -> Deal:
+        self.orders.append(order)
+        deal.add_order(order)
+        
+        return order
+    
+    def close_deals(self) -> None:
         """
-        Create a new automatic deal and update last_auto_deal_id.
+        Close all open positions.
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
+        """
+        pass
+    
+    def close_deal(self, deal_id: int) -> None:
+        """
+        Close a specific deal by canceling all active orders and closing position.
+        
+        Args:
+            deal_id: ID of the deal to close
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
+        """
+        raise NotImplementedError("close_deal must be implemented by subclass")
+    
+    def cancel_orders(self, order_ids: List[int]) -> List['Order']:
+        """
+        Cancel orders by their IDs.
+        
+        Args:
+            order_ids: List of order IDs to cancel
         
         Returns:
-            Newly created Deal instance with auto=True
+            List of canceled orders
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
         """
-        new_deal_id = len(self.deals) + 1
-        new_deal = Deal(deal_id=new_deal_id, auto=True)
-        self.deals.append(new_deal)
-        self.last_auto_deal_id = new_deal_id
-        return new_deal
-
-    def register_trade(self, trade: Trade, deal_id: Optional[int]) -> Dict[str, List[int]]:
+        raise NotImplementedError("cancel_orders must be implemented by subclass")
+    
+    def logging(self, message: str, level: str = "info") -> None:
         """
-        Core logic for registering trade in deals with flip handling.
+        Send log message to frontend via task.
+        
+        Args:
+            message: Message text (required)
+            level: Message level (optional, default: "info")
+                  Valid levels: info, warning, error, success, debug
+        """
+        if hasattr(self.task, 'send_message'):
+            self.task.send_message(MessageType.MESSAGE, {"level": level, "message": message})
+    
+    def update_state(self, results: Optional['TaskResults'], is_finish: bool = False) -> None:
+        """
+        Update task state and progress.
+        
+        Args:
+            results: TaskResults instance to save results to Redis, or None if results should not be saved
+            is_finish: If True, marks the backtesting result as completed. Default: False.
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
+        """
+        raise NotImplementedError("update_state must be implemented by subclass")
+    
+    def check_trading_results(self) -> List[str]:
+        """
+        Check trading results for consistency.
         
         Returns:
-            Dictionary with 'trades' and 'deals' lists containing IDs of created/affected trades and deals
+            List of error messages (empty if no errors found)
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
         """
-        # Explicit deal_id: just add to that deal, no flip-logic
-        if deal_id > 0:
-            deal = self.get_deal_by_id(deal_id)
-            self._add_trade_to_deal(deal, trade)
-            return {
-                'trades': [trade.trade_id],
-                'deals': [deal.deal_id]
-            }
-
-        # If there are no deals at all – create first one and put whole trade there
-        if not self.deals:
-            new_deal = self._create_auto_deal()
-            self._add_trade_to_deal(new_deal, trade)
-            return {
-                'trades': [trade.trade_id],
-                'deals': [new_deal.deal_id]
-            }
-
-        last_deal = self.get_last_open_auto_deal()
-
-        # If last automatic deal is closed – create a new one and put whole trade there
-        if last_deal is None:
-            new_deal = self._create_auto_deal()
-            self._add_trade_to_deal(new_deal, trade)
-            return {
-                'trades': [trade.trade_id],
-                'deals': [new_deal.deal_id]
-            }
-
-        # There is an open automatic deal; check if trade will flip position or not
-        current_qty = last_deal.quantity
-        trade_qty = trade.quantity
-
-        if trade.side == OrderSide.BUY:
-            new_qty = current_qty + trade_qty
-        else:
-            new_qty = current_qty - trade_qty
-
-        # If no flip (including full close to 0) – just add trade
-        if current_qty == 0 or new_qty == 0 or (current_qty > 0 and new_qty > 0) or (current_qty < 0 and new_qty < 0):
-            self._add_trade_to_deal(last_deal, trade)
-            return {
-                'trades': [trade.trade_id],
-                'deals': [last_deal.deal_id]
-            }
-
-        # Flip: split trade into closing part and opening part of new deal
-        # Remove original trade from list (it will be replaced by two split trades)
-        # Find and remove original trade by trade_id
-        for i, t in enumerate(self.trades):
-            if t.trade_id == trade.trade_id:
-                self.trades.pop(i)
-                break
+        return []
+    
+    def fetch_orders(self) -> None:
+        """
+        Fetch and execute orders (check for triggered limit/stop orders).
         
-        # Determine volume needed to fully close current position
-        close_volume = abs(current_qty)
-        total_volume = trade_qty
+        Default implementation (stub). Should be overridden in subclasses.
+        """
+        pass
 
-        # Remaining volume opens new deal
-        remainder_quantity = total_volume - close_volume
-
-        # Trade for closing current deal
-        close_ratio = close_volume / trade.quantity
-        closing_trade_id = len(self.trades) + 1
-        closing_trade = trade.model_copy(
-            update={
-                "trade_id": closing_trade_id,
-                "quantity": close_volume,
-                "fee": trade.fee * close_ratio,
-                "sum": trade.price * close_volume,
-            }
-        )
-        self.trades.append(closing_trade)
-        self._add_trade_to_deal(last_deal, closing_trade)
-
-        # Remaining volume opens new automatic deal with same side
-        new_deal = self._create_auto_deal()
-
-        remainder_ratio = remainder_quantity / trade.quantity
-        opening_trade_id = len(self.trades) + 1
-        opening_trade = trade.model_copy(
-            update={
-                "trade_id": opening_trade_id,
-                "quantity": remainder_quantity,
-                "fee": trade.fee * remainder_ratio,
-                "sum": trade.price * remainder_quantity,
-            }
-        )
-        self.trades.append(opening_trade)
-        self._add_trade_to_deal(new_deal, opening_trade)
+    def run(self, save_results: bool = True):
+        """
+        Run strategy execution.
+        Iterates through bars, calling on_bar for each bar.
+        Periodically updates state and progress based on results_save_period.
         
-        # Return both trades and both deals
-        return {
-            'trades': [closing_trade.trade_id, opening_trade.trade_id],
-            'deals': [last_deal.deal_id, new_deal.deal_id]
+        Args:
+            save_results: If True, creates TaskResults and saves results to Redis.
+                         If False, results are not saved. Default: True.
+        """
+        self.initialize_run()
+        
+        ta_proxies = {
+            'talib': ta_proxy_talib(broker=self)
         }
+        
+        # Calls set_quotes on proxies inside
+        quotes_data = self.initialize_quotes(self.task.history_size, ta_proxies)
+        
+        results = None
+        if save_results:
+            results = TaskResults(self.task, self, ta_proxies)
+        
+        self.i_time = self.task.history_size
+        
+        if hasattr(self, 'callbacks') and 'on_start' in self.callbacks:
+            self.callbacks['on_start'](self.task.parameters, ta_proxies)
+        
+        state_update_period = 1.0
+        last_update_time = time.time()
+        
+        while True:
+            bar_data = self.get_next_bar(quotes_data, self.i_time, ta_proxies)
+            if bar_data is None:
+                break
+            
+            (time_array, open_array, high_array, low_array, close_array, 
+             volume_array, current_time, current_price) = bar_data
+            
+            self.current_time = current_time
+            if hasattr(self, 'price'):
+                self.price = current_price
+            
+            self.fetch_orders()
+            
+            if hasattr(self, 'callbacks') and 'on_bar' in self.callbacks:
+                equity_usd = getattr(self, 'equity_usd', 0.0)
+                equity_symbol = getattr(self, 'equity_symbol', 0.0)
+                self.callbacks['on_bar'](
+                    current_price,
+                    current_time,
+                    time_array,
+                    open_array,
+                    high_array,
+                    low_array,
+                    close_array,
+                    volume_array,
+                    equity_usd,
+                    equity_symbol
+                )
+            
+            current_time_real = time.time()
+            if hasattr(self, 'results_save_period'):
+                if current_time_real - last_update_time >= self.results_save_period:
+                    if hasattr(self, 'update_state'):
+                        self.update_state(results)
+                    last_update_time = current_time_real
+                    state_update_period = min(state_update_period + 1.0, self.results_save_period)
+            
+            self.i_time += 1
+        
+        self.close_deals()
+        
+        if __debug__:
+            errors = self.check_trading_results()
+            if errors:
+                error_message = f"Trading results validation failed:\n" + "\n".join(errors)
+                if hasattr(self, 'task') and hasattr(self.task, 'backtesting_error'):
+                    self.task.backtesting_error(error_message)
+                raise RuntimeError(error_message)
+        
+        if hasattr(self, 'callbacks') and 'on_finish' in self.callbacks:
+            self.callbacks['on_finish']()
+        
+        if hasattr(self, 'update_state') and hasattr(self, 'date_end'):
+            self.current_time = self.date_end
+            self.update_state(results, is_finish=True)
+    
+    # Abstract methods (must be implemented by subclasses)
+    
+    @abstractmethod
+    def create_order(self, order: 'Order') -> List[str]:
+        """
+        Create an order (abstract method).
+        
+        Args:
+            order: Order object to create
+        
+        Returns:
+            List of errors. Empty list if order was created successfully.
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("create_order must be implemented by subclass")
+    
+    @abstractmethod
+    def cancel_order(self, order_id: str, symbol: str) -> List[str]:
+        """
+        Cancel an order by its ID.
+        
+        Args:
+            order_id: Order ID to cancel
+            symbol: Trading symbol (e.g., 'BTC/USDT')
+        
+        Returns:
+            List of error messages. Empty list means success (order was canceled successfully).
+            Non-empty list contains error descriptions if cancellation failed.
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("cancel_order must be implemented by subclass")
+    
+    @abstractmethod
+    def initialize_run(self) -> None:
+        """
+        Initialize broker for running strategy.
+        
+        Called at the start of run() method to set up broker state.
+        Must be implemented by subclasses.
+        """
+        raise NotImplementedError("initialize_run must be implemented by subclass")
+    
+    @abstractmethod
+    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Initialize quotes data for strategy execution.
+        
+        Args:
+            history_size: Number of bars to load for strategy initialization
+            ta_proxies: Dictionary of TA proxies (e.g., {'talib': ta_proxy_talib(...)})
+                       Should call set_quotes() on each proxy with initial quotes data
+        
+        Returns:
+            Dictionary with quotes data (structure is implementation-specific)
+        """
+        raise NotImplementedError("initialize_quotes must be implemented by subclass")
+    
+    @abstractmethod
+    def get_next_bar(
+        self, 
+        quotes_data: Dict[str, Any], 
+        i_time: int, 
+        ta_proxies: Dict[str, Any]
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]:
+        """
+        Get next bar data for strategy execution.
+        
+        Args:
+            quotes_data: Quotes data dictionary (from initialize_quotes)
+            i_time: Current bar index
+            ta_proxies: Dictionary of TA proxies (for real trading, should call set_quotes() on each proxy)
+        
+        Returns:
+            Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price)
+            or None if no more data available
+        """
+        raise NotImplementedError("get_next_bar must be implemented by subclass")
+    
+    def buy(
+        self,
+        quantity: VOLUME_TYPE,
+        price: Optional[PRICE_TYPE] = None,
+        trigger_price: Optional[PRICE_TYPE] = None
+    ) -> List['Order']:
+        """
+        Create buy order(s) and execute/place them.
+        If price is specified, creates a limit order.
+        If trigger_price is specified, creates a stop order.
+        Otherwise creates a market order.
+        
+        Args:
+            quantity: Quantity to buy
+            price: Optional limit price. If None and trigger_price is None, creates market order.
+            trigger_price: Optional trigger price for stop order.
+        
+        Returns:
+            List of copies of executed/placed orders
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("buy must be implemented by subclass")
+    
+    def sell(
+        self,
+        quantity: VOLUME_TYPE,
+        price: Optional[PRICE_TYPE] = None,
+        trigger_price: Optional[PRICE_TYPE] = None
+    ) -> List['Order']:
+        """
+        Create sell order(s) and execute/place them.
+        If price is specified, creates a limit order.
+        If trigger_price is specified, creates a stop order.
+        Otherwise creates a market order.
+        
+        Args:
+            quantity: Quantity to sell
+            price: Optional limit price. If None and trigger_price is None, creates market order.
+            trigger_price: Optional trigger price for stop order.
+        
+        Returns:
+            List of copies of executed/placed orders
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("sell must be implemented by subclass")
+        
+

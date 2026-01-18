@@ -16,7 +16,6 @@ from app.core.objects2redis import MessageType
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
-    from app.services.tasks.broker import Deal, Trade
 
 
 class OrderSide(Enum):
