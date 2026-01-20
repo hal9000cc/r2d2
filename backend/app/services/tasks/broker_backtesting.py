@@ -3,8 +3,14 @@ import numpy as np
 
 from app.services.tasks.broker import Broker, Order
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
+from app.services.quotes.client import QuotesClient
+from app.services.quotes.timeframe import Timeframe
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
+from app.core.datetime_utils import parse_utc_datetime
+from app.core.logger import get_logger
 from app.services.tasks.tasks import Task
+
+logger = get_logger(__name__)
 
 
 class BrokerBacktesting(Broker):
@@ -82,26 +88,59 @@ class BrokerBacktesting(Broker):
         
         Called at the start of run() method to set up broker state.
         """
-        raise NotImplementedError("initialize_run must be implemented by BrokerBacktesting")
+        pass
     
     def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
         """
         Initialize quotes data for strategy execution (backtesting implementation).
         
         Args:
-            history_size: Number of bars to load for strategy initialization
+            history_size: Number of bars to load for strategy initialization (unused, taken from self.task.history_size)
             ta_proxies: Dictionary of TA proxies (e.g., {'talib': ta_proxy_talib(...)})
                        Should call set_quotes() on each proxy with initial quotes data
         
         Returns:
             Dictionary with quotes data (structure is implementation-specific)
         """
-        raise NotImplementedError("initialize_quotes must be implemented by BrokerBacktesting")
+        # Get history_size from task
+        history_size = self.task.history_size
+        
+        # Convert timeframe string to Timeframe object
+        try:
+            timeframe = Timeframe.cast(self.task.timeframe)
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse timeframe '{self.task.timeframe}': {e}") from e
+        
+        # Convert date strings to datetime objects
+        try:
+            date_start = parse_utc_datetime(self.task.dateStart)
+            date_end = parse_utc_datetime(self.task.dateEnd)
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse dateStart/dateEnd: {e}") from e
+        
+        # Calculate initial load date: dateStart - (history_size * timeframe.timedelta())
+        history_start = date_start - (history_size * timeframe.timedelta())
+        
+        # Get quotes data from QuotesClient
+        client = QuotesClient()
+        logger.debug(f"Getting quotes for {self.task.source}:{self.task.symbol}:{self.task.timeframe} from {history_start} to {date_end}")
+        quotes_data = client.get_quotes(self.task.source, self.task.symbol, timeframe, history_start, date_end)
+        logger.debug(f"Quotes received: {len(quotes_data['time'])} bars")
+        
+        # Validate that we have quotes data
+        if len(quotes_data['time']) == 0:
+            raise RuntimeError("No quotes data available for backtesting")
+        
+        # Call set_quotes() on each TA proxy
+        for proxy_name, proxy in ta_proxies.items():
+            if hasattr(proxy, 'set_quotes'):
+                proxy.set_quotes(quotes_data)
+        
+        return quotes_data
     
     def get_next_bar(
         self, 
         quotes_data: Dict[str, Any], 
-        i_time: int, 
         ta_proxies: Dict[str, Any]
     ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]:
         """
@@ -109,13 +148,34 @@ class BrokerBacktesting(Broker):
         
         Args:
             quotes_data: Quotes data dictionary (from initialize_quotes)
-            i_time: Current bar index
             ta_proxies: Dictionary of TA proxies (for backtesting, set_quotes() is not called)
         
         Returns:
             Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price)
             or None if no more data available
         """
-        raise NotImplementedError("get_next_bar must be implemented by BrokerBacktesting")
+        # Extract arrays from quotes_data
+        all_time = quotes_data['time']
+        all_close = quotes_data['close']
+        
+        # Check if we've reached the end of data
+        if self.i_time >= len(all_close):
+            return None
+        
+        # Get current time and price
+        current_time = all_time[self.i_time]
+        current_price = all_close[self.i_time]
+        
+        # Return slices up to current index (inclusive) and current time/price
+        return (
+            all_time[:self.i_time+1],
+            quotes_data['open'][:self.i_time+1],
+            quotes_data['high'][:self.i_time+1],
+            quotes_data['low'][:self.i_time+1],
+            all_close[:self.i_time+1],
+            quotes_data['volume'][:self.i_time+1],
+            current_time,
+            current_price
+        )
     
 

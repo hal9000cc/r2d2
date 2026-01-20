@@ -378,7 +378,10 @@ class TaskResults:
             # Format fraction (None becomes empty string)
             fraction_str = self._format_value(order.fraction)
             
-            # Format member: order_id|deal_id|create_time_iso|modify_time_iso|side|order_type|price|volume|filled_volume|status|trigger_price|errors_json|order_group|fraction
+            # Format exchange_order_id (None becomes empty string)
+            exchange_order_id_str = self._format_value(order.exchange_order_id)
+            
+            # Format member: order_id|deal_id|create_time_iso|modify_time_iso|side|order_type|price|volume|filled_volume|status|trigger_price|errors_json|order_group|fraction|exchange_order_id
             member = (
                 f"{order.order_id}|"
                 f"{self._format_value(order.deal_id)}|"
@@ -393,7 +396,8 @@ class TaskResults:
                 f"{trigger_price_str}|"
                 f"{errors_json}|"
                 f"{order_group_value}|"
-                f"{fraction_str}"
+                f"{fraction_str}|"
+                f"{exchange_order_id_str}"
             )
             
             orders_hash_data[order_id_str] = member
@@ -799,8 +803,8 @@ class TaskResults:
                     if order_member:
                         parts = order_member.split('|')
                         
-                        # Format: order_id|deal_id|create_time_iso|modify_time_iso|side|order_type|price|volume|filled_volume|status|trigger_price|errors_json|order_group|fraction
-                        assert len(parts) == 14, f"Expected 14 parts in order data, got {len(parts)}: {order_member[:100]}"
+                        # Format: order_id|deal_id|create_time_iso|modify_time_iso|side|order_type|price|volume|filled_volume|status|trigger_price|errors_json|order_group|fraction|exchange_order_id
+                        assert len(parts) == 15, f"Expected 15 parts in order data, got {len(parts)}: {order_member[:100]}"
                         
                         errors_list = []
                         if parts[11]:
@@ -816,6 +820,9 @@ class TaskResults:
                         # Parse fraction (can be None/empty)
                         fraction = float(parts[13]) if parts[13] else None
                         
+                        # Parse exchange_order_id (can be None/empty, string or int)
+                        exchange_order_id = parts[14] if parts[14] else None
+                        
                         order_dict = {
                             'order_id': parts[0],
                             'deal_id': parts[1] if parts[1] else None,
@@ -830,7 +837,8 @@ class TaskResults:
                             'trigger_price': parts[10] if parts[10] else None,
                             'errors': errors_list,
                             'order_group': order_group,
-                            'fraction': fraction
+                            'fraction': fraction,
+                            'exchange_order_id': exchange_order_id
                         }
                         orders.append(order_dict)
         except Exception as e:

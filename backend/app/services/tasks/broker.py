@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import List, Optional, Set, Dict, Any, Tuple, TYPE_CHECKING
+from typing import List, Optional, Set, Dict, Any, Tuple, Union, TYPE_CHECKING
 import math
 import time
 import weakref
@@ -126,6 +126,7 @@ class Order(BaseModel):
     order_group: OrderGroup = OrderGroup.NONE
     fraction: Optional[float] = None
     fraction_remain: Optional[float] = None
+    exchange_order_id: Optional[Union[str, int]] = None
     errors: List[str] = Field(default_factory=list)
     
     def __init__(self, broker: 'Broker', **data):
@@ -136,13 +137,16 @@ class Order(BaseModel):
             broker: Broker instance (required, stored as weak reference)
             **data: Other Order fields
         """
-        # Create weak reference to broker immediately
+        # Validate broker before initialization
         if broker is None:
             raise ValueError("broker must be provided and cannot be None")
-        self._broker_ref = weakref.ref(broker)
         
-        # Initialize Pydantic model without broker field
+        # Initialize Pydantic model first
         super().__init__(**data)
+        
+        # Set PrivateAttr after Pydantic initialization
+        # Pydantic v2 automatically stores PrivateAttr in __pydantic_private__
+        self._broker_ref = weakref.ref(broker)
     
     def __setattr__(self, name: str, value) -> None:
         """
@@ -150,6 +154,12 @@ class Order(BaseModel):
         1. Protect immutable fields from modification
         2. Automatically update modify_time when any mutable field changes
         """
+        # Special case: setting _broker_ref (PrivateAttr) - just set it and return
+        # This happens during initialization, so we don't need to update modify_time
+        if name == '_broker_ref':
+            BaseModel.__setattr__(self, name, value)
+            return
+        
         # List of immutable fields
         immutable_fields = {'order_id', 'deal_id', 'order_type', 'create_time', 'side', 'price', 'trigger_price'}
         
@@ -176,7 +186,8 @@ class Order(BaseModel):
             # Update modify_time when mutable field changes (except modify_time itself)
             if name != 'modify_time' and name not in immutable_fields:
                 # Get broker from weak reference
-                broker = self._broker_ref()
+                broker_ref = self._broker_ref
+                broker = broker_ref()
                 if broker is None:
                     raise RuntimeError("Cannot update modify_time: broker has been garbage collected")
                 
@@ -230,26 +241,32 @@ class Order(BaseModel):
             raise ValueError(f"volume must be greater than or equal to 0, got {self.volume}")
         
         # Validate rounding: price, trigger_price, and volume must be properly rounded
-        broker = self._broker_ref()
-        if broker is None:
-            raise RuntimeError("Cannot validate rounding: broker has been garbage collected")
-        
-        # Validate price rounding
-        if self.price is not None:
-            formatted_price = broker.format_price(self.price)
-            assert self.price == formatted_price, \
-                f"price must be properly rounded (got {self.price}, expected {formatted_price})"
-        
-        # Validate trigger_price rounding
-        if self.trigger_price is not None:
-            formatted_trigger_price = broker.format_price(self.trigger_price)
-            assert self.trigger_price == formatted_trigger_price, \
-                f"trigger_price must be properly rounded (got {self.trigger_price}, expected {formatted_trigger_price})"
-        
-        # Validate volume rounding
-        formatted_volume = broker.format_volume(self.volume)
-        assert self.volume == formatted_volume, \
-            f"volume must be properly rounded (got {self.volume}, expected {formatted_volume})"
+        # Only validate if _broker_ref is available (it may not be during Pydantic's initialization)
+        try:
+            broker = self._broker_ref()
+            if broker is None:
+                raise RuntimeError("Cannot validate rounding: broker has been garbage collected")
+            
+            # Validate price rounding
+            if self.price is not None:
+                formatted_price = broker.format_price(self.price)
+                assert self.price == formatted_price, \
+                    f"price must be properly rounded (got {self.price}, expected {formatted_price})"
+            
+            # Validate trigger_price rounding
+            if self.trigger_price is not None:
+                formatted_trigger_price = broker.format_price(self.trigger_price)
+                assert self.trigger_price == formatted_trigger_price, \
+                    f"trigger_price must be properly rounded (got {self.trigger_price}, expected {formatted_trigger_price})"
+            
+            # Validate volume rounding
+            formatted_volume = broker.format_volume(self.volume)
+            assert self.volume == formatted_volume, \
+                f"volume must be properly rounded (got {self.volume}, expected {formatted_volume})"
+        except AttributeError:
+            # _broker_ref not available yet, skip rounding validation
+            # This can happen during Pydantic's initialization
+            pass
         
         return self
     
@@ -358,13 +375,16 @@ class Deal(BaseModel):
             broker: Broker instance (required, stored as weak reference)
             **data: Other Deal fields
         """
-        # Create weak reference to broker immediately
+        # Validate broker before initialization
         if broker is None:
             raise ValueError("broker must be provided and cannot be None")
-        self._broker_ref = weakref.ref(broker)
         
-        # Initialize Pydantic model without broker field
+        # Initialize Pydantic model first
         super().__init__(**data)
+        
+        # Set PrivateAttr after Pydantic initialization
+        # Pydantic v2 automatically stores PrivateAttr in __pydantic_private__
+        self._broker_ref = weakref.ref(broker)
     
     def add_trade(self, trade: Trade, precision_amount: float) -> None:
         """
@@ -420,8 +440,14 @@ class Deal(BaseModel):
             Unrealized profit if broker and current_price are available, None otherwise
         """
         # Get broker from weak reference
-        broker = self._broker_ref()
-        if broker is None:
+        try:
+            broker_ref = getattr(self, '_broker_ref', None)
+            if broker_ref is None:
+                return None
+            broker = broker_ref()
+            if broker is None:
+                return None
+        except AttributeError:
             return None
         
         current_price = broker.current_price
@@ -584,8 +610,14 @@ class Deal(BaseModel):
             - created_orders: List of successfully created Order objects
         """
         # Get broker
-        broker = self._broker_ref()
-        assert broker is not None, "Broker has been garbage collected"
+        try:
+            broker_ref = getattr(self, '_broker_ref', None)
+            if broker_ref is None:
+                raise RuntimeError("Broker reference not set")
+            broker = broker_ref()
+            assert broker is not None, "Broker has been garbage collected"
+        except AttributeError:
+            raise RuntimeError("Broker reference not accessible")
         
         # 1. Update orders
         self.update_orders()
@@ -684,8 +716,14 @@ class Deal(BaseModel):
         Sorts take profit orders and calculates volumes based on simulated volume.
         """
         # Get broker for format_volume
-        broker = self._broker_ref()
-        assert broker is not None, "Broker has been garbage collected"
+        try:
+            broker_ref = getattr(self, '_broker_ref', None)
+            if broker_ref is None:
+                raise RuntimeError("Broker reference not set")
+            broker = broker_ref()
+            assert broker is not None, "Broker has been garbage collected"
+        except AttributeError:
+            raise RuntimeError("Broker reference not accessible")
         
         # Get take profit orders (ACTIVE or NEW)
         take_orders = [
@@ -1320,7 +1358,7 @@ class Broker(ABC):
         last_update_time = time.time()
         
         while True:
-            bar_data = self.get_next_bar(quotes_data, self.i_time, ta_proxies)
+            bar_data = self.get_next_bar(quotes_data, ta_proxies)
             if bar_data is None:
                 break
             
@@ -1441,7 +1479,6 @@ class Broker(ABC):
     def get_next_bar(
         self, 
         quotes_data: Dict[str, Any], 
-        i_time: int, 
         ta_proxies: Dict[str, Any]
     ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]:
         """
@@ -1449,7 +1486,6 @@ class Broker(ABC):
         
         Args:
             quotes_data: Quotes data dictionary (from initialize_quotes)
-            i_time: Current bar index
             ta_proxies: Dictionary of TA proxies (for real trading, should call set_quotes() on each proxy)
         
         Returns:

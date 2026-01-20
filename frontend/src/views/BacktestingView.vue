@@ -688,6 +688,7 @@ const dealsColumns = [
 
 const ordersColumns = [
   { key: 'order_id', label: 'Order ID', width: '80px' },
+  { key: 'exchange_order_id', label: 'Exchange Order ID', width: '150px' },
   { key: 'deal_id', label: 'Deal ID', width: '80px' },
   { 
     key: 'order_type', 
@@ -1844,6 +1845,7 @@ function copyRowToClipboard(row, tableType) {
     const groupMap = { 0: 'None', 1: 'Stop Loss', 2: 'Take Profit' }
     const orderData = {
       'Order ID': row.order_id,
+      'Exchange Order ID': row.exchange_order_id || '—',
       'Deal ID': row.deal_id || '—',
       'Type': row.order_type ? row.order_type.toUpperCase() : '—',
       'Group': groupMap[row.order_group] !== undefined ? groupMap[row.order_group] : '—',
