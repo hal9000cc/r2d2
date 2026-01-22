@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict, Any, Tuple, Callable
 import numpy as np
 
-from app.services.tasks.broker import Broker, Order
+from app.services.tasks.broker import Broker, Order, OrderStatus, OrderType, OrderSide
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
@@ -55,7 +55,7 @@ class BrokerBacktesting(Broker):
         # Equity tracking for backtesting
         self.equity_usd: PRICE_TYPE = 0.0
         self.equity_symbol: VOLUME_TYPE = 0.0
-    
+        
     def create_order(self, order: Order) -> List[str]:
         """
         Create an order (backtesting implementation).
@@ -66,7 +66,49 @@ class BrokerBacktesting(Broker):
         Returns:
             List of errors. Empty list if order was created successfully.
         """
-        raise NotImplementedError("create_order must be implemented by BrokerBacktesting")
+        # Order must be in NEW status before creation
+        assert order.status == OrderStatus.NEW, f"Order {order.order_id} must be in NEW status to be created"
+        
+        # For backtesting, use internal order_id as exchange_order_id
+        order.exchange_order_id = order.order_id
+        
+        # Handle different order types
+        if order.order_type == OrderType.MARKET:
+            # Market orders are filled immediately in backtesting
+            # Delegate to internal fill logic (currently stub with exception)
+            self._fill_order(order)
+        elif order.order_type == OrderType.STOP:
+            # Register order in numpy tracking arrays (similar to _add_order_to_arrays in old BrokerBacktesting)
+            # Stop order: track by trigger_price
+            if order.side == OrderSide.BUY:
+                # Long stop orders
+                self.long_stop_order_ids = np.append(self.long_stop_order_ids, order.order_id)
+                self.long_stop_trigger_prices = np.append(self.long_stop_trigger_prices, order.trigger_price)
+            else:
+                # Short stop orders
+                self.short_stop_order_ids = np.append(self.short_stop_order_ids, order.order_id)
+                self.short_stop_trigger_prices = np.append(self.short_stop_trigger_prices, order.trigger_price)
+        elif order.order_type == OrderType.LIMIT:
+            # Limit order: track by price
+            if order.side == OrderSide.BUY:
+                # Long limit orders
+                self.long_order_ids = np.append(self.long_order_ids, order.order_id)
+                self.long_order_prices = np.append(self.long_order_prices, order.price)
+            else:
+                # Short limit orders
+                self.short_order_ids = np.append(self.short_order_ids, order.order_id)
+                self.short_order_prices = np.append(self.short_order_prices, order.price)
+        else:
+            raise ValueError(f"Invalid order type: {order.order_type} for order {order.order_id}")
+        
+        # Set status to ACTIVE after successful registration / handling
+        order.status = OrderStatus.ACTIVE
+        
+        # Mark order as actual (successfully registered on exchange)
+        order.actual = True
+        
+        # No errors in backtesting create_order
+        return []
     
     def cancel_order(self, order_id: str, symbol: str) -> List[str]:
         """
@@ -88,7 +130,35 @@ class BrokerBacktesting(Broker):
         
         Called at the start of run() method to set up broker state.
         """
+        # Initialize numpy arrays for fast order lookup (similar to old BrokerBacktesting implementation)
+        # Limit orders tracking
+        self.long_order_ids = np.array([], dtype=np.int64)
+        self.long_order_prices = np.array([], dtype=PRICE_TYPE)
+        self.short_order_ids = np.array([], dtype=np.int64)
+        self.short_order_prices = np.array([], dtype=PRICE_TYPE)
+        
+        # Stop orders tracking
+        self.long_stop_order_ids = np.array([], dtype=np.int64)
+        self.long_stop_trigger_prices = np.array([], dtype=PRICE_TYPE)
+        self.short_stop_order_ids = np.array([], dtype=np.int64)
+        self.short_stop_trigger_prices = np.array([], dtype=PRICE_TYPE)
+
+    def _fill_order(self, order: Order) -> None:
+        """
+        Fill a market order immediately (backtesting implementation).
+        
+        Stub implementation.
+        """
         pass
+    
+    def fetch_orders(self) -> None:
+        """
+        Fetch and execute orders for backtesting.
+        
+        Backtesting implementation stub. Will be implemented with full
+        order triggering logic later.
+        """
+        raise NotImplementedError("fetch_orders must be implemented by BrokerBacktesting")
     
     def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
         """

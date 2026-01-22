@@ -3,7 +3,6 @@ from enum import Enum
 from typing import List, Optional, Set, Dict, Any, Tuple, Union, TYPE_CHECKING
 import math
 import time
-import weakref
 
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict, model_validator, PrivateAttr
@@ -96,8 +95,7 @@ class Order(BaseModel):
     - Stop-limit order: both `price` and `trigger_price` are set. When trigger_price is reached,
       a limit order at `price` is placed.
     
-    The `modify_time` field is updated automatically whenever any field is modified.
-    Immutable fields: create_time, side, price, trigger_price.
+    Immutable fields (cannot be changed after creation): order_id, deal_id, order_type, create_time, side, price, trigger_price.
     """
     
     model_config = ConfigDict(
@@ -115,9 +113,6 @@ class Order(BaseModel):
     price: Optional[PRICE_TYPE] = None
     trigger_price: Optional[PRICE_TYPE] = None
     
-    # Weak reference to broker (internal, set at creation)
-    _broker_ref: weakref.ref = PrivateAttr()
-    
     # Mutable fields
     modify_time: np.datetime64
     volume: VOLUME_TYPE
@@ -127,87 +122,8 @@ class Order(BaseModel):
     fraction: Optional[float] = None
     fraction_remain: Optional[float] = None
     exchange_order_id: Optional[Union[str, int]] = None
-    errors: List[str] = Field(default_factory=list)
-    
-    def __init__(self, broker: 'Broker', **data):
-        """
-        Initialize Order with broker.
-        
-        Args:
-            broker: Broker instance (required, stored as weak reference)
-            **data: Other Order fields
-        """
-        # Validate broker before initialization
-        if broker is None:
-            raise ValueError("broker must be provided and cannot be None")
-        
-        # Initialize Pydantic model first
-        super().__init__(**data)
-        
-        # Set PrivateAttr after Pydantic initialization
-        # Pydantic v2 automatically stores PrivateAttr in __pydantic_private__
-        self._broker_ref = weakref.ref(broker)
-    
-    def __setattr__(self, name: str, value) -> None:
-        """
-        Override __setattr__ to:
-        1. Protect immutable fields from modification
-        2. Automatically update modify_time when any mutable field changes
-        """
-        # Special case: setting _broker_ref (PrivateAttr) - just set it and return
-        # This happens during initialization, so we don't need to update modify_time
-        if name == '_broker_ref':
-            BaseModel.__setattr__(self, name, value)
-            return
-        
-        # List of immutable fields
-        immutable_fields = {'order_id', 'deal_id', 'order_type', 'create_time', 'side', 'price', 'trigger_price'}
-        
-        # Check if object is already initialized by checking if __pydantic_fields_set__ exists
-        # This is set by Pydantic after model initialization
-        is_initialized = hasattr(self, '__pydantic_fields_set__')
-        
-        if is_initialized:
-            # Protect immutable fields
-            if name in immutable_fields:
-                # Get current value if field exists
-                try:
-                    current_value = object.__getattribute__(self, name)
-                    if current_value is not None and current_value != value:
-                        raise ValueError(f"Cannot modify immutable field '{name}' after object creation")
-                except AttributeError:
-                    # Field doesn't exist yet, allow setting during initialization
-                    pass
-            
-            # Protect modify_time from direct modification
-            if name == 'modify_time':
-                raise ValueError("Cannot modify 'modify_time' directly. It is updated automatically when other fields change.")
-            
-            # Update modify_time when mutable field changes (except modify_time itself)
-            if name != 'modify_time' and name not in immutable_fields:
-                # Get broker from weak reference
-                broker_ref = self._broker_ref
-                broker = broker_ref()
-                if broker is None:
-                    raise RuntimeError("Cannot update modify_time: broker has been garbage collected")
-                
-                # Get current_time from broker
-                current_time = broker.current_time
-                assert current_time is not None, "Broker's current_time is not set"
-                
-                # Use BaseModel's __setattr__ to allow Pydantic validation
-                # This will trigger validate_assignment=True validation
-                BaseModel.__setattr__(self, name, value)
-                
-                # Then update modify_time using BaseModel.__setattr__ to bypass our __setattr__
-                # This avoids recursion and allows Pydantic to handle it
-                BaseModel.__setattr__(self, 'modify_time', current_time)
-                return
-        
-        # For initial assignment (during __init__), use BaseModel's __setattr__
-        # Pydantic will handle validation through its normal mechanism
-        BaseModel.__setattr__(self, name, value)
-    
+    actual: bool = False
+
     @model_validator(mode='after')
     def validate_order(self):
         """Validate order fields.
@@ -216,7 +132,6 @@ class Order(BaseModel):
         - Either price or trigger_price must be set (not both None)
         - If status is ACTIVE, volume must be greater than 0
         - fraction must be set for orders with order_group != NONE
-        - price, trigger_price, and volume must be properly rounded according to broker precision
         """
         # Validate order_id and deal_id (already checked by Field(gt=0), but double-check)
         if self.order_id <= 0:
@@ -240,73 +155,31 @@ class Order(BaseModel):
         if self.volume < 0:
             raise ValueError(f"volume must be greater than or equal to 0, got {self.volume}")
         
-        # Validate rounding: price, trigger_price, and volume must be properly rounded
-        # Only validate if _broker_ref is available (it may not be during Pydantic's initialization)
-        try:
-            broker = self._broker_ref()
-            if broker is None:
-                raise RuntimeError("Cannot validate rounding: broker has been garbage collected")
-            
-            # Validate price rounding
-            if self.price is not None:
-                formatted_price = broker.format_price(self.price)
-                assert self.price == formatted_price, \
-                    f"price must be properly rounded (got {self.price}, expected {formatted_price})"
-            
-            # Validate trigger_price rounding
-            if self.trigger_price is not None:
-                formatted_trigger_price = broker.format_price(self.trigger_price)
-                assert self.trigger_price == formatted_trigger_price, \
-                    f"trigger_price must be properly rounded (got {self.trigger_price}, expected {formatted_trigger_price})"
-            
-            # Validate volume rounding
-            formatted_volume = broker.format_volume(self.volume)
-            assert self.volume == formatted_volume, \
-                f"volume must be properly rounded (got {self.volume}, expected {formatted_volume})"
-        except AttributeError:
-            # _broker_ref not available yet, skip rounding validation
-            # This can happen during Pydantic's initialization
-            pass
-        
         return self
     
-    def broker(self) -> 'Broker':
-        """
-        Get broker instance from weak reference.
-        
-        Returns:
-            Broker instance
-        
-        Raises:
-            RuntimeError: If broker has been garbage collected
-        """
-        broker = self._broker_ref()
-        if broker is None:
-            raise RuntimeError("Broker has been garbage collected")
-        return broker
-    
-    def cancel(self) -> List[str]:
+    def cancel(self, broker: 'Broker') -> List[str]:
         """
         Cancel this order.
         
         Calls broker.cancel_order() and updates order status based on result.
         If cancellation is successful and filled_volume == 0, sets status to CANCELED.
         If cancellation is successful and filled_volume > 0, sets status to EXECUTED.
-        If there are errors, adds them to order.errors and returns the error list.
+        
+        Args:
+            broker: Broker instance to use for canceling the order
         
         Returns:
             List of error messages. Empty list means success.
+            Errors should be added to deal.errors by the caller with order_id prefix.
         
         Raises:
             AssertionError: If order status is not ACTIVE or NEW
-            RuntimeError: If broker has been garbage collected
         """
         # Check that order can be canceled
         assert self.status in (OrderStatus.ACTIVE, OrderStatus.NEW), \
             f"Cannot cancel order with status {self.status}"
         
-        # Get broker and call cancel_order
-        broker = self.broker()
+        # Call cancel_order
         errors = broker.cancel_order(str(self.order_id), broker.symbol)
         
         # If no errors, update status
@@ -315,9 +188,6 @@ class Order(BaseModel):
                 self.status = OrderStatus.CANCELED
             else:
                 self.status = OrderStatus.EXECUTED
-        else:
-            # Add errors to order.errors
-            self.errors.extend(errors)
         
         return errors
 
@@ -355,6 +225,12 @@ class Deal(BaseModel):
     # Deal closed status (set to True when quantity == 0 and no active entry orders)
     is_closed: bool = False
     
+    # Emergency close flag (set to True if errors occurred during order cancellation when closing deal)
+    need_emergency_close: bool = False
+    
+    # List of error messages for the deal
+    errors: List[str] = Field(default_factory=list)
+    
     # Type of deal closure (copied from last exit order's order_group, or NONE if closed via regular buy/sell)
     close_type: Optional[OrderGroup] = None
     
@@ -364,29 +240,7 @@ class Deal(BaseModel):
     sell_quantity: VOLUME_TYPE = 0.0
     sell_proceeds: PRICE_TYPE = 0.0
     
-    # Weak reference to broker (internal, set at creation)
-    _broker_ref: weakref.ref = PrivateAttr()
-    
-    def __init__(self, broker: 'Broker', **data):
-        """
-        Initialize Deal with broker.
-        
-        Args:
-            broker: Broker instance (required, stored as weak reference)
-            **data: Other Deal fields
-        """
-        # Validate broker before initialization
-        if broker is None:
-            raise ValueError("broker must be provided and cannot be None")
-        
-        # Initialize Pydantic model first
-        super().__init__(**data)
-        
-        # Set PrivateAttr after Pydantic initialization
-        # Pydantic v2 automatically stores PrivateAttr in __pydantic_private__
-        self._broker_ref = weakref.ref(broker)
-    
-    def add_trade(self, trade: Trade, precision_amount: float) -> None:
+    def add_trade(self, broker: 'Broker', trade: Trade, precision_amount: float) -> None:
         """
         Add trade to the deal and update aggregates incrementally.
 
@@ -428,28 +282,54 @@ class Deal(BaseModel):
         else:
             self.profit = None
         
+        # Check for active entry orders (OrderGroup.NONE) and update volumes or close deal
+        has_active_entry_orders = any(
+            order.status in (OrderStatus.ACTIVE, OrderStatus.NEW) 
+            and order.order_group == OrderGroup.NONE
+            for order in self.orders
+        )
+        
+        if has_active_entry_orders:
+            # Update order volumes based on current deal state
+            self.update_order_volumes(broker)
+        else:
+            # No active entry orders - check if deal should be closed
+            if self.quantity == 0:
+                # Deactivate all ACTIVE and NEW orders before closing deal
+                has_errors = False
+                
+                for order in self.orders:
+                    if order.status == OrderStatus.ACTIVE:
+                        # Cancel active orders through broker
+                        cancel_errors = broker.cancel_order(str(order.order_id), broker.symbol)
+                        if cancel_errors:
+                            # Report errors immediately for this order
+                            broker.order_error(self.deal_id, order.order_id, cancel_errors)
+                            has_errors = True
+                    elif order.status == OrderStatus.NEW:
+                        # Simply mark new orders as canceled
+                        order.status = OrderStatus.CANCELED
+                
+                # Handle cancellation errors
+                if has_errors:
+                    # Set emergency close flag and do not close deal
+                    self.need_emergency_close = True
+                else:
+                    # No errors - mark deal as closed
+                    self.is_closed = True
 
-    @property
-    def unrealized_profit(self) -> Optional[PRICE_TYPE]:
+    def unrealized_profit(self, broker: 'Broker') -> Optional[PRICE_TYPE]:
         """
         Calculate unrealized profit for an open position at current_price from broker.
 
         For closed positions, the result matches the realized profit.
         
-        Returns:
-            Unrealized profit if broker and current_price are available, None otherwise
-        """
-        # Get broker from weak reference
-        try:
-            broker_ref = getattr(self, '_broker_ref', None)
-            if broker_ref is None:
-                return None
-            broker = broker_ref()
-            if broker is None:
-                return None
-        except AttributeError:
-            return None
+        Args:
+            broker: Broker instance to get current_price from
         
+        Returns:
+            Unrealized profit if current_price is available, None otherwise
+        """
         current_price = broker.current_price
         
         # Value of current open position at market price
@@ -459,7 +339,7 @@ class Deal(BaseModel):
         # (all sells done + value of remaining position) - all buys - all fees
         return self.sell_proceeds + current_value - self.buy_cost - self.fee
     
-    def cancel_orders(self, group: Optional[OrderGroup] = None) -> Tuple[List[str], List['Order']]:
+    def cancel_orders(self, broker: 'Broker', group: Optional[OrderGroup] = None) -> Tuple[List[str], List['Order']]:
         """
         Cancel orders in this deal by specified group.
         
@@ -500,7 +380,7 @@ class Deal(BaseModel):
                     continue
                 
                 # Try to cancel order
-                errors = order.cancel()
+                errors = order.cancel(broker)
                 
                 if not errors:
                     # Success: check if order should be removed
@@ -510,7 +390,9 @@ class Deal(BaseModel):
                         canceled_count += 1
                         canceled_orders.append(order)
                 else:
-                    # Errors occurred: add to error list
+                    # Errors occurred: add to deal.errors with order_id prefix
+                    for error in errors:
+                        self.errors.append(f"Order {order.order_id}: {error}")
                     all_errors.extend(errors)
             
             # Check exit conditions
@@ -587,17 +469,20 @@ class Deal(BaseModel):
         # Assert that remain is 0 after processing all orders
         assert abs(remain) < 1e-10, f"Remain should be 0 after processing all orders, got {remain}"
     
-    def update_orders(self) -> None:
+    def update_order_volumes(self, broker: 'Broker') -> None:
         """
         Update volumes for stop loss and take profit orders.
         
         Calculates volumes based on simulated volume and fraction_remain.
         First updates stop losses, then take profits.
+        
+        Args:
+            broker: Broker instance for format_volume
         """
-        self.update_stop_loss_volumes()
-        self.update_take_profit_volumes()
+        self.update_stop_loss_volumes(broker)
+        self.update_take_profit_volumes(broker)
     
-    def start(self) -> Tuple[List[str], List['Order']]:
+    def start(self, broker: 'Broker') -> Tuple[List[str], List['Order']]:
         """
         Start deal: update orders and create entry and stop loss orders.
         
@@ -609,18 +494,8 @@ class Deal(BaseModel):
             - errors: List of error messages (empty if all orders created successfully)
             - created_orders: List of successfully created Order objects
         """
-        # Get broker
-        try:
-            broker_ref = getattr(self, '_broker_ref', None)
-            if broker_ref is None:
-                raise RuntimeError("Broker reference not set")
-            broker = broker_ref()
-            assert broker is not None, "Broker has been garbage collected"
-        except AttributeError:
-            raise RuntimeError("Broker reference not accessible")
-        
         # 1. Update orders
-        self.update_orders()
+        self.update_order_volumes(broker)
         
         # 2. Collect entry and stop loss orders (ACTIVE or NEW only)
         entry_orders = [
@@ -657,17 +532,13 @@ class Deal(BaseModel):
         
         return (errors, created_orders)
     
-    def update_stop_loss_volumes(self) -> None:
+    def update_stop_loss_volumes(self, broker: 'Broker') -> None:
         """
         Update volumes for stop loss orders.
         
         Combines entry orders and stop loss orders, sorts them, and calculates
         volumes based on simulated volume progression.
         """
-        # Get broker for format_volume
-        broker = self._broker_ref()
-        assert broker is not None, "Broker has been garbage collected"
-        
         # Collect entry and stop orders with sort keys in one pass
         # For entry orders: use price, for stop orders: use trigger_price
         orders_with_keys = []
@@ -709,22 +580,12 @@ class Deal(BaseModel):
                 order.volume = broker.format_volume(new_volume)
                 sim_volume -= order.volume
     
-    def update_take_profit_volumes(self) -> None:
+    def update_take_profit_volumes(self, broker: 'Broker') -> None:
         """
         Update volumes for take profit orders.
         
         Sorts take profit orders and calculates volumes based on simulated volume.
         """
-        # Get broker for format_volume
-        try:
-            broker_ref = getattr(self, '_broker_ref', None)
-            if broker_ref is None:
-                raise RuntimeError("Broker reference not set")
-            broker = broker_ref()
-            assert broker is not None, "Broker has been garbage collected"
-        except AttributeError:
-            raise RuntimeError("Broker reference not accessible")
-        
         # Get take profit orders (ACTIVE or NEW)
         take_orders = [
             order for order in self.orders
@@ -1022,7 +883,7 @@ class Broker(ABC):
         deal.calc_fraction_remain(OrderGroup.TAKE_PROFIT)
         
         # Start deal: send entry and stop loss orders to exchange
-        start_errors, _ = deal.start()
+        start_errors, _ = deal.start(self)
         
         # Combine all errors
         all_errors = errors + start_errors
@@ -1049,7 +910,6 @@ class Broker(ABC):
         else:
             new_deal_id = len(self.deals) + 1
             deal = Deal(
-                broker=self,
                 deal_id=new_deal_id,
                 type=deal_type
             )
@@ -1077,17 +937,17 @@ class Broker(ABC):
         
         # Cancel in order: take profits, entries, stop losses
         if clear_take_profit:
-            errors, canceled = deal.cancel_orders(OrderGroup.TAKE_PROFIT)
+            errors, canceled = deal.cancel_orders(self, OrderGroup.TAKE_PROFIT)
             canceled_order_ids.extend([o.order_id for o in canceled])
             all_errors.extend(errors)
         
         if clear_enter:
-            errors, canceled = deal.cancel_orders(OrderGroup.NONE)
+            errors, canceled = deal.cancel_orders(self, OrderGroup.NONE)
             canceled_order_ids.extend([o.order_id for o in canceled])
             all_errors.extend(errors)
         
         if clear_stop_loss:
-            errors, canceled = deal.cancel_orders(OrderGroup.STOP_LOSS)
+            errors, canceled = deal.cancel_orders(self, OrderGroup.STOP_LOSS)
             canceled_order_ids.extend([o.order_id for o in canceled])
             all_errors.extend(errors)
         
@@ -1227,7 +1087,6 @@ class Broker(ABC):
         """
         order_id = len(self.orders) + 1
         order = Order(
-            broker=self,
             order_id=order_id,
             deal_id=deal.deal_id,
             order_type=order_type,
@@ -1317,13 +1176,70 @@ class Broker(ABC):
         """
         return []
     
+    def create_trade(self, order: Order, quantity: VOLUME_TYPE, price: PRICE_TYPE, fee: PRICE_TYPE) -> None:
+        """
+        Create a trade from an executed order.
+        
+        Creates a Trade object, updates order's filled_volume, sets order status to EXECUTED
+        if fully filled, and adds the trade to the deal.
+        
+        Args:
+            order: Order that was executed
+            quantity: Quantity executed in this trade
+            price: Execution price
+            fee: Fee for this trade
+        
+        Raises:
+            AssertionError: If quantity <= 0, price <= 0, fee < 0, or current_time is not set
+            IndexError: If deal with order.deal_id does not exist
+        """
+        # Validate inputs
+        assert quantity > 0, f"quantity must be > 0, got {quantity}"
+        assert price > 0, f"price must be > 0, got {price}"
+        assert fee >= 0, f"fee must be >= 0, got {fee}"
+        assert self.current_time is not None, "current_time must be set before creating trade"
+        
+        # Generate trade_id (size of trades list + 1)
+        trade_id = len(self.trades) + 1
+        
+        # Calculate trade sum
+        trade_sum = quantity * price
+        
+        # Create Trade
+        trade = Trade(
+            trade_id=trade_id,
+            deal_id=order.deal_id,
+            order_id=order.order_id,
+            time=self.current_time,
+            side=order.side,
+            price=price,
+            quantity=quantity,
+            fee=fee,
+            sum=trade_sum
+        )
+        
+        # Update order filled_volume
+        order.filled_volume += quantity
+        
+        # Check if order is fully filled
+        if order.filled_volume >= order.volume:
+            order.status = OrderStatus.EXECUTED
+        
+        # Get deal and add trade to it
+        deal = self.get_deal(order.deal_id)
+        deal.add_trade(self, trade, self.precision_amount)
+        
+        # Add trade to broker's trades list
+        self.trades.append(trade)
+    
+    @abstractmethod
     def fetch_orders(self) -> None:
         """
         Fetch and execute orders (check for triggered limit/stop orders).
         
-        Default implementation (stub). Should be overridden in subclasses.
+        Must be implemented in subclasses (e.g., backtesting or live trading brokers).
         """
-        pass
+        raise NotImplementedError("fetch_orders must be implemented in Broker subclasses")
 
     def run(self, save_results: bool = True):
         """
@@ -1449,6 +1365,21 @@ class Broker(ABC):
             NotImplementedError: Must be implemented by subclasses
         """
         raise NotImplementedError("cancel_order must be implemented by subclass")
+    
+    def order_error(self, deal_id: int, order_id: int, messages: List[str]) -> None:
+        """
+        Report order error(s) to broker.
+        
+        Called when order operations (e.g., cancellation) fail.
+        
+        Args:
+            deal_id: Deal ID associated with the order
+            order_id: Order ID (0 means all orders in the deal)
+            messages: List of error messages
+        
+        Default implementation (stub). Should be overridden in subclasses if needed.
+        """
+        raise NotImplementedError("order_error must be implemented in Broker subclasses")
     
     @abstractmethod
     def initialize_run(self) -> None:

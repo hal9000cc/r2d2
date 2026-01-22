@@ -1860,8 +1860,7 @@ function copyRowToClipboard(row, tableType) {
       'Status': (() => {
         const statusMap = { 0: 'New', 1: 'Active', 2: 'Executed', 3: 'Canceled', 4: 'Error' }
         return statusMap[row.status] || 'Unknown'
-      })(),
-      'Errors': row.errors && row.errors.length > 0 ? row.errors.join('; ') : '—'
+      })()
     }
     
     text = Object.entries(orderData)

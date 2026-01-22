@@ -175,8 +175,8 @@ class Strategy(ABC):
         # Execute through broker (returns List[Order])
         orders = self.broker.buy(quantity, price=price, trigger_price=trigger_price)
         
-        # Extract errors from orders
-        all_errors = [error for order in orders for error in order.errors]
+        # No errors to extract from orders (errors are now in deal.errors)
+        all_errors = []
         
         # Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
@@ -235,8 +235,8 @@ class Strategy(ABC):
         # Execute through broker (returns List[Order])
         orders = self.broker.sell(quantity, price=price, trigger_price=trigger_price)
         
-        # Extract errors from orders
-        all_errors = [error for order in orders for error in order.errors]
+        # No errors to extract from orders (errors are now in deal.errors)
+        all_errors = []
         
         # Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
@@ -763,13 +763,15 @@ class Strategy(ABC):
             )
         
         # Execute deal through broker
-        deal, new_orders, canceled_order_ids = self.broker.execute_deal(DealType.LONG, entries, stop_losses, take_profits)
+        deal, new_orders, canceled_order_ids, deal_errors = self.broker.execute_deal(
+            DealType.LONG, entries, stop_losses, take_profits
+        )
         
         # Get orders from new_orders (created in this call)
         orders = new_orders if deal else []
         
-        # Extract errors from orders
-        all_errors = [error for order in orders for error in order.errors]
+        # Use errors returned by broker (deal_errors)
+        all_errors = deal_errors
         
         # Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
@@ -861,13 +863,15 @@ class Strategy(ABC):
             )
         
         # Execute deal through broker
-        deal, new_orders, canceled_order_ids = self.broker.execute_deal(DealType.SHORT, entries, stop_losses, take_profits)
+        deal, new_orders, canceled_order_ids, deal_errors = self.broker.execute_deal(
+            DealType.SHORT, entries, stop_losses, take_profits
+        )
         
         # Get orders from new_orders (created in this call)
         orders = new_orders if deal else []
         
-        # Extract errors from orders
-        all_errors = [error for order in orders for error in order.errors]
+        # Use errors returned by broker (deal_errors)
+        all_errors = deal_errors
         
         # Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
@@ -1171,7 +1175,7 @@ class Strategy(ABC):
             )
         
         # 10. Execute deal through broker with existing deal_id
-        deal_result, new_orders, canceled_order_ids = self.broker.execute_deal(
+        deal_result, new_orders, canceled_order_ids, deal_errors = self.broker.execute_deal(
             deal_type,
             entries,
             stop_losses,
@@ -1185,8 +1189,8 @@ class Strategy(ABC):
         # 11. Get orders from new_orders (created in this call)
         orders = new_orders if deal_result else []
         
-        # 12. Extract errors from orders
-        all_errors = [error for order in orders for error in order.errors]
+        # 12. Use errors returned by broker (deal_errors)
+        all_errors = deal_errors
         
         # 13. Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
