@@ -71,6 +71,7 @@ class BrokerBacktesting(Broker):
         
         # For backtesting, use internal order_id as exchange_order_id
         order.exchange_order_id = order.order_id
+        order.update_modify_time(self)
         
         # Handle different order types
         if order.order_type == OrderType.MARKET:
@@ -102,10 +103,13 @@ class BrokerBacktesting(Broker):
             raise ValueError(f"Invalid order type: {order.order_type} for order {order.order_id}")
         
         # Set status to ACTIVE after successful registration / handling
-        order.status = OrderStatus.ACTIVE
+        order._set_sync_field('status', OrderStatus.ACTIVE)
         
         # Mark order as actual (successfully registered on exchange)
         order.actual = True
+        
+        # Update modify_time after all changes
+        order.update_modify_time(self)
         
         # No errors in backtesting create_order
         return []

@@ -123,6 +123,9 @@ class Order(BaseModel):
     fraction_remain: Optional[float] = None
     exchange_order_id: Optional[Union[str, int]] = None
     actual: bool = False
+    
+    # Fields that require exchange synchronization when changed
+    _sync_fields: Set[str] = {'status', 'volume', 'price'}
 
     @model_validator(mode='after')
     def validate_order(self):
@@ -157,20 +160,47 @@ class Order(BaseModel):
         
         return self
     
-    def cancel(self, broker: 'Broker') -> List[str]:
+    def update_modify_time(self, broker: 'Broker') -> None:
+        """
+        Update modify_time to broker's current_time.
+        
+        Args:
+            broker: Broker instance to get current_time from
+        """
+        assert broker.current_time is not None, "Broker's current_time must be set"
+        self.modify_time = broker.current_time
+    
+    def _set_sync_field(self, field_name: str, new_value: Any) -> None:
+        """
+        Set field value and mark order as unsynced with exchange if value changed.
+        
+        Fields that affect exchange synchronization: status, volume, price.
+        If field value changed, sets actual=False to indicate need for exchange synchronization.
+        
+        Args:
+            field_name: Name of the field to set
+            new_value: New value for the field
+        """
+        if field_name in self._sync_fields:
+            old_value = getattr(self, field_name, None)
+            if old_value != new_value:
+                self.actual = False
+        
+        # Set the field value
+        setattr(self, field_name, new_value)
+    
+    def cancel(self, broker: 'Broker') -> None:
         """
         Cancel this order.
         
-        Calls broker.cancel_order() and updates order status based on result.
-        If cancellation is successful and filled_volume == 0, sets status to CANCELED.
-        If cancellation is successful and filled_volume > 0, sets status to EXECUTED.
+        Updates order status based on filled_volume:
+        - If filled_volume == 0, sets status to CANCELED
+        - If filled_volume > 0, sets status to EXECUTED
+        
+        Resets actual flag if status changed.
         
         Args:
-            broker: Broker instance to use for canceling the order
-        
-        Returns:
-            List of error messages. Empty list means success.
-            Errors should be added to deal.errors by the caller with order_id prefix.
+            broker: Broker instance to get current_time from
         
         Raises:
             AssertionError: If order status is not ACTIVE or NEW
@@ -179,17 +209,17 @@ class Order(BaseModel):
         assert self.status in (OrderStatus.ACTIVE, OrderStatus.NEW), \
             f"Cannot cancel order with status {self.status}"
         
-        # Call cancel_order
-        errors = broker.cancel_order(str(self.order_id), broker.symbol)
+        # Determine new status based on filled_volume
+        if self.filled_volume == 0:
+            new_status = OrderStatus.CANCELED
+        else:
+            new_status = OrderStatus.EXECUTED
         
-        # If no errors, update status
-        if not errors:
-            if self.filled_volume == 0:
-                self.status = OrderStatus.CANCELED
-            else:
-                self.status = OrderStatus.EXECUTED
+        # Set status and mark as unsynced if changed
+        self._set_sync_field('status', new_status)
         
-        return errors
+        # Update modify_time
+        self.update_modify_time(broker)
 
 
 class Deal(BaseModel):
@@ -300,23 +330,16 @@ class Deal(BaseModel):
                 
                 for order in self.orders:
                     if order.status == OrderStatus.ACTIVE:
-                        # Cancel active orders through broker
-                        cancel_errors = broker.cancel_order(str(order.order_id), broker.symbol)
-                        if cancel_errors:
-                            # Report errors immediately for this order
-                            broker.order_error(self.deal_id, order.order_id, cancel_errors)
-                            has_errors = True
+                        # Cancel active orders
+                        order._set_sync_field('status', OrderStatus.CANCELED)
+                        order.update_modify_time(broker)
                     elif order.status == OrderStatus.NEW:
                         # Simply mark new orders as canceled
-                        order.status = OrderStatus.CANCELED
+                        order._set_sync_field('status', OrderStatus.CANCELED)
+                        order.update_modify_time(broker)
                 
-                # Handle cancellation errors
-                if has_errors:
-                    # Set emergency close flag and do not close deal
-                    self.need_emergency_close = True
-                else:
-                    # No errors - mark deal as closed
-                    self.is_closed = True
+                # Mark deal as closed
+                self.is_closed = True
 
     def unrealized_profit(self, broker: 'Broker') -> Optional[PRICE_TYPE]:
         """
@@ -380,20 +403,15 @@ class Deal(BaseModel):
                     continue
                 
                 # Try to cancel order
-                errors = order.cancel(broker)
+                order.cancel(broker)
                 
-                if not errors:
-                    # Success: check if order should be removed
-                    if order.status in (OrderStatus.CANCELED, OrderStatus.EXECUTED):
-                        self.orders.remove(order)
-                        orders_to_cancel.remove(order)
-                        canceled_count += 1
-                        canceled_orders.append(order)
-                else:
-                    # Errors occurred: add to deal.errors with order_id prefix
-                    for error in errors:
-                        self.errors.append(f"Order {order.order_id}: {error}")
-                    all_errors.extend(errors)
+                # Check if order was successfully canceled
+                if order.status in (OrderStatus.CANCELED, OrderStatus.EXECUTED):
+                    # Success: remove order from deal
+                    self.orders.remove(order)
+                    orders_to_cancel.remove(order)
+                    canceled_count += 1
+                    canceled_orders.append(order)
             
             # Check exit conditions
             if not orders_to_cancel:
@@ -418,7 +436,7 @@ class Deal(BaseModel):
         order.deal_id = self.deal_id
         self.orders.append(order)
     
-    def calc_fraction_remain(self, order_group: OrderGroup) -> None:
+    def calc_fraction_remain(self, broker: 'Broker', order_group: OrderGroup) -> None:
         """
         Calculate fraction_remain for orders of specified group.
         
@@ -462,6 +480,7 @@ class Deal(BaseModel):
             
             # Calculate fraction_remain
             order.fraction_remain = order.fraction / remain
+            order.update_modify_time(broker)
             
             # Update remain
             remain = remain - order.fraction
@@ -482,55 +501,50 @@ class Deal(BaseModel):
         self.update_stop_loss_volumes(broker)
         self.update_take_profit_volumes(broker)
     
-    def start(self, broker: 'Broker') -> Tuple[List[str], List['Order']]:
+    def start(self, broker: 'Broker') -> List['Order']:
         """
-        Start deal: update orders and create entry and stop loss orders.
+        Start deal: update orders and activate entry and stop loss orders.
         
-        First calls update_orders() to calculate volumes, then creates all entry orders,
-        then all stop loss orders via broker.create_order().
+        First calls update_orders() to calculate volumes, then activates all entry orders,
+        then all stop loss orders by changing their status to ACTIVE.
         
         Returns:
-            Tuple of (errors, created_orders):
-            - errors: List of error messages (empty if all orders created successfully)
-            - created_orders: List of successfully created Order objects
+            List of orders that need to be sent to exchange (orders with actual=False)
         """
         # 1. Update orders
         self.update_order_volumes(broker)
         
-        # 2. Collect entry and stop loss orders (ACTIVE or NEW only)
+        # 2. Collect entry and stop loss orders (NEW only, will be activated)
         entry_orders = [
             order for order in self.orders
             if order.order_group == OrderGroup.NONE
-            and order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+            and order.status == OrderStatus.NEW
         ]
         
         stop_orders = [
             order for order in self.orders
             if order.order_group == OrderGroup.STOP_LOSS
-            and order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+            and order.status == OrderStatus.NEW
         ]
         
-        # 3. Create orders and collect results
-        errors = []
-        created_orders = []
+        # 3. Activate orders and collect those that need exchange synchronization
+        orders_to_sync = []
         
-        # 3.1. Create entry orders first
+        # 3.1. Activate entry orders first
         for order in entry_orders:
-            order_errors = broker.create_order(order)
-            if order_errors:
-                errors.extend(order_errors)
-            else:
-                created_orders.append(order)
+            order._set_sync_field('status', OrderStatus.ACTIVE)
+            order.update_modify_time(broker)
+            if not order.actual:
+                orders_to_sync.append(order)
         
-        # 3.2. Create stop loss orders
+        # 3.2. Activate stop loss orders
         for order in stop_orders:
-            order_errors = broker.create_order(order)
-            if order_errors:
-                errors.extend(order_errors)
-            else:
-                created_orders.append(order)
+            order._set_sync_field('status', OrderStatus.ACTIVE)
+            order.update_modify_time(broker)
+            if not order.actual:
+                orders_to_sync.append(order)
         
-        return (errors, created_orders)
+        return orders_to_sync
     
     def update_stop_loss_volumes(self, broker: 'Broker') -> None:
         """
@@ -577,7 +591,9 @@ class Deal(BaseModel):
                 # Stop order: update volume = sim_volume * fraction_remain, then subtract from sim_volume
                 assert order.fraction_remain is not None, f"Stop order {order.order_id} must have fraction_remain set"
                 new_volume = sim_volume * order.fraction_remain
-                order.volume = broker.format_volume(new_volume)
+                formatted_volume = broker.format_volume(new_volume)
+                order._set_sync_field('volume', formatted_volume)
+                order.update_modify_time(broker)
                 sim_volume -= order.volume
     
     def update_take_profit_volumes(self, broker: 'Broker') -> None:
@@ -612,7 +628,9 @@ class Deal(BaseModel):
             assert order.fraction_remain is not None, f"Take profit order {order.order_id} must have fraction_remain set"
             # Update volume = sim_volume * fraction_remain
             new_volume = sim_volume * order.fraction_remain
-            order.volume = broker.format_volume(new_volume)
+            formatted_volume = broker.format_volume(new_volume)
+            order._set_sync_field('volume', formatted_volume)
+            order.update_modify_time(broker)
             # Subtract volume from sim_volume
             sim_volume -= order.volume
 
@@ -879,16 +897,17 @@ class Broker(ABC):
         take_orders = self._create_take_profit_orders(deal, take_profits, opposite_side)
         new_orders.extend(take_orders)
         
-        deal.calc_fraction_remain(OrderGroup.STOP_LOSS)
-        deal.calc_fraction_remain(OrderGroup.TAKE_PROFIT)
+        deal.calc_fraction_remain(self, OrderGroup.STOP_LOSS)
+        deal.calc_fraction_remain(self, OrderGroup.TAKE_PROFIT)
         
-        # Start deal: send entry and stop loss orders to exchange
-        start_errors, _ = deal.start(self)
+        # Start deal: activate entry and stop loss orders
+        orders_to_sync = deal.start(self)
         
-        # Combine all errors
-        all_errors = errors + start_errors
+        # Note: orders_to_sync contains orders that need to be sent to exchange
+        # This will be handled later by exchange synchronization logic
+        # For now, we don't collect errors from start() as it no longer returns them
         
-        return (deal, new_orders, canceled_order_ids, all_errors)
+        return (deal, new_orders, canceled_order_ids, errors)
     
     def _prepare_deal(
         self,
@@ -1223,7 +1242,10 @@ class Broker(ABC):
         
         # Check if order is fully filled
         if order.filled_volume >= order.volume:
-            order.status = OrderStatus.EXECUTED
+            order._set_sync_field('status', OrderStatus.EXECUTED)
+        
+        # Update modify_time after changes
+        order.update_modify_time(self)
         
         # Get deal and add trade to it
         deal = self.get_deal(order.deal_id)
@@ -1365,21 +1387,6 @@ class Broker(ABC):
             NotImplementedError: Must be implemented by subclasses
         """
         raise NotImplementedError("cancel_order must be implemented by subclass")
-    
-    def order_error(self, deal_id: int, order_id: int, messages: List[str]) -> None:
-        """
-        Report order error(s) to broker.
-        
-        Called when order operations (e.g., cancellation) fail.
-        
-        Args:
-            deal_id: Deal ID associated with the order
-            order_id: Order ID (0 means all orders in the deal)
-            messages: List of error messages
-        
-        Default implementation (stub). Should be overridden in subclasses if needed.
-        """
-        raise NotImplementedError("order_error must be implemented in Broker subclasses")
     
     @abstractmethod
     def initialize_run(self) -> None:
