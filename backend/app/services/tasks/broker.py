@@ -13,6 +13,7 @@ from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 from app.core.config import BAR_WAIT_INTERVAL, ORDER_WAIT_INTERVAL
 from app.core.logger import get_logger
+from app.core.datetime_utils import datetime64_to_iso
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
@@ -697,6 +698,8 @@ class Broker(ABC):
         self._exchange_order_map: Dict[str, 'Order'] = {}  # Map exchange_order_id -> Order
         self._processed_trade_ids: Set[str] = set()       # Set of processed trade IDs to avoid duplicates
         self._last_trade_time: Optional[int] = None       # Timestamp of the last processed trade
+        
+        self.date_start: Optional[np.datetime64] = None
     
     def format_volume(self, value: VOLUME_TYPE) -> VOLUME_TYPE:
         """
@@ -1201,14 +1204,84 @@ class Broker(ABC):
     def update_state(self, results: Optional['TaskResults'], is_finish: bool = False) -> None:
         """
         Update task state and progress.
+        Checks if task is still running by reading isRunning flag from Redis.
+        Calculates and sends progress update via MessageType.EVENT.
+        If isRunning is False, sends error notification and raises exception to stop backtesting.
         
         Args:
             results: TaskResults instance to save results to Redis, or None if results should not be saved
             is_finish: If True, marks the backtesting result as completed. Default: False.
         
-        Default implementation (stub). Should be overridden in subclasses if needed.
+        Raises:
+            RuntimeError: If task is stopped (isRunning == False) or duplicate worker detected
         """
-        raise NotImplementedError("update_state must be implemented by subclass")
+        # Check if task is associated with a list (has Redis connection)
+        if self.task._list is None:
+            # If no list, skip state update (standalone mode)
+            return
+        
+        # Calculate progress
+        progress_val = self.progress()
+        
+        # Prepare event data
+        event_data = {
+            "event": "progress",
+            "result_id": self.result_id,
+            "progress": progress_val
+        }
+        
+        # Add optional date fields if available
+        if self.date_start is not None:
+            event_data["date_start"] = datetime64_to_iso(self.date_start)
+        
+        if self.current_time is not None:
+            event_data["current_time"] = datetime64_to_iso(self.current_time)
+        
+        # Save results to Redis if results instance is provided
+        if results is not None:
+            results.put_result(is_finish=is_finish)
+        
+        self.task.send_message(MessageType.EVENT, event_data)
+        
+        # Load task from Redis to get current state
+        current_task = self.task.load()
+        if current_task is None:
+            logger.warning(f"Task {self.task.id} not found in Redis during state update")
+            return
+        
+        # Check if result_id matches (detect duplicate workers)
+        if current_task.result_id != self.result_id:
+            # Another worker is running, send error notification and raise exception
+            error_message = f"Another backtesting worker is running for this task (expected result_id: {current_task.result_id}, got: {self.result_id})"
+            logger.error(f"Task {self.task.id} result_id mismatch: {error_message}")
+            
+            # Send error notification
+            self.task.backtesting_error(error_message)
+            
+            # Raise exception to exit from run() loop
+            raise RuntimeError(error_message)
+        
+        # Check if task is still running
+        if not current_task.isRunning:
+            # Task was stopped, send error notification and raise exception
+            cancel_message = "Backtesting was stopped by user request"
+            logger.info(f"Task {self.task.id} stopped: {cancel_message}")
+            
+            # Send error notification
+            self.task.backtesting_error(cancel_message)
+            
+            # Raise exception to exit from run() loop
+            raise RuntimeError(cancel_message)
+
+    @abstractmethod
+    def progress(self) -> float:
+        """
+        Calculate current progress percentage.
+        
+        Returns:
+            float: Progress in range [0.0, 100.0]
+        """
+        raise NotImplementedError("progress must be implemented by subclass")
     
     def check_trading_results(self) -> List[str]:
         """
@@ -1582,23 +1655,6 @@ class Broker(ABC):
             NotImplementedError: Must be implemented by subclasses
         """
         raise NotImplementedError("exchange_cancel_order must be implemented by subclass")
-
-    @abstractmethod
-    def exchange_fetch_order(self, exchange_order_id: str, symbol: str) -> Dict:
-        """
-        Fetch an order by its ID.
-        
-        Args:
-            exchange_order_id: Exchange order ID to fetch
-            symbol: Trading symbol
-        
-        Returns:
-            Dictionary with order details
-        
-        Raises:
-            NotImplementedError: Must be implemented by subclasses
-        """
-        raise NotImplementedError("exchange_fetch_order must be implemented by subclass")
 
     @abstractmethod
     def exchange_fetch_my_trades(self, symbol: str, since: Optional[int] = None) -> List[Dict]:

@@ -28,10 +28,10 @@ export function useBacktesting(taskId) {
   const backtestProgressState = ref('idle') // 'idle' | 'running' | 'completed' | 'error'
   const backtestProgressErrorMessage = ref('')
   const backtestProgressErrorType = ref(null) // 'error' | 'cancel' | null
-  const backtestProgressDateStart = ref(null) // ISO string: date_start from backtesting_progress
-  const backtestProgressCurrentTime = ref(null) // ISO string: current_time from backtesting_progress
+  const backtestProgressDateStart = ref(null) // ISO string: date_start from progress
+  const backtestProgressCurrentTime = ref(null) // ISO string: current_time from progress
   const backtestProgressDateEnd = ref(null) // ISO string: date_end from backtesting_completed
-  const backtestProgressResultId = ref(null) // Result ID from backtesting_started/backtesting_progress
+  const backtestProgressResultId = ref(null) // Result ID from backtesting_started/progress
   
   // Computed: combined messages sorted by timestamp
   const allMessages = computed(() => {
@@ -212,7 +212,7 @@ export function useBacktesting(taskId) {
               if (data.result_id) {
                 backtestProgressResultId.value = data.result_id
               }
-            } else if (event === 'backtesting_progress') {
+            } else if (event === 'progress') {
               // Only update progress if backtesting is running
               if (backtestProgressState.value === 'running' && isBacktestingRunning.value) {
                 // Validate and clamp progress value

@@ -69,14 +69,31 @@ class BrokerBacktesting(Broker):
         self.slippage: float = (task.slippage_in_steps * task.price_step) if task.price_step > 0 else 0.0
         
         # Progress tracking
-        self.progress: float = 0.0
-        self.date_start: Optional[np.datetime64] = None
         self.date_end: Optional[np.datetime64] = None
         
         # Equity tracking for backtesting
         self.equity_usd: PRICE_TYPE = 0.0
         self.equity_symbol: VOLUME_TYPE = 0.0
         
+    def progress(self) -> float:
+        """
+        Calculate current progress percentage for backtesting.
+        
+        Returns:
+            float: Progress in range [0.0, 100.0]
+        """
+        if self.current_time is None or self.date_start is None or self.date_end is None:
+            return 0.0
+            
+        total_delta = self.date_end - self.date_start
+        current_delta = self.current_time - self.date_start
+        
+        if total_delta <= np.timedelta64(0, 'ns'):
+            return 100.0
+            
+        prog = float(current_delta / total_delta * 100.0)
+        return round(max(0.0, min(100.0, prog)), 1)
+
     def exchange_create_order(
         self, 
         symbol: str, 
@@ -173,20 +190,56 @@ class BrokerBacktesting(Broker):
         Returns:
             Dictionary with cancelled order details
         """
-        raise NotImplementedError("exchange_cancel_order implementation pending")
-
-    def exchange_fetch_order(self, exchange_order_id: str, symbol: str) -> Dict:
-        """
-        Fetch an order by its ID (backtesting implementation).
-        
-        Args:
-            exchange_order_id: Exchange order ID to fetch
-            symbol: Trading symbol
+        # Check if order exists
+        if exchange_order_id not in self.exchange_orders:
+            logger.warning(f"Order {exchange_order_id} not found in active orders for cancellation")
+            return {'id': exchange_order_id, 'status': 'closed', 'info': {'note': 'Not found in active orders'}}
             
-        Returns:
-            Dictionary with order details
-        """
-        raise NotImplementedError("exchange_fetch_order implementation pending")
+        order = self.exchange_orders[exchange_order_id]
+        # In OrderExchange exchange_order_id is int
+        order_id_int = int(exchange_order_id)
+        
+        # Remove from type-specific structures
+        if order.order_type == OrderType.MARKET:
+            # Remove from market orders list
+            # Since market orders are usually processed immediately, this case is rare but possible
+            self.market_orders = [o for o in self.market_orders if o.exchange_order_id != order_id_int]
+            
+        elif order.order_type == OrderType.STOP:
+            # Remove from stop order arrays using vectorized mask
+            if order.side == OrderSide.BUY:
+                mask = self.long_stop_order_ids != order_id_int
+                self.long_stop_order_ids = self.long_stop_order_ids[mask]
+                self.long_stop_trigger_prices = self.long_stop_trigger_prices[mask]
+            else:
+                mask = self.short_stop_order_ids != order_id_int
+                self.short_stop_order_ids = self.short_stop_order_ids[mask]
+                self.short_stop_trigger_prices = self.short_stop_trigger_prices[mask]
+                
+        elif order.order_type == OrderType.LIMIT:
+            # Remove from limit order arrays using vectorized mask
+            if order.side == OrderSide.BUY:
+                mask = self.long_order_ids != order_id_int
+                self.long_order_ids = self.long_order_ids[mask]
+                self.long_order_prices = self.long_order_prices[mask]
+            else:
+                mask = self.short_order_ids != order_id_int
+                self.short_order_ids = self.short_order_ids[mask]
+                self.short_order_prices = self.short_order_prices[mask]
+        
+        # Remove from general dictionary
+        del self.exchange_orders[exchange_order_id]
+        
+        return {
+            'id': exchange_order_id,
+            'symbol': symbol,
+            'type': order.order_type.value if hasattr(order.order_type, 'value') else order.order_type,
+            'side': order.side.value if hasattr(order.side, 'value') else order.side,
+            'amount': order.amount,
+            'price': order.price,
+            'status': 'canceled',
+            'info': {}
+        }
 
     def exchange_fetch_my_trades(self, symbol: str, since: Optional[int] = None) -> List[Dict]:
         """
