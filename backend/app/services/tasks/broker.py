@@ -1261,16 +1261,14 @@ class Broker(ABC):
         # Add trade to broker's trades list
         self.trades.append(trade)
     
-    @abstractmethod
     def fetch_orders(self) -> None:
         """
         Fetch and execute orders (check for triggered limit/stop orders).
         
         Must be implemented in subclasses (e.g., backtesting or live trading brokers).
         """
-        raise NotImplementedError("fetch_orders must be implemented in Broker subclasses")
+        raise NotImplementedError("fetch_orders not implemented")
     
-    @abstractmethod
     def place_orders(self) -> int:
         """
         Place orders to exchange that are marked as unsynced (actual=False).
@@ -1286,7 +1284,7 @@ class Broker(ABC):
         
         Must be implemented in subclasses (e.g., backtesting or live trading brokers).
         """
-        raise NotImplementedError("place_orders must be implemented in Broker subclasses")
+        raise NotImplementedError("place_orders not implemented")
 
     def get_next_bar(
         self,
@@ -1424,15 +1422,28 @@ class Broker(ABC):
     # Abstract methods (must be implemented by subclasses)
     
     @abstractmethod
-    def exchange_create_order(self, order: 'Order') -> List[str]:
+    def exchange_create_order(
+        self, 
+        symbol: str, 
+        order_type: OrderType, 
+        side: OrderSide, 
+        amount: float, 
+        price: Optional[float] = None, 
+        params: Dict = None
+    ) -> Dict:
         """
         Create an order (abstract method).
         
         Args:
-            order: Order object to create
+            symbol: Trading symbol
+            order_type: Order type (MARKET, LIMIT, STOP)
+            side: Order side (BUY, SELL)
+            amount: Order amount
+            price: Order price (optional, for limit/stop orders)
+            params: Additional parameters (optional)
         
         Returns:
-            List of errors. Empty list if order was created successfully.
+            Dictionary with order details (simulated exchange response)
         
         Raises:
             NotImplementedError: Must be implemented by subclasses
@@ -1440,22 +1451,38 @@ class Broker(ABC):
         raise NotImplementedError("exchange_create_order must be implemented by subclass")
     
     @abstractmethod
-    def exchange_cancel_order(self, order_id: str, symbol: str) -> List[str]:
+    def exchange_cancel_order(self, exchange_order_id: str, symbol: str) -> Dict:
         """
         Cancel an order by its ID.
         
         Args:
-            order_id: Order ID to cancel
-            symbol: Trading symbol (e.g., 'BTC/USDT')
+            exchange_order_id: Exchange order ID to cancel
+            symbol: Trading symbol
         
         Returns:
-            List of error messages. Empty list means success (order was canceled successfully).
-            Non-empty list contains error descriptions if cancellation failed.
+            Dictionary with cancelled order details
         
         Raises:
             NotImplementedError: Must be implemented by subclasses
         """
         raise NotImplementedError("exchange_cancel_order must be implemented by subclass")
+
+    @abstractmethod
+    def exchange_fetch_order(self, exchange_order_id: str, symbol: str) -> Dict:
+        """
+        Fetch an order by its ID.
+        
+        Args:
+            exchange_order_id: Exchange order ID to fetch
+            symbol: Trading symbol
+        
+        Returns:
+            Dictionary with order details
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("exchange_fetch_order must be implemented by subclass")
     
     @abstractmethod
     def initialize_run(self) -> None:

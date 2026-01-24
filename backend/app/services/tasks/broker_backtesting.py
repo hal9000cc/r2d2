@@ -13,6 +13,27 @@ from app.services.tasks.tasks import Task
 logger = get_logger(__name__)
 
 
+class OrderExchange:
+    """
+    Represents an order on the exchange (simulated).
+    """
+    __slots__ = ('exchange_order_id', 'side', 'order_type', 'amount', 'price')
+
+    def __init__(
+        self,
+        exchange_order_id: int,
+        side: OrderSide,
+        order_type: OrderType,
+        amount: float,
+        price: Optional[float] = None
+    ):
+        self.exchange_order_id = exchange_order_id
+        self.side = side
+        self.order_type = order_type
+        self.amount = amount
+        self.price = price
+
+
 class BrokerBacktesting(Broker):
     """
     Backtesting broker implementation.
@@ -56,74 +77,105 @@ class BrokerBacktesting(Broker):
         self.equity_usd: PRICE_TYPE = 0.0
         self.equity_symbol: VOLUME_TYPE = 0.0
         
-    def exchange_create_order(self, order: Order) -> List[str]:
+    def exchange_create_order(
+        self, 
+        symbol: str, 
+        order_type: OrderType, 
+        side: OrderSide, 
+        amount: float, 
+        price: Optional[float] = None, 
+        params: Dict = None
+    ) -> Dict:
         """
         Create an order (backtesting implementation).
         
         Args:
-            order: Order object to create
+            symbol: Trading symbol
+            order_type: Order type (MARKET, LIMIT, STOP)
+            side: Order side (BUY, SELL)
+            amount: Order amount
+            price: Order price (optional)
+            params: Additional parameters (optional)
         
         Returns:
-            List of errors. Empty list if order was created successfully.
+            Dictionary with order details (simulated exchange response)
         """
-        # Order must be in ACTIVE status before creation
-        assert order.status == OrderStatus.ACTIVE, f"Order {order.order_id} must be in ACTIVE status to be created"
+        # Generate new exchange order ID
+        self._exchange_order_id_counter += 1
+        exchange_order_id = self._exchange_order_id_counter
         
-        # For backtesting, use internal order_id as exchange_order_id
-        order.exchange_order_id = order.order_id
-        order.update_modify_time(self)
+        # Create OrderExchange object
+        order = OrderExchange(
+            exchange_order_id=exchange_order_id,
+            side=side,
+            order_type=order_type,
+            amount=amount,
+            price=price
+        )
+        
+        # Add to general list of active exchange orders
+        self.exchange_orders.append(order)
         
         # Handle different order types
-        if order.order_type == OrderType.MARKET:
-            # Market orders are filled immediately in backtesting
-            # Add to wait list for processing in next cycle
-            self._wait_market_orders.append(order)
-        elif order.order_type == OrderType.STOP:
-            # Register order in numpy tracking arrays (similar to _add_order_to_arrays in old BrokerBacktesting)
-            # Stop order: track by trigger_price
-            if order.side == OrderSide.BUY:
+        if order_type == OrderType.MARKET:
+            # Market orders: add to separate list for immediate processing
+            self.market_orders.append(order)
+            
+        elif order_type == OrderType.STOP:
+            # Stop orders: register in numpy tracking arrays
+            # price parameter acts as trigger price for stop orders
+            if price is None:
+                raise ValueError(f"Price (trigger price) must be set for STOP order {exchange_order_id}")
+                
+            if side == OrderSide.BUY:
                 # Long stop orders
-                self.long_stop_order_ids = np.append(self.long_stop_order_ids, order.order_id)
-                self.long_stop_trigger_prices = np.append(self.long_stop_trigger_prices, order.trigger_price)
+                self.long_stop_order_ids = np.append(self.long_stop_order_ids, exchange_order_id)
+                self.long_stop_trigger_prices = np.append(self.long_stop_trigger_prices, price)
             else:
                 # Short stop orders
-                self.short_stop_order_ids = np.append(self.short_stop_order_ids, order.order_id)
-                self.short_stop_trigger_prices = np.append(self.short_stop_trigger_prices, order.trigger_price)
-        elif order.order_type == OrderType.LIMIT:
-            # Limit order: track by price
-            if order.side == OrderSide.BUY:
+                self.short_stop_order_ids = np.append(self.short_stop_order_ids, exchange_order_id)
+                self.short_stop_trigger_prices = np.append(self.short_stop_trigger_prices, price)
+                
+        elif order_type == OrderType.LIMIT:
+            # Limit orders: register in numpy tracking arrays
+            if price is None:
+                raise ValueError(f"Price must be set for LIMIT order {exchange_order_id}")
+                
+            if side == OrderSide.BUY:
                 # Long limit orders
-                self.long_order_ids = np.append(self.long_order_ids, order.order_id)
-                self.long_order_prices = np.append(self.long_order_prices, order.price)
+                self.long_order_ids = np.append(self.long_order_ids, exchange_order_id)
+                self.long_order_prices = np.append(self.long_order_prices, price)
             else:
                 # Short limit orders
-                self.short_order_ids = np.append(self.short_order_ids, order.order_id)
-                self.short_order_prices = np.append(self.short_order_prices, order.price)
+                self.short_order_ids = np.append(self.short_order_ids, exchange_order_id)
+                self.short_order_prices = np.append(self.short_order_prices, price)
         else:
-            raise ValueError(f"Invalid order type: {order.order_type} for order {order.order_id}")
+            raise ValueError(f"Invalid order type: {order_type} for order {exchange_order_id}")
         
-        # Mark order as actual (successfully registered on exchange)
-        order.actual = True
-        
-        # Update modify_time after all changes
-        order.update_modify_time(self)
-        
-        # No errors in backtesting create_order
-        return []
+        # Return simulated exchange response
+        return {
+            'id': str(exchange_order_id),
+            'symbol': symbol,
+            'type': order_type.value if hasattr(order_type, 'value') else order_type,
+            'side': side.value if hasattr(side, 'value') else side,
+            'amount': amount,
+            'price': price,
+            'status': 'open',
+            'info': params or {}
+        }
     
-    def exchange_cancel_order(self, order_id: str, symbol: str) -> List[str]:
+    def exchange_cancel_order(self, exchange_order_id: str, symbol: str) -> Dict:
         """
         Cancel an order by its ID (backtesting implementation).
         
         Args:
-            order_id: Order ID to cancel
-            symbol: Trading symbol (e.g., 'BTC/USDT')
+            exchange_order_id: Exchange order ID to cancel
+            symbol: Trading symbol
             
         Returns:
-            List of error messages. Empty list means success (order was canceled successfully).
-            Non-empty list contains error descriptions if cancellation failed.
+            Dictionary with cancelled order details
         """
-        raise NotImplementedError("exchange_cancel_order must be implemented by BrokerBacktesting")
+        raise NotImplementedError("exchange_cancel_order implementation pending")
     
     def initialize_run(self) -> None:
         """
@@ -131,7 +183,13 @@ class BrokerBacktesting(Broker):
         
         Called at the start of run() method to set up broker state.
         """
-        # Initialize numpy arrays for fast order lookup (similar to old BrokerBacktesting implementation)
+        # Counter for generating unique exchange order IDs
+        self._exchange_order_id_counter = 0
+        
+        # List of all active orders on the exchange
+        self.exchange_orders: List[OrderExchange] = []
+        
+        # Initialize numpy arrays for fast order lookup
         # Limit orders tracking
         self.long_order_ids = np.array([], dtype=np.int64)
         self.long_order_prices = np.array([], dtype=PRICE_TYPE)
@@ -145,32 +203,8 @@ class BrokerBacktesting(Broker):
         self.short_stop_trigger_prices = np.array([], dtype=PRICE_TYPE)
         
         # Market orders waiting for execution
-        self._wait_market_orders = []
+        self.market_orders: List[OrderExchange] = []
 
-    def place_orders(self) -> int:
-        """
-        Place orders to exchange that are marked as unsynced (actual=False).
-        
-        This method should:
-        1. Find all orders where actual=False
-        2. For orders with status ACTIVE or NEW: call create_order() to place them on exchange
-        3. For orders with status CANCELED or EXECUTED: call cancel_order() to cancel them on exchange
-        4. After successful placement/cancellation, set actual=True
-        
-        Returns:
-            int: Number of orders successfully placed/updated
-        """
-        pass
-
-    def fetch_orders(self) -> None:
-        """
-        Fetch and execute orders for backtesting.
-        
-        Backtesting implementation stub. Will be implemented with full
-        order triggering logic later.
-        """
-        pass
-    
     def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
         """
         Initialize quotes data for strategy execution (backtesting implementation).
