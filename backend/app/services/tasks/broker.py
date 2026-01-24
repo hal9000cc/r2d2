@@ -1483,6 +1483,23 @@ class Broker(ABC):
             NotImplementedError: Must be implemented by subclasses
         """
         raise NotImplementedError("exchange_fetch_order must be implemented by subclass")
+
+    @abstractmethod
+    def exchange_fetch_my_trades(self, symbol: str, since: Optional[int] = None) -> List[Dict]:
+        """
+        Fetch executed trades.
+        
+        Args:
+            symbol: Trading symbol
+            since: Timestamp in ms to fetch trades from (optional)
+            
+        Returns:
+            List of dictionaries with trade details
+            
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
+        """
+        raise NotImplementedError("exchange_fetch_my_trades must be implemented by subclass")
     
     @abstractmethod
     def initialize_run(self) -> None:

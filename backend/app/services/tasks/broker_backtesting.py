@@ -114,7 +114,7 @@ class BrokerBacktesting(Broker):
         )
         
         # Add to general list of active exchange orders
-        self.exchange_orders.append(order)
+        self.exchange_orders[str(exchange_order_id)] = order
         
         # Handle different order types
         if order_type == OrderType.MARKET:
@@ -176,6 +176,221 @@ class BrokerBacktesting(Broker):
             Dictionary with cancelled order details
         """
         raise NotImplementedError("exchange_cancel_order implementation pending")
+
+    def exchange_fetch_order(self, exchange_order_id: str, symbol: str) -> Dict:
+        """
+        Fetch an order by its ID (backtesting implementation).
+        
+        Args:
+            exchange_order_id: Exchange order ID to fetch
+            symbol: Trading symbol
+            
+        Returns:
+            Dictionary with order details
+        """
+        raise NotImplementedError("exchange_fetch_order implementation pending")
+
+    def exchange_fetch_my_trades(self, symbol: str, since: Optional[int] = None) -> List[Dict]:
+        """
+        Fetch executed trades (backtesting implementation).
+        
+        Args:
+            symbol: Trading symbol
+            since: Timestamp in ms to fetch trades from (optional)
+            
+        Returns:
+            List of dictionaries with trade details
+        """
+        raise NotImplementedError("exchange_fetch_my_trades implementation pending")
+
+    def _process_market_orders(self, current_price: float, current_time: np.datetime64) -> List[Dict]:
+        """Process market orders execution."""
+        trades = []
+        
+        for order in self.market_orders:
+            # Calculate execution price with slippage
+            # For BUY: price + slippage, For SELL: price - slippage
+            slippage_mult = 1 if order.side == OrderSide.BUY else -1
+            exec_price = current_price + (self.slippage * slippage_mult)
+            
+            # Calculate fee
+            fee = order.amount * exec_price * self.fee_taker
+            
+            # Create trade record
+            trades.append({
+                'order': str(order.exchange_order_id),
+                'timestamp': current_time,
+                'price': exec_price,
+                'amount': order.amount,
+                'fee': fee
+            })
+            
+        # Clear market orders list
+        self.market_orders.clear()
+        
+        return trades
+
+    def _process_stop_orders(self, current_price: float, current_time: np.datetime64) -> List[Dict]:
+        """Process stop orders execution (vectorized)."""
+        trades = []
+        
+        # Long Stop (BUY): current_price >= trigger_price
+        long_stop_mask = self.long_stop_trigger_prices <= current_price
+        if np.any(long_stop_mask):
+            triggered_ids = self.long_stop_order_ids[long_stop_mask]
+            triggered_prices = self.long_stop_trigger_prices[long_stop_mask]
+            
+            for i, order_id_int in enumerate(triggered_ids):
+                order_id = str(order_id_int)
+                if order_id not in self.exchange_orders:
+                    continue
+                    
+                order = self.exchange_orders[order_id]
+                trigger_price = triggered_prices[i]
+                
+                # Exec price = trigger_price + slippage (for BUY)
+                exec_price = trigger_price + self.slippage
+                
+                fee = order.amount * exec_price * self.fee_taker
+                
+                trades.append({
+                    'order': order_id,
+                    'timestamp': current_time,
+                    'price': exec_price,
+                    'amount': order.amount,
+                    'fee': fee
+                })
+            
+            # Remove executed from numpy arrays
+            self.long_stop_order_ids = self.long_stop_order_ids[~long_stop_mask]
+            self.long_stop_trigger_prices = self.long_stop_trigger_prices[~long_stop_mask]
+            
+        # Short Stop (SELL): current_price <= trigger_price
+        short_stop_mask = self.short_stop_trigger_prices >= current_price
+        if np.any(short_stop_mask):
+            triggered_ids = self.short_stop_order_ids[short_stop_mask]
+            triggered_prices = self.short_stop_trigger_prices[short_stop_mask]
+            
+            for i, order_id_int in enumerate(triggered_ids):
+                order_id = str(order_id_int)
+                if order_id not in self.exchange_orders:
+                    continue
+                    
+                order = self.exchange_orders[order_id]
+                trigger_price = triggered_prices[i]
+                
+                # Exec price = trigger_price - slippage (for SELL)
+                exec_price = trigger_price - self.slippage
+                
+                fee = order.amount * exec_price * self.fee_taker
+                
+                trades.append({
+                    'order': order_id,
+                    'timestamp': current_time,
+                    'price': exec_price,
+                    'amount': order.amount,
+                    'fee': fee
+                })
+            
+            # Remove executed from numpy arrays
+            self.short_stop_order_ids = self.short_stop_order_ids[~short_stop_mask]
+            self.short_stop_trigger_prices = self.short_stop_trigger_prices[~short_stop_mask]
+            
+        return trades
+
+    def _process_limit_orders(self, current_price: float, current_time: np.datetime64) -> List[Dict]:
+        """Process limit orders execution (vectorized)."""
+        trades = []
+        
+        # Long Limit (BUY): current_price < order_price (No equality)
+        long_limit_mask = self.long_order_prices > current_price
+        if np.any(long_limit_mask):
+            triggered_ids = self.long_order_ids[long_limit_mask]
+            triggered_prices = self.long_order_prices[long_limit_mask]
+            
+            for i, order_id_int in enumerate(triggered_ids):
+                order_id = str(order_id_int)
+                if order_id not in self.exchange_orders:
+                    continue
+                    
+                order = self.exchange_orders[order_id]
+                limit_price = triggered_prices[i]
+                
+                # Exec price = limit_price (no slippage for limits)
+                exec_price = limit_price
+                
+                fee = order.amount * exec_price * self.fee_maker
+                
+                trades.append({
+                    'order': order_id,
+                    'timestamp': current_time,
+                    'price': exec_price,
+                    'amount': order.amount,
+                    'fee': fee
+                })
+            
+            # Remove executed from numpy arrays
+            self.long_order_ids = self.long_order_ids[~long_limit_mask]
+            self.long_order_prices = self.long_order_prices[~long_limit_mask]
+            
+        # Short Limit (SELL): current_price > order_price (No equality)
+        short_limit_mask = self.short_order_prices < current_price
+        if np.any(short_limit_mask):
+            triggered_ids = self.short_order_ids[short_limit_mask]
+            triggered_prices = self.short_order_prices[short_limit_mask]
+            
+            for i, order_id_int in enumerate(triggered_ids):
+                order_id = str(order_id_int)
+                if order_id not in self.exchange_orders:
+                    continue
+                    
+                order = self.exchange_orders[order_id]
+                limit_price = triggered_prices[i]
+                
+                # Exec price = limit_price (no slippage for limits)
+                exec_price = limit_price
+                
+                fee = order.amount * exec_price * self.fee_maker
+                
+                trades.append({
+                    'order': order_id,
+                    'timestamp': current_time,
+                    'price': exec_price,
+                    'amount': order.amount,
+                    'fee': fee
+                })
+                
+            # Remove executed from numpy arrays
+            self.short_order_ids = self.short_order_ids[~short_limit_mask]
+            self.short_order_prices = self.short_order_prices[~short_limit_mask]
+            
+        return trades
+
+    def _backtesting_process_orders(self, current_price: float, current_time: np.datetime64) -> List[Dict]:
+        """
+        Process orders execution based on current price (matching engine).
+        
+        Args:
+            current_price: Current market price
+            current_time: Current timestamp
+            
+        Returns:
+            List of executed trades
+        """
+        trades = []
+        
+        # Process all order types
+        trades.extend(self._process_market_orders(current_price, current_time))
+        trades.extend(self._process_stop_orders(current_price, current_time))
+        trades.extend(self._process_limit_orders(current_price, current_time))
+        
+        # Remove executed orders from exchange_orders dictionary
+        for trade in trades:
+            order_id = trade['order']
+            if order_id in self.exchange_orders:
+                del self.exchange_orders[order_id]
+                
+        return trades
     
     def initialize_run(self) -> None:
         """
@@ -187,7 +402,7 @@ class BrokerBacktesting(Broker):
         self._exchange_order_id_counter = 0
         
         # List of all active orders on the exchange
-        self.exchange_orders: List[OrderExchange] = []
+        self.exchange_orders: Dict[str, OrderExchange] = {}
         
         # Initialize numpy arrays for fast order lookup
         # Limit orders tracking
