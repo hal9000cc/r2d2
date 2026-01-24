@@ -62,6 +62,10 @@ REDIS_QUOTE_RESPONSE_PREFIX=quotes:responses
 QUOTES_FETCH_RETRY_ATTEMPTS=3
 QUOTES_FETCH_RETRY_DELAY=1
 
+# Broker settings
+BAR_WAIT_INTERVAL=60.0
+ORDER_WAIT_INTERVAL=1.0
+
 # Symbols cache TTL (time-to-live) in seconds
 SYMBOLS_CACHE_TTL_SECONDS=600
 
@@ -165,6 +169,10 @@ QUOTES_FETCH_RETRY_DELAY = float(os.getenv("QUOTES_FETCH_RETRY_DELAY", "1.0"))
 
 # Symbols cache TTL configuration (in seconds)
 SYMBOLS_CACHE_TTL_SECONDS = int(os.getenv("SYMBOLS_CACHE_TTL_SECONDS", "3600"))
+
+# Broker settings
+BAR_WAIT_INTERVAL = float(os.getenv("BAR_WAIT_INTERVAL", "60.0"))
+ORDER_WAIT_INTERVAL = float(os.getenv("ORDER_WAIT_INTERVAL", "1.0"))
 
 # API keys and secrets cache (lazy loading)
 _api_keys_cache: Dict[str, Optional[str]] = {}

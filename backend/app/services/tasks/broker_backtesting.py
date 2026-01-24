@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict, Any, Tuple, Callable
 import numpy as np
 
-from app.services.tasks.broker import Broker, Order, OrderStatus, OrderType, OrderSide
+from app.services.tasks.broker import Broker, Order, OrderStatus, OrderType, OrderSide, BarStatus
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
@@ -212,11 +212,11 @@ class BrokerBacktesting(Broker):
         
         return quotes_data
     
-    def get_next_bar(
+    def fetch_next_bar(
         self, 
         quotes_data: Dict[str, Any], 
         ta_proxies: Dict[str, Any]
-    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]:
+    ) -> Tuple[BarStatus, Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]]:
         """
         Get next bar data for strategy execution (backtesting implementation).
         
@@ -225,23 +225,27 @@ class BrokerBacktesting(Broker):
             ta_proxies: Dictionary of TA proxies (for backtesting, set_quotes() is not called)
         
         Returns:
-            Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price)
-            or None if no more data available
+            Tuple of (status, data_tuple):
+            - status: BarStatus (RECEIVED, WAITING, FINISHED)
+            - data_tuple: Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price) if status is RECEIVED, else None
         """
+        # Increment time index
+        self.i_time += 1
+        
         # Extract arrays from quotes_data
         all_time = quotes_data['time']
         all_close = quotes_data['close']
         
         # Check if we've reached the end of data
         if self.i_time >= len(all_close):
-            return None
+            return (BarStatus.FINISHED, None)
         
         # Get current time and price
         current_time = all_time[self.i_time]
         current_price = all_close[self.i_time]
         
         # Return slices up to current index (inclusive) and current time/price
-        return (
+        data_tuple = (
             all_time[:self.i_time+1],
             quotes_data['open'][:self.i_time+1],
             quotes_data['high'][:self.i_time+1],
@@ -251,5 +255,19 @@ class BrokerBacktesting(Broker):
             current_time,
             current_price
         )
+        return (BarStatus.RECEIVED, data_tuple)
     
+    def place_orders(self) -> None:
+        """
+        Place orders to exchange that are marked as unsynced (actual=False).
+        
+        This method should:
+        1. Find all orders where actual=False
+        2. For orders with status ACTIVE or NEW: call create_order() to place them on exchange
+        3. For orders with status CANCELED or EXECUTED: call cancel_order() to cancel them on exchange
+        4. After successful placement/cancellation, set actual=True
+        
+        Must be implemented in subclasses (e.g., backtesting or live trading brokers).
+        """
+        raise NotImplementedError("place_orders must be implemented in Broker subclasses")
 

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import List, Optional, Set, Dict, Any, Tuple, Union, TYPE_CHECKING
 import math
 import time
@@ -11,6 +11,7 @@ from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.indicator_proxy import ta_proxy_talib
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
+from app.core.config import BAR_WAIT_INTERVAL, ORDER_WAIT_INTERVAL
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
@@ -28,7 +29,7 @@ class OrderType(Enum):
     STOP = "stop"
 
 
-class OrderStatus(Enum):
+class OrderStatus(IntEnum):
     NEW = 0  # Only created, not processed
     ACTIVE = 1  # Validated and active (only limit and stop orders)
     EXECUTED = 2  # Executed (market immediately, limit/stop after execution)
@@ -36,7 +37,7 @@ class OrderStatus(Enum):
     ERROR = 4  # Failed validation (in real trading may be other reasons)
 
 
-class OrderGroup(Enum):
+class OrderGroup(IntEnum):
     NONE = 0  # Outside of group (default)
     STOP_LOSS = 1  # Stop loss order
     TAKE_PROFIT = 2  # Take profit order
@@ -45,6 +46,12 @@ class OrderGroup(Enum):
 class DealType(Enum):
     LONG = "long"
     SHORT = "short"
+
+
+class BarStatus(IntEnum):
+    RECEIVED = 1  # Data received
+    WAITING = 2   # Waiting for data
+    FINISHED = 3  # No more data (finish)
 
 
 class Trade(BaseModel):
@@ -1262,6 +1269,52 @@ class Broker(ABC):
         Must be implemented in subclasses (e.g., backtesting or live trading brokers).
         """
         raise NotImplementedError("fetch_orders must be implemented in Broker subclasses")
+    
+    @abstractmethod
+    def place_orders(self) -> None:
+        """
+        Place orders to exchange that are marked as unsynced (actual=False).
+        
+        This method should:
+        1. Find all orders where actual=False
+        2. For orders with status ACTIVE or NEW: call create_order() to place them on exchange
+        3. For orders with status CANCELED or EXECUTED: call cancel_order() to cancel them on exchange
+        4. After successful placement/cancellation, set actual=True
+        
+        Must be implemented in subclasses (e.g., backtesting or live trading brokers).
+        """
+        raise NotImplementedError("place_orders must be implemented in Broker subclasses")
+
+    def get_next_bar(
+        self,
+        quotes_data: Dict[str, Any],
+        ta_proxies: Dict[str, Any]
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]:
+        """
+        Get next bar data, waiting if necessary.
+        
+        Calls fetch_next_bar() in a loop until data is received or finished.
+        
+        Args:
+            quotes_data: Quotes data dictionary
+            ta_proxies: Dictionary of TA proxies
+            
+        Returns:
+            Tuple of bar data or None if finished
+        """
+        while True:
+            status, bar_data = self.fetch_next_bar(quotes_data, ta_proxies)
+            
+            if status == BarStatus.FINISHED:
+                return None
+            
+            if status == BarStatus.WAITING:
+                time.sleep(BAR_WAIT_INTERVAL)
+                continue
+            
+            # status == BarStatus.RECEIVED
+            assert bar_data is not None, "bar_data must be present when status is RECEIVED"
+            return bar_data
 
     def run(self, save_results: bool = True):
         """
@@ -1414,11 +1467,11 @@ class Broker(ABC):
         raise NotImplementedError("initialize_quotes must be implemented by subclass")
     
     @abstractmethod
-    def get_next_bar(
+    def fetch_next_bar(
         self, 
         quotes_data: Dict[str, Any], 
         ta_proxies: Dict[str, Any]
-    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]:
+    ) -> Tuple[BarStatus, Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]]:
         """
         Get next bar data for strategy execution.
         
@@ -1427,10 +1480,11 @@ class Broker(ABC):
             ta_proxies: Dictionary of TA proxies (for real trading, should call set_quotes() on each proxy)
         
         Returns:
-            Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price)
-            or None if no more data available
+            Tuple of (status, data_tuple):
+            - status: BarStatus (RECEIVED, WAITING, FINISHED)
+            - data_tuple: Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price) if status is RECEIVED, else None
         """
-        raise NotImplementedError("get_next_bar must be implemented by subclass")
+        raise NotImplementedError("fetch_next_bar must be implemented by subclass")
     
     def buy(
         self,
