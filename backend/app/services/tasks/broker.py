@@ -1271,7 +1271,7 @@ class Broker(ABC):
         raise NotImplementedError("fetch_orders must be implemented in Broker subclasses")
     
     @abstractmethod
-    def place_orders(self) -> None:
+    def place_orders(self) -> int:
         """
         Place orders to exchange that are marked as unsynced (actual=False).
         
@@ -1280,6 +1280,9 @@ class Broker(ABC):
         2. For orders with status ACTIVE or NEW: call create_order() to place them on exchange
         3. For orders with status CANCELED or EXECUTED: call cancel_order() to cancel them on exchange
         4. After successful placement/cancellation, set actual=True
+        
+        Returns:
+            int: Number of orders successfully placed/updated
         
         Must be implemented in subclasses (e.g., backtesting or live trading brokers).
         """
@@ -1303,6 +1306,7 @@ class Broker(ABC):
             Tuple of bar data or None if finished
         """
         while True:
+            self.order_processing()
             status, bar_data = self.fetch_next_bar(quotes_data, ta_proxies)
             
             if status == BarStatus.FINISHED:
@@ -1315,6 +1319,20 @@ class Broker(ABC):
             # status == BarStatus.RECEIVED
             assert bar_data is not None, "bar_data must be present when status is RECEIVED"
             return bar_data
+
+    def order_processing(self) -> None:
+        """
+        Process orders cycle: fetch updates and place pending orders.
+        Repeats if orders were placed to handle immediate updates/fills.
+        """
+        while True:
+            self.fetch_orders()
+            placed_count = self.place_orders()
+            
+            if placed_count == 0:
+                break
+                
+            time.sleep(ORDER_WAIT_INTERVAL)
 
     def run(self, save_results: bool = True):
         """
@@ -1359,8 +1377,6 @@ class Broker(ABC):
             self.current_time = current_time
             if hasattr(self, 'price'):
                 self.price = current_price
-            
-            self.fetch_orders()
             
             if hasattr(self, 'callbacks') and 'on_bar' in self.callbacks:
                 equity_usd = getattr(self, 'equity_usd', 0.0)
@@ -1408,7 +1424,7 @@ class Broker(ABC):
     # Abstract methods (must be implemented by subclasses)
     
     @abstractmethod
-    def create_order(self, order: 'Order') -> List[str]:
+    def exchange_create_order(self, order: 'Order') -> List[str]:
         """
         Create an order (abstract method).
         
@@ -1421,10 +1437,10 @@ class Broker(ABC):
         Raises:
             NotImplementedError: Must be implemented by subclasses
         """
-        raise NotImplementedError("create_order must be implemented by subclass")
+        raise NotImplementedError("exchange_create_order must be implemented by subclass")
     
     @abstractmethod
-    def cancel_order(self, order_id: str, symbol: str) -> List[str]:
+    def exchange_cancel_order(self, order_id: str, symbol: str) -> List[str]:
         """
         Cancel an order by its ID.
         
@@ -1439,7 +1455,7 @@ class Broker(ABC):
         Raises:
             NotImplementedError: Must be implemented by subclasses
         """
-        raise NotImplementedError("cancel_order must be implemented by subclass")
+        raise NotImplementedError("exchange_cancel_order must be implemented by subclass")
     
     @abstractmethod
     def initialize_run(self) -> None:

@@ -56,7 +56,7 @@ class BrokerBacktesting(Broker):
         self.equity_usd: PRICE_TYPE = 0.0
         self.equity_symbol: VOLUME_TYPE = 0.0
         
-    def create_order(self, order: Order) -> List[str]:
+    def exchange_create_order(self, order: Order) -> List[str]:
         """
         Create an order (backtesting implementation).
         
@@ -66,8 +66,8 @@ class BrokerBacktesting(Broker):
         Returns:
             List of errors. Empty list if order was created successfully.
         """
-        # Order must be in NEW status before creation
-        assert order.status == OrderStatus.NEW, f"Order {order.order_id} must be in NEW status to be created"
+        # Order must be in ACTIVE status before creation
+        assert order.status == OrderStatus.ACTIVE, f"Order {order.order_id} must be in ACTIVE status to be created"
         
         # For backtesting, use internal order_id as exchange_order_id
         order.exchange_order_id = order.order_id
@@ -76,8 +76,8 @@ class BrokerBacktesting(Broker):
         # Handle different order types
         if order.order_type == OrderType.MARKET:
             # Market orders are filled immediately in backtesting
-            # Delegate to internal fill logic (currently stub with exception)
-            self._fill_order(order)
+            # Add to wait list for processing in next cycle
+            self._wait_market_orders.append(order)
         elif order.order_type == OrderType.STOP:
             # Register order in numpy tracking arrays (similar to _add_order_to_arrays in old BrokerBacktesting)
             # Stop order: track by trigger_price
@@ -102,9 +102,6 @@ class BrokerBacktesting(Broker):
         else:
             raise ValueError(f"Invalid order type: {order.order_type} for order {order.order_id}")
         
-        # Set status to ACTIVE after successful registration / handling
-        order._set_sync_field('status', OrderStatus.ACTIVE)
-        
         # Mark order as actual (successfully registered on exchange)
         order.actual = True
         
@@ -114,19 +111,19 @@ class BrokerBacktesting(Broker):
         # No errors in backtesting create_order
         return []
     
-    def cancel_order(self, order_id: str, symbol: str) -> List[str]:
+    def exchange_cancel_order(self, order_id: str, symbol: str) -> List[str]:
         """
         Cancel an order by its ID (backtesting implementation).
         
         Args:
             order_id: Order ID to cancel
             symbol: Trading symbol (e.g., 'BTC/USDT')
-        
+            
         Returns:
             List of error messages. Empty list means success (order was canceled successfully).
             Non-empty list contains error descriptions if cancellation failed.
         """
-        raise NotImplementedError("cancel_order must be implemented by BrokerBacktesting")
+        raise NotImplementedError("exchange_cancel_order must be implemented by BrokerBacktesting")
     
     def initialize_run(self) -> None:
         """
@@ -146,15 +143,25 @@ class BrokerBacktesting(Broker):
         self.long_stop_trigger_prices = np.array([], dtype=PRICE_TYPE)
         self.short_stop_order_ids = np.array([], dtype=np.int64)
         self.short_stop_trigger_prices = np.array([], dtype=PRICE_TYPE)
-
-    def _fill_order(self, order: Order) -> None:
-        """
-        Fill a market order immediately (backtesting implementation).
         
-        Stub implementation.
+        # Market orders waiting for execution
+        self._wait_market_orders = []
+
+    def place_orders(self) -> int:
+        """
+        Place orders to exchange that are marked as unsynced (actual=False).
+        
+        This method should:
+        1. Find all orders where actual=False
+        2. For orders with status ACTIVE or NEW: call create_order() to place them on exchange
+        3. For orders with status CANCELED or EXECUTED: call cancel_order() to cancel them on exchange
+        4. After successful placement/cancellation, set actual=True
+        
+        Returns:
+            int: Number of orders successfully placed/updated
         """
         pass
-    
+
     def fetch_orders(self) -> None:
         """
         Fetch and execute orders for backtesting.
@@ -162,7 +169,7 @@ class BrokerBacktesting(Broker):
         Backtesting implementation stub. Will be implemented with full
         order triggering logic later.
         """
-        raise NotImplementedError("fetch_orders must be implemented by BrokerBacktesting")
+        pass
     
     def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -257,17 +264,3 @@ class BrokerBacktesting(Broker):
         )
         return (BarStatus.RECEIVED, data_tuple)
     
-    def place_orders(self) -> None:
-        """
-        Place orders to exchange that are marked as unsynced (actual=False).
-        
-        This method should:
-        1. Find all orders where actual=False
-        2. For orders with status ACTIVE or NEW: call create_order() to place them on exchange
-        3. For orders with status CANCELED or EXECUTED: call cancel_order() to cancel them on exchange
-        4. After successful placement/cancellation, set actual=True
-        
-        Must be implemented in subclasses (e.g., backtesting or live trading brokers).
-        """
-        raise NotImplementedError("place_orders must be implemented in Broker subclasses")
-
