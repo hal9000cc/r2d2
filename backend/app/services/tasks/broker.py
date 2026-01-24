@@ -14,6 +14,15 @@ from app.core.objects2redis import MessageType
 from app.core.config import BAR_WAIT_INTERVAL, ORDER_WAIT_INTERVAL
 from app.core.logger import get_logger
 from app.core.datetime_utils import datetime64_to_iso
+from app.services.tasks.enums import (
+    OrderSide,
+    OrderType,
+    OrderStatus,
+    OrderGroup,
+    DealType,
+    BarStatus
+)
+from app.services.tasks.trading_stats import TradingStats
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
@@ -21,42 +30,6 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
-
-
-class OrderSide(Enum):
-    BUY = "buy"
-    SELL = "sell"
-
-
-class OrderType(Enum):
-    MARKET = "market"
-    LIMIT = "limit"
-    STOP = "stop"
-
-
-class OrderStatus(IntEnum):
-    NEW = 0  # Only created, not processed
-    ACTIVE = 1  # Validated and active (only limit and stop orders)
-    EXECUTED = 2  # Executed (market immediately, limit/stop after execution)
-    CANCELED = 3  # Was active, canceled (in real trading may be partially executed)
-    ERROR = 4  # Failed validation (in real trading may be other reasons)
-
-
-class OrderGroup(IntEnum):
-    NONE = 0  # Outside of group (default)
-    STOP_LOSS = 1  # Stop loss order
-    TAKE_PROFIT = 2  # Take profit order
-
-
-class DealType(Enum):
-    LONG = "long"
-    SHORT = "short"
-
-
-class BarStatus(IntEnum):
-    RECEIVED = 1  # Data received
-    WAITING = 2   # Waiting for data
-    FINISHED = 3  # No more data (finish)
 
 
 class Trade(BaseModel):
@@ -700,6 +673,19 @@ class Broker(ABC):
         self._last_trade_time: Optional[int] = None       # Timestamp of the last processed trade
         
         self.date_start: Optional[np.datetime64] = None
+        
+        self.stats = TradingStats(
+            initial_equity_usd=0.0,
+            fee_taker=task.fee_taker if task.fee_taker > 0 else 0.001,
+            fee_maker=task.fee_maker if task.fee_maker > 0 else 0.001,
+            slippage=(task.slippage_in_steps * task.price_step) if task.price_step > 0 else 0.0,
+            price_step=task.price_step,
+            source=task.source,
+            symbol=task.symbol,
+            timeframe=task.timeframe,
+            date_start=task.dateStart,
+            date_end=task.dateEnd
+        )
     
     def format_volume(self, value: VOLUME_TYPE) -> VOLUME_TYPE:
         """
@@ -1163,7 +1149,27 @@ class Broker(ABC):
         
         Default implementation (stub). Should be overridden in subclasses if needed.
         """
-        raise NotImplementedError("close_deal must be implemented by subclass")
+        deal = self.get_deal(deal_id)
+        
+        # 1. Cancel all active/new orders associated with the deal
+        deal.cancel_orders(self)
+        
+        # 2. Create market order to close position if quantity is not zero
+        if deal.quantity != 0:
+            side = OrderSide.SELL if deal.quantity > 0 else OrderSide.BUY
+            self._create_order(
+                deal=deal,
+                order_type=OrderType.MARKET,
+                side=side,
+                volume=abs(deal.quantity),
+                order_group=OrderGroup.NONE,
+                price=None,
+                trigger_price=None,
+                fraction=None
+            )
+            
+        # 3. Process orders (cancel old ones and place closing order)
+        self.order_processing()
     
     def cancel_orders(self, order_ids: List[int]) -> List['Order']:
         """
@@ -1348,10 +1354,21 @@ class Broker(ABC):
         
         # Get deal and add trade to it
         deal = self.get_deal(order.deal_id)
+        
+        # Check if deal was closed before adding trade
+        was_closed = deal.is_closed
+        
         deal.add_trade(self, trade, self.precision_amount)
         
         # Add trade to broker's trades list
         self.trades.append(trade)
+        
+        # Update statistics
+        if self.stats:
+            self.stats.add_trade(trade)
+            # If deal was just closed, add it to statistics
+            if not was_closed and deal.is_closed:
+                self.stats.add_deal(deal)
     
     def fetch_new_trades(self) -> None:
         """

@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 
 # Import enums that are used in runtime code
-from app.services.tasks.broker import OrderSide, DealType
+from app.services.tasks.enums import OrderSide, DealType
 
 # Import types only for type checking (used in annotations)
 if TYPE_CHECKING:
