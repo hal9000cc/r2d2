@@ -83,8 +83,7 @@ class BrokerBacktesting(Broker):
         order_type: OrderType, 
         side: OrderSide, 
         amount: float, 
-        price: Optional[float] = None, 
-        params: Dict = None
+        price: Optional[float] = None
     ) -> Dict:
         """
         Create an order (backtesting implementation).
@@ -95,7 +94,6 @@ class BrokerBacktesting(Broker):
             side: Order side (BUY, SELL)
             amount: Order amount
             price: Order price (optional)
-            params: Additional parameters (optional)
         
         Returns:
             Dictionary with order details (simulated exchange response)
@@ -161,7 +159,7 @@ class BrokerBacktesting(Broker):
             'amount': amount,
             'price': price,
             'status': 'open',
-            'info': params or {}
+            'info': {}
         }
     
     def exchange_cancel_order(self, exchange_order_id: str, symbol: str) -> Dict:
@@ -201,13 +199,18 @@ class BrokerBacktesting(Broker):
         Returns:
             List of dictionaries with trade details
         """
-        raise NotImplementedError("exchange_fetch_my_trades implementation pending")
+        # In backtesting, we process orders on demand and return newly executed trades
+        # The 'since' parameter is ignored as we always return trades from the current processing step
+        return self._backtesting_process_orders(self.price, self.current_time)
 
     def _process_market_orders(self, current_price: float, current_time: np.datetime64) -> List[Dict]:
         """Process market orders execution."""
         trades = []
         
         for order in self.market_orders:
+            # Generate trade ID
+            self._trade_id_counter += 1
+            
             # Calculate execution price with slippage
             # For BUY: price + slippage, For SELL: price - slippage
             slippage_mult = 1 if order.side == OrderSide.BUY else -1
@@ -218,6 +221,7 @@ class BrokerBacktesting(Broker):
             
             # Create trade record
             trades.append({
+                'id': str(self._trade_id_counter),
                 'order': str(order.exchange_order_id),
                 'timestamp': current_time,
                 'price': exec_price,
@@ -253,7 +257,9 @@ class BrokerBacktesting(Broker):
                 
                 fee = order.amount * exec_price * self.fee_taker
                 
+                self._trade_id_counter += 1
                 trades.append({
+                    'id': str(self._trade_id_counter),
                     'order': order_id,
                     'timestamp': current_time,
                     'price': exec_price,
@@ -284,7 +290,9 @@ class BrokerBacktesting(Broker):
                 
                 fee = order.amount * exec_price * self.fee_taker
                 
+                self._trade_id_counter += 1
                 trades.append({
+                    'id': str(self._trade_id_counter),
                     'order': order_id,
                     'timestamp': current_time,
                     'price': exec_price,
@@ -321,7 +329,9 @@ class BrokerBacktesting(Broker):
                 
                 fee = order.amount * exec_price * self.fee_maker
                 
+                self._trade_id_counter += 1
                 trades.append({
+                    'id': str(self._trade_id_counter),
                     'order': order_id,
                     'timestamp': current_time,
                     'price': exec_price,
@@ -352,7 +362,9 @@ class BrokerBacktesting(Broker):
                 
                 fee = order.amount * exec_price * self.fee_maker
                 
+                self._trade_id_counter += 1
                 trades.append({
+                    'id': str(self._trade_id_counter),
                     'order': order_id,
                     'timestamp': current_time,
                     'price': exec_price,
@@ -400,6 +412,7 @@ class BrokerBacktesting(Broker):
         """
         # Counter for generating unique exchange order IDs
         self._exchange_order_id_counter = 0
+        self._trade_id_counter = 0
         
         # List of all active orders on the exchange
         self.exchange_orders: Dict[str, OrderExchange] = {}

@@ -12,10 +12,14 @@ from app.services.tasks.indicator_proxy import ta_proxy_talib
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 from app.core.config import BAR_WAIT_INTERVAL, ORDER_WAIT_INTERVAL
+from app.core.logger import get_logger
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
     from app.services.tasks.task_results import TaskResults
+
+
+logger = get_logger(__name__)
 
 
 class OrderSide(Enum):
@@ -688,6 +692,11 @@ class Broker(ABC):
         # Callbacks and results save period
         self.callbacks: Dict[str, Any] = callbacks_dict if callbacks_dict is not None else {}
         self.results_save_period: float = results_save_period
+        
+        # Trading state tracking
+        self._exchange_order_map: Dict[str, 'Order'] = {}  # Map exchange_order_id -> Order
+        self._processed_trade_ids: Set[str] = set()       # Set of processed trade IDs to avoid duplicates
+        self._last_trade_time: Optional[int] = None       # Timestamp of the last processed trade
     
     def format_volume(self, value: VOLUME_TYPE) -> VOLUME_TYPE:
         """
@@ -1176,6 +1185,16 @@ class Broker(ABC):
             level: Message level (optional, default: "info")
                   Valid levels: info, warning, error, success, debug
         """
+        # Log to system logger
+        if level == "error":
+            logger.error(message)
+        elif level == "warning":
+            logger.warning(message)
+        elif level == "debug":
+            logger.debug(message)
+        else:
+            logger.info(message)
+            
         if hasattr(self.task, 'send_message'):
             self.task.send_message(MessageType.MESSAGE, {"level": level, "message": message})
     
@@ -1261,30 +1280,129 @@ class Broker(ABC):
         # Add trade to broker's trades list
         self.trades.append(trade)
     
-    def fetch_orders(self) -> None:
+    def fetch_new_trades(self) -> None:
         """
-        Fetch and execute orders (check for triggered limit/stop orders).
+        Fetch and process new trades from exchange.
         
-        Must be implemented in subclasses (e.g., backtesting or live trading brokers).
+        Fetches trades since last processed time, filters duplicates,
+        and creates internal Trade objects for matched orders.
         """
-        raise NotImplementedError("fetch_orders not implemented")
+        # Fetch trades from exchange
+        try:
+            trades = self.exchange_fetch_my_trades(self.symbol, since=self._last_trade_time)
+        except Exception as e:
+            self.logging(f"Error fetching trades: {str(e)}", level="error")
+            return
+            
+        for trade_data in trades:
+
+            trade_id = str(trade_data['id'])
+            if trade_id in self._processed_trade_ids:
+                continue
+                
+            self._processed_trade_ids.add(trade_id)
+            
+            # Update last trade time
+            timestamp = trade_data['timestamp']
+            if self._last_trade_time is None or timestamp > self._last_trade_time:
+                self._last_trade_time = timestamp
+            
+            exchange_order_id = str(trade_data['order'])
+            order = self._exchange_order_map.get(exchange_order_id)
+            
+            if order:
+                try:
+                    self.create_trade(
+                        order=order,
+                        quantity=float(trade_data['amount']),
+                        price=float(trade_data['price']),
+                        fee=float(trade_data['fee'])
+                    )
+                except Exception as e:
+                    self.logging(f"Error creating trade for order {order.order_id}: {str(e)}", level="error")
+            else:
+                # Trade for unknown order - critical error
+                msg = f"Received trade {trade_id} for unknown order {exchange_order_id}"
+                logger.critical(msg)
+                self.logging(msg, level="error")
     
     def place_orders(self) -> int:
         """
         Place orders to exchange that are marked as unsynced (actual=False).
         
         This method should:
-        1. Find all orders where actual=False
-        2. For orders with status ACTIVE or NEW: call create_order() to place them on exchange
+        1. Find all orders where actual=False and status != NEW
+        2. For orders with status ACTIVE: call create_order() to place them on exchange
         3. For orders with status CANCELED or EXECUTED: call cancel_order() to cancel them on exchange
         4. After successful placement/cancellation, set actual=True
         
         Returns:
             int: Number of orders successfully placed/updated
-        
-        Must be implemented in subclasses (e.g., backtesting or live trading brokers).
         """
-        raise NotImplementedError("place_orders not implemented")
+        updated_count = 0
+        
+        # Filter orders that need sync and are not in NEW status
+        orders_to_sync = [
+            order for order in self.orders 
+            if not order.actual and order.status != OrderStatus.NEW
+        ]
+        
+        for order in orders_to_sync:
+            try:
+                # Handle ACTIVE orders
+                if order.status == OrderStatus.ACTIVE:
+                    # If order already has exchange ID, it means it was modified or re-placed
+                    # We need to cancel the old one first
+                    if order.exchange_order_id:
+                        self.exchange_cancel_order(str(order.exchange_order_id), self.symbol)
+                        # Clear exchange_order_id after cancellation attempt
+                        order.exchange_order_id = None
+                        
+                    # Create new order on exchange
+                    # Determine price: price for limit, trigger_price for stop
+                    price = order.price if order.price is not None else order.trigger_price
+                    
+                    create_result = self.exchange_create_order(
+                        symbol=self.symbol,
+                        order_type=order.order_type,
+                        side=order.side,
+                        amount=order.volume,
+                        price=price
+                    )
+                    
+                    # Check for errors in result
+                    if 'id' in create_result:
+                        order.exchange_order_id = create_result['id']
+                        # Add to exchange order map
+                        self._exchange_order_map[str(order.exchange_order_id)] = order
+                        
+                        order.actual = True
+                        order.update_modify_time(self)
+                        updated_count += 1
+                    else:
+                        self.logging(f"Failed to place order {order.order_id}: {create_result}", level="error")
+                
+                # Handle CANCELED or EXECUTED orders (need to remove from exchange if present)
+                elif order.status in (OrderStatus.CANCELED, OrderStatus.EXECUTED):
+                    if order.exchange_order_id:
+                        self.exchange_cancel_order(str(order.exchange_order_id), self.symbol)
+                        
+                        # Clear exchange_order_id
+                        order.exchange_order_id = None
+                        order.actual = True
+                        order.update_modify_time(self)
+                        updated_count += 1
+                    else:
+                        # Order was not on exchange, just mark as actual
+                        order.actual = True
+                        order.update_modify_time(self)
+                        updated_count += 1
+                        
+            except Exception as e:
+                self.logging(f"Error processing order {order.order_id}: {str(e)}", level="error")
+                # Do not set actual=True, so we retry next time
+                
+        return updated_count
 
     def get_next_bar(
         self,
@@ -1324,7 +1442,7 @@ class Broker(ABC):
         Repeats if orders were placed to handle immediate updates/fills.
         """
         while True:
-            self.fetch_orders()
+            self.fetch_new_trades()
             placed_count = self.place_orders()
             
             if placed_count == 0:
@@ -1428,8 +1546,7 @@ class Broker(ABC):
         order_type: OrderType, 
         side: OrderSide, 
         amount: float, 
-        price: Optional[float] = None, 
-        params: Dict = None
+        price: Optional[float] = None
     ) -> Dict:
         """
         Create an order (abstract method).
@@ -1440,7 +1557,6 @@ class Broker(ABC):
             side: Order side (BUY, SELL)
             amount: Order amount
             price: Order price (optional, for limit/stop orders)
-            params: Additional parameters (optional)
         
         Returns:
             Dictionary with order details (simulated exchange response)
