@@ -45,6 +45,7 @@ class Trade(BaseModel):
     )
 
     trade_id: int = Field(gt=0, description="Trade ID, must be greater than 0")
+    exchange_trade_id: str = Field(description="Exchange trade ID from exchange API")
     deal_id: int = Field(gt=0, description="Deal ID, must be greater than 0")
     order_id: int = Field(gt=0, description="Order ID, must be greater than 0")
     time: np.datetime64
@@ -66,6 +67,8 @@ class Trade(BaseModel):
             raise ValueError("fee must be set")
         if self.sum is None:
             raise ValueError("sum must be set")
+        if not self.exchange_trade_id:
+            raise ValueError("exchange_trade_id must be set")
         
         return self
 
@@ -127,9 +130,9 @@ class Order(BaseModel):
         if self.deal_id <= 0:
             raise ValueError(f"deal_id must be greater than 0, got {self.deal_id}")
         
-        # Validate that either price or trigger_price is set
-        if self.price is None and self.trigger_price is None:
-            raise ValueError("Either 'price' or 'trigger_price' must be set (not both None)")
+        # Validate that either price or trigger_price is set (except for MARKET orders)
+        if self.order_type != OrderType.MARKET and self.price is None and self.trigger_price is None:
+            raise ValueError("Either 'price' or 'trigger_price' must be set (not both None) for non-MARKET orders")
         
         # Validate volume for ACTIVE orders
         if self.status == OrderStatus.ACTIVE and self.volume <= 0:
@@ -1140,9 +1143,12 @@ class Broker(ABC):
         """
         Close all open positions.
         
-        Default implementation (stub). Should be overridden in subclasses if needed.
+        Iterates through all deals and closes those that are not closed yet
+        by calling close_deal() for each open deal.
         """
-        pass
+        for deal in self.deals:
+            if not deal.is_closed:
+                self.close_deal(deal.deal_id)
     
     def close_deal(self, deal_id: int) -> None:
         """
@@ -1161,7 +1167,7 @@ class Broker(ABC):
         # 2. Create market order to close position if quantity is not zero
         if deal.quantity != 0:
             side = OrderSide.SELL if deal.quantity > 0 else OrderSide.BUY
-            self._create_order(
+            order = self._create_order(
                 deal=deal,
                 order_type=OrderType.MARKET,
                 side=side,
@@ -1171,9 +1177,16 @@ class Broker(ABC):
                 trigger_price=None,
                 fraction=None
             )
+            # Activate order so it will be sent to exchange
+            order._set_sync_field('status', OrderStatus.ACTIVE)
+            order.update_modify_time(self)
             
         # 3. Process orders (cancel old ones and place closing order)
         self.order_processing()
+        
+        # 4. Check if deal should be closed (quantity == 0 after processing)
+        if deal.quantity == 0:
+            deal.is_closed = True
     
     def cancel_orders(self, order_ids: List[int]) -> List['Order']:
         """
@@ -1295,16 +1308,130 @@ class Broker(ABC):
     
     def check_trading_results(self) -> List[str]:
         """
-        Check trading results for consistency.
+        Check trading results for consistency and correctness.
+        
+        Validates:
+        - All deal_id correspond to their index (deal_id = index + 1)
+        - All trade_id are > 0 and unique
+        - All trade_id are in ascending order by time
+        - All deals are closed
+        - Recalculates and compares average buy/sell prices and profit
         
         Returns:
-            List of error messages (empty if no errors found)
-        
-        Default implementation (stub). Should be overridden in subclasses if needed.
+            List of error messages. Empty list means no errors.
         """
-        return []
+        if self.deals is None or not self.deals:
+            return []
+        
+        errors = []
+        
+        # Check 1: All deal_id correspond to index (deal_id = index + 1)
+        errors.extend([
+            f"Deal at index {i} has deal_id={deal.deal_id}, expected {i + 1}"
+            for i, deal in enumerate(self.deals)
+            if deal.deal_id != i + 1
+        ])
+        
+        # Collect all trades from all deals
+        all_trades = [trade for deal in self.deals for trade in deal.trades]
+        
+        if not all_trades:
+            return errors
+        
+        # Check 2: All trade_id > 0 and unique
+        trade_ids = [trade.trade_id for trade in all_trades]
+        if invalid := [tid for tid in trade_ids if tid <= 0]:
+            errors.append(f"Found trade_id <= 0: {invalid}")
+        
+        if len(trade_ids) != len(trade_id_set := set(trade_ids)):
+            errors.append(f"Duplicate trade_id found: {[tid for tid in trade_id_set if trade_ids.count(tid) > 1]}")
+        
+        # Check 2a: All exchange_trade_id are present and unique
+        exchange_trade_ids = [trade.exchange_trade_id for trade in all_trades]
+        if missing := [i for i, etid in enumerate(exchange_trade_ids) if not etid]:
+            errors.append(f"Found missing exchange_trade_id at trade indices: {missing}")
+        
+        if len(exchange_trade_ids) != len(exchange_trade_id_set := set(exchange_trade_ids)):
+            errors.append(f"Duplicate exchange_trade_id found: {[etid for etid in exchange_trade_id_set if exchange_trade_ids.count(etid) > 1]}")
+        
+        # Check 3: All trade_id in ascending order by time
+        if all_trades:
+            trades_by_time = sorted(all_trades, key=lambda t: t.time)
+            trade_ids_by_time = [t.trade_id for t in trades_by_time]
+            if trade_ids != trade_ids_by_time:
+                errors.append("trade_id are not in ascending order by time")
+        
+        # Check 4: All deals are closed
+        if unclosed := [deal.deal_id for deal in self.deals if not deal.is_closed]:
+            errors.append(f"Unclosed deals found: {unclosed}")
+        
+        # Check 5: Recalculate and compare average prices and profit
+        volume_tolerance = self.precision_amount / 10.0
+        price_tolerance = self._price_eps()  # precision_price / 10.0
+        
+        for deal in self.deals:
+            if not deal.trades:
+                continue
+            
+            buy_trades = [t for t in deal.trades if t.side == OrderSide.BUY]
+            sell_trades = [t for t in deal.trades if t.side == OrderSide.SELL]
+            
+            recalc_buy_quantity = sum(t.quantity for t in buy_trades)
+            recalc_buy_cost = sum(t.sum for t in buy_trades)
+            recalc_avg_buy_price = recalc_buy_cost / recalc_buy_quantity if recalc_buy_quantity > 0 else None
+            
+            recalc_sell_quantity = sum(t.quantity for t in sell_trades)
+            recalc_sell_proceeds = sum(t.sum for t in sell_trades)
+            recalc_avg_sell_price = recalc_sell_proceeds / recalc_sell_quantity if recalc_sell_quantity > 0 else None
+            
+            recalc_fee = sum(t.fee for t in deal.trades)
+            recalc_profit = (recalc_sell_proceeds - recalc_buy_cost - recalc_fee) if deal.is_closed else None
+            
+            # Compare volumes (use volume_tolerance)
+            volume_comparisons = [
+                ('buy_quantity', deal.buy_quantity, recalc_buy_quantity),
+                ('sell_quantity', deal.sell_quantity, recalc_sell_quantity),
+            ]
+            for field, stored, recalc in volume_comparisons:
+                if abs(stored - recalc) > volume_tolerance:
+                    errors.append(f"Deal {deal.deal_id}: {field} mismatch (stored={stored}, recalc={recalc})")
+            
+            # Compare prices/sums (use price_tolerance)
+            price_comparisons = [
+                ('buy_cost', deal.buy_cost, recalc_buy_cost),
+                ('sell_proceeds', deal.sell_proceeds, recalc_sell_proceeds),
+                ('fee', deal.fee, recalc_fee),
+            ]
+            for field, stored, recalc in price_comparisons:
+                if abs(stored - recalc) > price_tolerance:
+                    errors.append(f"Deal {deal.deal_id}: {field} mismatch (stored={stored}, recalc={recalc})")
+            
+            # Compare avg_buy_price
+            # Both None is OK (no buy trades), both not None should match, one None one not None is OK (normal case)
+            if recalc_avg_buy_price is not None and deal.avg_buy_price is not None:
+                if abs(recalc_avg_buy_price - deal.avg_buy_price) > price_tolerance:
+                    errors.append(f"Deal {deal.deal_id}: avg_buy_price mismatch (stored={deal.avg_buy_price}, recalc={recalc_avg_buy_price})")
+            # If one is None and other is not None - this is normal (deal might have only buy or only sell trades)
+            
+            # Compare avg_sell_price
+            if recalc_avg_sell_price is not None and deal.avg_sell_price is not None:
+                if abs(recalc_avg_sell_price - deal.avg_sell_price) > price_tolerance:
+                    errors.append(f"Deal {deal.deal_id}: avg_sell_price mismatch (stored={deal.avg_sell_price}, recalc={recalc_avg_sell_price})")
+            # If one is None and other is not None - this is normal (deal might have only buy or only sell trades)
+            
+            # Compare profit for closed deals
+            # If deal is closed, profit should be calculated and match
+            if deal.is_closed:
+                if recalc_profit is not None and deal.profit is not None:
+                    if abs(recalc_profit - deal.profit) > price_tolerance:
+                        errors.append(f"Deal {deal.deal_id}: profit mismatch (stored={deal.profit}, recalc={recalc_profit})")
+                elif recalc_profit != deal.profit:
+                    # One is None, other is not None - error for closed deal
+                    errors.append(f"Deal {deal.deal_id}: profit mismatch (stored={deal.profit}, recalc={recalc_profit})")
+        
+        return errors
     
-    def create_trade(self, order: Order, quantity: VOLUME_TYPE, price: PRICE_TYPE, fee: PRICE_TYPE) -> None:
+    def create_trade(self, order: Order, quantity: VOLUME_TYPE, price: PRICE_TYPE, fee: PRICE_TYPE, exchange_trade_id: str) -> None:
         """
         Create a trade from an executed order.
         
@@ -1316,6 +1443,7 @@ class Broker(ABC):
             quantity: Quantity executed in this trade
             price: Execution price
             fee: Fee for this trade
+            exchange_trade_id: Exchange trade ID from exchange API
         
         Raises:
             AssertionError: If quantity <= 0, price <= 0, fee < 0, or current_time is not set
@@ -1326,6 +1454,7 @@ class Broker(ABC):
         assert price > 0, f"price must be > 0, got {price}"
         assert fee >= 0, f"fee must be >= 0, got {fee}"
         assert self.current_time is not None, "current_time must be set before creating trade"
+        assert exchange_trade_id, "exchange_trade_id must be provided"
         
         # Generate trade_id (size of trades list + 1)
         trade_id = len(self.trades) + 1
@@ -1336,6 +1465,7 @@ class Broker(ABC):
         # Create Trade
         trade = Trade(
             trade_id=trade_id,
+            exchange_trade_id=exchange_trade_id,
             deal_id=order.deal_id,
             order_id=order.order_id,
             time=self.current_time,
@@ -1410,7 +1540,8 @@ class Broker(ABC):
                         order=order,
                         quantity=float(trade_data['amount']),
                         price=float(trade_data['price']),
-                        fee=float(trade_data['fee'])
+                        fee=float(trade_data['fee']),
+                        exchange_trade_id=trade_id
                     )
                 except Exception as e:
                     self.logging(f"Error creating trade for order {order.order_id}: {str(e)}", level="error")
