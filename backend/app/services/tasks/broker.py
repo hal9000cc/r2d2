@@ -36,12 +36,12 @@ class Trade(BaseModel):
     """
     Represents a single trade (buy or sell operation).
     
-    Immutable class - once created, fields cannot be modified.
+    Note: deal_id may be assigned after creation.
     """
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
-        frozen=True  # Make class immutable
+        frozen=False  # Allow field modifications (deal_id may be set after creation)
     )
 
     trade_id: int = Field(gt=0, description="Trade ID, must be greater than 0")
@@ -673,6 +673,10 @@ class Broker(ABC):
         self._last_trade_time: Optional[int] = None       # Timestamp of the last processed trade
         
         self.date_start: Optional[np.datetime64] = None
+        
+        # Wait intervals for order processing and bar fetching
+        self.bar_wait_interval: float = BAR_WAIT_INTERVAL
+        self.order_wait_interval: float = ORDER_WAIT_INTERVAL
         
         self.stats = TradingStats(
             initial_equity_usd=0.0,
@@ -1519,7 +1523,8 @@ class Broker(ABC):
                 return None
             
             if status == BarStatus.WAITING:
-                time.sleep(BAR_WAIT_INTERVAL)
+                if self.bar_wait_interval > 0:
+                    time.sleep(self.bar_wait_interval)
                 continue
             
             # status == BarStatus.RECEIVED
@@ -1538,7 +1543,8 @@ class Broker(ABC):
             if placed_count == 0:
                 break
                 
-            time.sleep(ORDER_WAIT_INTERVAL)
+            if self.order_wait_interval > 0:
+                time.sleep(self.order_wait_interval)
 
     def run(self, save_results: bool = True):
         """
@@ -1603,8 +1609,7 @@ class Broker(ABC):
             current_time_real = time.time()
             if hasattr(self, 'results_save_period'):
                 if current_time_real - last_update_time >= self.results_save_period:
-                    if hasattr(self, 'update_state'):
-                        self.update_state(results)
+                    self.update_state(results)
                     last_update_time = current_time_real
                     state_update_period = min(state_update_period + 1.0, self.results_save_period)
             

@@ -6,7 +6,7 @@ from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
-from app.core.datetime_utils import parse_utc_datetime
+from app.core.datetime_utils import parse_utc_datetime, parse_utc_datetime64
 from app.core.logger import get_logger
 from app.services.tasks.tasks import Task
 
@@ -463,6 +463,17 @@ class BrokerBacktesting(Broker):
         
         Called at the start of run() method to set up broker state.
         """
+        # Parse date range for progress calculation
+        try:
+            self.date_start = parse_utc_datetime64(self.task.dateStart)
+            self.date_end = parse_utc_datetime64(self.task.dateEnd)
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse dates: {e}")
+        
+        # Disable wait intervals for backtesting (everything is synchronous)
+        self.bar_wait_interval = 0.0
+        self.order_wait_interval = 0.0
+            
         # Counter for generating unique exchange order IDs
         self._exchange_order_id_counter = 0
         self._trade_id_counter = 0
@@ -485,6 +496,10 @@ class BrokerBacktesting(Broker):
         
         # Market orders waiting for execution
         self.market_orders: List[OrderExchange] = []
+        
+        # Reset equity
+        # self.equity_usd = 0.0
+        # self.equity_symbol = 0.0
 
     def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
         """
