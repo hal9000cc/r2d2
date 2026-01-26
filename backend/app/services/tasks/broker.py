@@ -1518,12 +1518,8 @@ class Broker(ABC):
         Fetches trades since last processed time, filters duplicates,
         and creates internal Trade objects for matched orders.
         """
-        # Fetch trades from exchange
-        try:
-            trades = self.exchange_fetch_my_trades(self.symbol, since=self._last_trade_time)
-        except Exception as e:
-            self.logging(f"Error fetching trades: {str(e)}", level="error")
-            return
+
+        trades = self.exchange_fetch_my_trades(self.symbol, since=self._last_trade_time)
             
         for trade_data in trades:
 

@@ -75,6 +75,10 @@ class BrokerBacktesting(Broker):
         self.equity_usd: PRICE_TYPE = 0.0
         self.equity_symbol: VOLUME_TYPE = 0.0
         
+        # Current bar prices for stop order processing
+        self.bar_high: Optional[PRICE_TYPE] = None
+        self.bar_low: Optional[PRICE_TYPE] = None
+        
     def progress(self) -> float:
         """
         Calculate current progress percentage for backtesting.
@@ -142,12 +146,12 @@ class BrokerBacktesting(Broker):
             if price is None:
                 raise ValueError(f"Price (trigger price) must be set for STOP order {exchange_order_id}")
                 
-            if side == OrderSide.BUY:
-                # Long stop orders
+            if side == OrderSide.SELL:
+                # Long stop orders (SELL stop for LONG deals)
                 self.long_stop_order_ids = np.append(self.long_stop_order_ids, exchange_order_id)
                 self.long_stop_trigger_prices = np.append(self.long_stop_trigger_prices, price)
             else:
-                # Short stop orders
+                # Short stop orders (BUY stop for SHORT deals)
                 self.short_stop_order_ids = np.append(self.short_stop_order_ids, exchange_order_id)
                 self.short_stop_trigger_prices = np.append(self.short_stop_trigger_prices, price)
                 
@@ -287,12 +291,18 @@ class BrokerBacktesting(Broker):
         
         return trades
 
-    def _process_stop_orders(self, current_price: float, current_time: np.datetime64) -> List[Dict]:
-        """Process stop orders execution (vectorized)."""
+    def _process_stop_orders(self, bar_high: float, bar_low: float, current_time: np.datetime64) -> List[Dict]:
+        """Process stop orders execution (vectorized).
+        
+        Args:
+            bar_high: High price of current bar (for SHORT stop orders)
+            bar_low: Low price of current bar (for LONG stop orders)
+            current_time: Current timestamp
+        """
         trades = []
         
-        # Long Stop (BUY): current_price >= trigger_price
-        long_stop_mask = self.long_stop_trigger_prices <= current_price
+        # Long Stop (SELL for LONG deal): bar_low <= trigger_price (use low of bar)
+        long_stop_mask = self.long_stop_trigger_prices >= bar_low
         if np.any(long_stop_mask):
             triggered_ids = self.long_stop_order_ids[long_stop_mask]
             triggered_prices = self.long_stop_trigger_prices[long_stop_mask]
@@ -305,8 +315,8 @@ class BrokerBacktesting(Broker):
                 order = self.exchange_orders[order_id]
                 trigger_price = triggered_prices[i]
                 
-                # Exec price = trigger_price + slippage (for BUY)
-                exec_price = trigger_price + self.slippage
+                # Exec price = trigger_price - slippage (for SELL, worst case)
+                exec_price = trigger_price - self.slippage
                 
                 fee = order.amount * exec_price * self.fee_taker
                 
@@ -324,8 +334,8 @@ class BrokerBacktesting(Broker):
             self.long_stop_order_ids = self.long_stop_order_ids[~long_stop_mask]
             self.long_stop_trigger_prices = self.long_stop_trigger_prices[~long_stop_mask]
             
-        # Short Stop (SELL): current_price <= trigger_price
-        short_stop_mask = self.short_stop_trigger_prices >= current_price
+        # Short Stop (BUY for SHORT deal): bar_high >= trigger_price (use high of bar)
+        short_stop_mask = self.short_stop_trigger_prices <= bar_high
         if np.any(short_stop_mask):
             triggered_ids = self.short_stop_order_ids[short_stop_mask]
             triggered_prices = self.short_stop_trigger_prices[short_stop_mask]
@@ -338,8 +348,8 @@ class BrokerBacktesting(Broker):
                 order = self.exchange_orders[order_id]
                 trigger_price = triggered_prices[i]
                 
-                # Exec price = trigger_price - slippage (for SELL)
-                exec_price = trigger_price - self.slippage
+                # Exec price = trigger_price + slippage (for BUY, worst case)
+                exec_price = trigger_price + self.slippage
                 
                 fee = order.amount * exec_price * self.fee_taker
                 
@@ -359,12 +369,18 @@ class BrokerBacktesting(Broker):
             
         return trades
 
-    def _process_limit_orders(self, current_price: float, current_time: np.datetime64) -> List[Dict]:
-        """Process limit orders execution (vectorized)."""
+    def _process_limit_orders(self, bar_high: float, bar_low: float, current_time: np.datetime64) -> List[Dict]:
+        """Process limit orders execution (vectorized).
+        
+        Args:
+            bar_high: High price of current bar (for SELL limit orders)
+            bar_low: Low price of current bar (for BUY limit orders)
+            current_time: Current timestamp
+        """
         trades = []
         
-        # Long Limit (BUY): current_price < order_price (No equality)
-        long_limit_mask = self.long_order_prices > current_price
+        # Long Limit (BUY): bar_low < order_price (No equality, use low of bar)
+        long_limit_mask = self.long_order_prices > bar_low
         if np.any(long_limit_mask):
             triggered_ids = self.long_order_ids[long_limit_mask]
             triggered_prices = self.long_order_prices[long_limit_mask]
@@ -396,8 +412,8 @@ class BrokerBacktesting(Broker):
             self.long_order_ids = self.long_order_ids[~long_limit_mask]
             self.long_order_prices = self.long_order_prices[~long_limit_mask]
             
-        # Short Limit (SELL): current_price > order_price (No equality)
-        short_limit_mask = self.short_order_prices < current_price
+        # Short Limit (SELL): bar_high > order_price (No equality, use high of bar)
+        short_limit_mask = self.short_order_prices < bar_high
         if np.any(short_limit_mask):
             triggered_ids = self.short_order_ids[short_limit_mask]
             triggered_prices = self.short_order_prices[short_limit_mask]
@@ -436,7 +452,7 @@ class BrokerBacktesting(Broker):
         Process orders execution based on current price (matching engine).
         
         Args:
-            current_price: Current market price
+            current_price: Current market price (close of bar)
             current_time: Current timestamp
             
         Returns:
@@ -444,10 +460,17 @@ class BrokerBacktesting(Broker):
         """
         trades = []
         
+        # Get bar high and low for stop order processing
+        if self.bar_high is None or self.bar_low is None:
+            return []
+        
+        bar_high = self.bar_high
+        bar_low = self.bar_low
+        
         # Process all order types
         trades.extend(self._process_market_orders(current_price, current_time))
-        trades.extend(self._process_stop_orders(current_price, current_time))
-        trades.extend(self._process_limit_orders(current_price, current_time))
+        trades.extend(self._process_stop_orders(bar_high, bar_low, current_time))
+        trades.extend(self._process_limit_orders(bar_high, bar_low, current_time))
         
         # Remove executed orders from exchange_orders dictionary
         for trade in trades:
@@ -578,6 +601,10 @@ class BrokerBacktesting(Broker):
         # Get current time and price
         current_time = all_time[self.i_time]
         current_price = all_close[self.i_time]
+        
+        # Update current bar high and low for stop order processing
+        self.bar_high = quotes_data['high'][self.i_time]
+        self.bar_low = quotes_data['low'][self.i_time]
         
         # Return slices up to current index (inclusive) and current time/price
         data_tuple = (
