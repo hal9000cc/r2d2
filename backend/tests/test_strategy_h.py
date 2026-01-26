@@ -102,7 +102,7 @@ class TestBuySltpInterleavedStopsBetweenEntries:
         assert len(broker.trades) == 6, f"Expected 6 trades total (3 entries + 3 stops), got {len(broker.trades)}"
         
         # Check final state: deal should be closed (all stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -204,7 +204,7 @@ class TestSellSltpInterleavedStopsBetweenEntries:
         assert len(broker.trades) == 6, f"Expected 6 trades total (3 entries + 3 stops), got {len(broker.trades)}"
         
         # Check final state: deal should be closed (all stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -307,7 +307,7 @@ class TestBuySltpInterleavedStopsBetweenEntriesMultiple:
         assert len(broker.trades) == 7, f"Expected 7 trades total (4 entries + 3 stops), got {len(broker.trades)}"
         
         # Check final state: deal should be closed (all stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -410,7 +410,7 @@ class TestSellSltpInterleavedStopsBetweenEntriesMultiple:
         assert len(broker.trades) == 7, f"Expected 7 trades total (4 entries + 3 stops), got {len(broker.trades)}"
         
         # Check final state: deal should be closed (all stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -517,7 +517,7 @@ class TestBuySltpInterleavedTakesBetweenEntries:
         assert len(broker.trades) == 6, f"Expected 6 trades total (3 entries + 3 takes), got {len(broker.trades)}"
         
         # Check final state: deal should be closed (all takes triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -623,7 +623,7 @@ class TestSellSltpInterleavedTakesBetweenEntries:
         assert len(broker.trades) == 6, f"Expected 6 trades total (3 entries + 3 takes), got {len(broker.trades)}"
         
         # Check final state: deal should be closed (all takes triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"

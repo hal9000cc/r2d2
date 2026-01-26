@@ -566,8 +566,6 @@ class BrokerBacktesting(Broker):
             - status: BarStatus (RECEIVED, WAITING, FINISHED)
             - data_tuple: Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price) if status is RECEIVED, else None
         """
-        # Increment time index
-        self.i_time += 1
         
         # Extract arrays from quotes_data
         all_time = quotes_data['time']
@@ -592,5 +590,8 @@ class BrokerBacktesting(Broker):
             current_time,
             current_price
         )
+
+        self.i_time += 1
+        
         return (BarStatus.RECEIVED, data_tuple)
     

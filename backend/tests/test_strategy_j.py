@@ -99,7 +99,7 @@ class TestModifyDealOrderModification:
         assert len(modify_result.error_messages) == 0, \
             f"modify_deal should not have errors, got: {modify_result.error_messages}"
         
-        deal = broker.get_deal_by_id(deal_id)
+        deal = broker.get_deal(deal_id)
         assert deal is not None, "Deal should exist"
         take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
         new_take = [o for o in take_orders if o.price == 115.0]
@@ -161,7 +161,7 @@ class TestModifyDealOrderModification:
         assert len(collected_data) == 3
         assert len(collected_data[0]['method_result'].error_messages) == 0
         assert len(collected_data[2]['method_result'].error_messages) == 0
-        deal = broker.get_deal_by_id(deal_id)
+        deal = broker.get_deal(deal_id)
         take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
         new_take = [o for o in take_orders if o.price == 110.0]
         assert len(new_take) > 0, "Should have new take profit order at 110.0"
@@ -222,7 +222,7 @@ class TestModifyDealOrderModification:
         assert len(collected_data) == 3
         assert len(collected_data[0]['method_result'].error_messages) == 0
         assert len(collected_data[2]['method_result'].error_messages) == 0
-        deal = broker.get_deal_by_id(deal_id)
+        deal = broker.get_deal(deal_id)
         stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
         new_stop = [o for o in stop_orders if o.trigger_price == 85.0]
         assert len(new_stop) > 0, "Should have new stop loss order at 85.0"
@@ -283,7 +283,7 @@ class TestModifyDealOrderModification:
         assert len(collected_data) == 3
         assert len(collected_data[0]['method_result'].error_messages) == 0
         assert len(collected_data[2]['method_result'].error_messages) == 0
-        deal = broker.get_deal_by_id(deal_id)
+        deal = broker.get_deal(deal_id)
         stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
         new_stop = [o for o in stop_orders if o.trigger_price == 90.0]
         assert len(new_stop) > 0, "Should have new stop loss order at 90.0"
@@ -344,7 +344,7 @@ class TestModifyDealOrderModification:
         assert len(collected_data) == 3
         assert len(collected_data[0]['method_result'].error_messages) == 0
         assert len(collected_data[2]['method_result'].error_messages) == 0
-        deal = broker.get_deal_by_id(deal_id)
+        deal = broker.get_deal(deal_id)
         take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
         new_take = [o for o in take_orders if o.price == 85.0]
         assert len(new_take) > 0, "Should have new take profit order at 85.0"
@@ -405,7 +405,7 @@ class TestModifyDealOrderModification:
         assert len(collected_data) == 3
         assert len(collected_data[0]['method_result'].error_messages) == 0
         assert len(collected_data[2]['method_result'].error_messages) == 0
-        deal = broker.get_deal_by_id(deal_id)
+        deal = broker.get_deal(deal_id)
         take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
         new_take = [o for o in take_orders if o.price == 90.0]
         assert len(new_take) > 0, "Should have new take profit order at 90.0"
@@ -466,7 +466,7 @@ class TestModifyDealOrderModification:
         assert len(collected_data) == 3
         assert len(collected_data[0]['method_result'].error_messages) == 0
         assert len(collected_data[2]['method_result'].error_messages) == 0
-        deal = broker.get_deal_by_id(deal_id)
+        deal = broker.get_deal(deal_id)
         stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
         new_stop = [o for o in stop_orders if o.trigger_price == 115.0]
         assert len(new_stop) > 0, "Should have new stop loss order at 115.0"
@@ -527,7 +527,7 @@ class TestModifyDealOrderModification:
         assert len(collected_data) == 3
         assert len(collected_data[0]['method_result'].error_messages) == 0
         assert len(collected_data[2]['method_result'].error_messages) == 0
-        deal = broker.get_deal_by_id(deal_id)
+        deal = broker.get_deal(deal_id)
         stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
         new_stop = [o for o in stop_orders if o.trigger_price == 110.0]
         assert len(new_stop) > 0, "Should have new stop loss order at 110.0"

@@ -118,14 +118,14 @@ class TestBuySltpOneEntryOneStop:
         assert collected_data[1]['trades_count'] == 2, "Both entry and stop should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that both entry and stop orders were executed
@@ -228,14 +228,14 @@ class TestBuySltpOneEntryOneStop:
         assert collected_data[1]['trades_count'] == 2, "Stop should trigger on bar 1"
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that stop order was executed
@@ -341,14 +341,14 @@ class TestSellSltpOneEntryOneStop:
         assert collected_data[1]['trades_count'] == 2, "Both entry and stop should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that both entry and stop orders were executed
@@ -451,14 +451,14 @@ class TestSellSltpOneEntryOneStop:
         assert collected_data[1]['trades_count'] == 2, "Stop should trigger on bar 1"
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that stop order was executed
@@ -569,14 +569,14 @@ class TestBuySltpOneEntryMultipleStops:
         assert collected_data[1]['trades_count'] == 3, "Entry and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry and both stop orders were executed
@@ -696,7 +696,7 @@ class TestBuySltpOneEntryMultipleStops:
         assert collected_data[1]['trades_count'] == 3, "Entry and first two stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (two stops + auto-close)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert len(broker.trades) == 4, f"Expected 4 trades total (entry + stop1 + stop2 + auto-close), got {len(broker.trades)}"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
@@ -704,7 +704,7 @@ class TestBuySltpOneEntryMultipleStops:
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry and first two stop orders were executed
@@ -812,14 +812,14 @@ class TestBuySltpOneEntryMultipleStops:
         assert collected_data[1]['trades_count'] == 3, "Both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that both stop orders were executed
@@ -930,14 +930,14 @@ class TestSellSltpOneEntryMultipleStops:
         assert collected_data[1]['trades_count'] == 3, "Entry and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry and both stop orders were executed
@@ -1057,7 +1057,7 @@ class TestSellSltpOneEntryMultipleStops:
         assert collected_data[1]['trades_count'] == 3, "Entry and first two stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (two stops + auto-close)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert len(broker.trades) == 4, f"Expected 4 trades total (entry + stop1 + stop2 + auto-close), got {len(broker.trades)}"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
@@ -1065,7 +1065,7 @@ class TestSellSltpOneEntryMultipleStops:
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry and first two stop orders were executed
@@ -1173,14 +1173,14 @@ class TestSellSltpOneEntryMultipleStops:
         assert collected_data[1]['trades_count'] == 3, "Both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that both stop orders were executed
@@ -1296,14 +1296,14 @@ class TestBuySltpMultipleEntriesAllStops:
         assert collected_data[1]['trades_count'] == 4, "Both entries and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that both entry orders and both stop orders were executed
@@ -1433,14 +1433,14 @@ class TestBuySltpMultipleEntriesAllStops:
         assert collected_data[1]['trades_count'] == 5, "All three entries and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that all three entry orders and both stop orders were executed
@@ -1561,14 +1561,14 @@ class TestSellSltpMultipleEntriesAllStops:
         assert collected_data[1]['trades_count'] == 4, "Both entries and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that both entry orders and both stop orders were executed
@@ -1698,14 +1698,14 @@ class TestSellSltpMultipleEntriesAllStops:
         assert collected_data[1]['trades_count'] == 5, "All three entries and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that all three entry orders and both stop orders were executed
@@ -1838,7 +1838,7 @@ class TestBuySltpMultipleEntriesPartStops:
         assert collected_data[1]['trades_count'] == 4, "Both entries and first two stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (auto-closed at end)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -1848,7 +1848,7 @@ class TestBuySltpMultipleEntriesPartStops:
         assert len(broker.trades) == 5, f"Expected 5 trades total (entry1 + entry2 + stop1 + stop2 + auto_close), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that both entry orders were executed
@@ -1988,7 +1988,7 @@ class TestBuySltpMultipleEntriesPartStops:
         assert collected_data[1]['trades_count'] == 4, "First two entries and first two stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (auto-closed at end)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -1998,7 +1998,7 @@ class TestBuySltpMultipleEntriesPartStops:
         assert len(broker.trades) == 5, f"Expected 5 trades total (entry1 + entry2 + stop1 + stop2 + auto_close), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that first two entry orders were executed, third remains active
@@ -2134,7 +2134,7 @@ class TestSellSltpMultipleEntriesPartStops:
         assert collected_data[1]['trades_count'] == 4, "Both entries and first two stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (auto-closed at end)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -2144,7 +2144,7 @@ class TestSellSltpMultipleEntriesPartStops:
         assert len(broker.trades) == 5, f"Expected 5 trades total (entry1 + entry2 + stop1 + stop2 + auto_close), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that both entry orders were executed
@@ -2292,7 +2292,7 @@ class TestSellSltpMultipleEntriesPartStops:
         assert collected_data[1]['trades_count'] == 5, "All three entries and first and second stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (auto-closed at end)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -2302,7 +2302,7 @@ class TestSellSltpMultipleEntriesPartStops:
         assert len(broker.trades) == 6, f"Expected 6 trades total (entry1 + entry2 + entry3 + stop1 + stop2 + auto_close), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that all three entry orders were executed

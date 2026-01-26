@@ -271,7 +271,8 @@ def test_task():
         price_step=0.1,
         slippage_in_steps=1.0,
         precision_amount=0.1,  # Volume precision
-        precision_price=0.01,  # Price precision
+        precision_price=0.01,
+        history_size=0,  # Price precision
         parameters={}
     )
     # Set isRunning to True so broker doesn't think task was stopped

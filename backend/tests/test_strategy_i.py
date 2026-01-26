@@ -986,7 +986,7 @@ class TestModifyDealBasicModification:
         assert take_orders[0].price == 115.0, "New take profit price should be 115.0"
         
         # Verify deal exists and was closed after backtesting (close_deals is called at the end)
-        deal = broker.get_deal_by_id(deal_id)
+        deal = broker.get_deal(deal_id)
         assert deal is not None, "Deal should exist"
         # After broker.run() completes, all open deals are closed, so quantity should be 0
         assert deal.quantity == 0.0, f"Deal should be closed after backtesting (quantity=0.0), got {deal.quantity}"
@@ -1124,7 +1124,7 @@ class TestModifyDealEdgeCases:
         assert take_orders[0].price == 115.0, "Take profit price should be updated to 115.0"
         
         # Verify deal exists and was closed after backtesting (close_deals is called at the end)
-        deal = broker.get_deal_by_id(deal_id)
+        deal = broker.get_deal(deal_id)
         assert deal is not None, "Deal should exist"
         # After broker.run() completes, all open deals are closed, so quantity should be 0
         assert deal.quantity == 0.0, f"Deal should be closed after backtesting (quantity=0.0), got {deal.quantity}"
@@ -1213,7 +1213,7 @@ class TestNoOrderExecution:
         assert len(broker.trades) == 0, f"Expected 0 trades (no orders executed), got {len(broker.trades)}"
         
         # Check final state: deal should exist but be closed by autoclosure at the end
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         # After broker.run() completes, all open deals are closed, so quantity should be 0
         assert deal.quantity == 0.0, f"Deal should be closed after backtesting (quantity=0.0), got {deal.quantity}"
@@ -1313,7 +1313,7 @@ class TestNoOrderExecution:
         assert len(broker.trades) == 0, f"Expected 0 trades (no orders executed), got {len(broker.trades)}"
         
         # Check final state: deal should exist but be closed by autoclosure at the end
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         # After broker.run() completes, all open deals are closed, so quantity should be 0
         assert deal.quantity == 0.0, f"Deal should be closed after backtesting (quantity=0.0), got {deal.quantity}"

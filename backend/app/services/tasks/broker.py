@@ -300,34 +300,26 @@ class Deal(BaseModel):
         else:
             self.profit = None
         
-        # Check for active entry orders (OrderGroup.NONE) and update volumes or close deal
-        has_active_entry_orders = any(
-            order.status in (OrderStatus.ACTIVE, OrderStatus.NEW) 
+        # Update order volumes if there is a position or active entry orders
+        needs_update = self.quantity != 0 or any(
+            order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
             and order.order_group == OrderGroup.NONE
             for order in self.orders
         )
         
-        if has_active_entry_orders:
-            # Update order volumes based on current deal state
+        if needs_update:
             self.update_order_volumes(broker)
-        else:
-            # No active entry orders - check if deal should be closed
-            if self.quantity == 0:
-                # Deactivate all ACTIVE and NEW orders before closing deal
-                has_errors = False
-                
-                for order in self.orders:
-                    if order.status == OrderStatus.ACTIVE:
-                        # Cancel active orders
-                        order._set_sync_field('status', OrderStatus.CANCELED)
-                        order.update_modify_time(broker)
-                    elif order.status == OrderStatus.NEW:
-                        # Simply mark new orders as canceled
-                        order._set_sync_field('status', OrderStatus.CANCELED)
-                        order.update_modify_time(broker)
-                
-                # Mark deal as closed
-                self.is_closed = True
+        elif self.quantity == 0:
+            # Close the deal: no position and no active entry orders
+            for order in self.orders:
+                if order.status == OrderStatus.ACTIVE:
+                    order._set_sync_field('status', OrderStatus.CANCELED)
+                    order.update_modify_time(broker)
+                elif order.status == OrderStatus.NEW:
+                    order._set_sync_field('status', OrderStatus.CANCELED)
+                    order.update_modify_time(broker)
+            
+            self.is_closed = True
 
     def unrealized_profit(self, broker: 'Broker') -> Optional[PRICE_TYPE]:
         """
@@ -543,8 +535,13 @@ class Deal(BaseModel):
         """
         # Collect entry and stop orders with sort keys in one pass
         # For entry orders: use price, for stop orders: use trigger_price
+        # Market orders (price is None) are not added to orders_with_keys,
+        # but their volume is added to sim_volume immediately
         orders_with_keys = []
         has_stop_orders = False
+        
+        # Initialize simulated volume with current deal quantity
+        sim_volume = abs(self.quantity)
         
         for order in self.orders:
             if order.status not in (OrderStatus.ACTIVE, OrderStatus.NEW):
@@ -552,8 +549,13 @@ class Deal(BaseModel):
             
             if order.order_group == OrderGroup.NONE:
                 # Entry order
-                assert order.price is not None, f"Entry order {order.order_id} must have price set"
-                orders_with_keys.append((order.price, order, 'entry'))
+                if order.order_type == OrderType.MARKET:
+                    # Market order: add volume to sim_volume immediately, don't add to sort list
+                    sim_volume += order.volume
+                else:
+                    # Limit order: must have price, add to sort list
+                    assert order.price is not None, f"Entry limit order {order.order_id} must have price set"
+                    orders_with_keys.append((order.price, order, 'entry'))
             elif order.order_group == OrderGroup.STOP_LOSS:
                 # Stop loss order
                 assert order.trigger_price is not None, f"Stop order {order.order_id} must have trigger_price set"
@@ -566,9 +568,6 @@ class Deal(BaseModel):
         # Determine sort direction: for LONG descending, for SHORT ascending
         reverse = (self.type == DealType.LONG)
         orders_with_keys.sort(key=lambda x: x[0], reverse=reverse)
-        
-        # Initialize simulated volume with current deal quantity
-        sim_volume = abs(self.quantity)
         
         # Process each order
         for sort_key, order, order_type in orders_with_keys:
@@ -590,6 +589,10 @@ class Deal(BaseModel):
         
         Sorts take profit orders and calculates volumes based on simulated volume.
         """
+
+        if self.quantity == 0:
+            return
+
         # Get take profit orders (ACTIVE or NEW)
         take_orders = [
             order for order in self.orders
@@ -621,6 +624,10 @@ class Deal(BaseModel):
             order.update_modify_time(broker)
             # Subtract volume from sim_volume
             sim_volume -= order.volume
+            
+            # Activate order if it's in NEW status
+            if order.status == OrderStatus.NEW:
+                order._set_sync_field('status', OrderStatus.ACTIVE)
 
 
 class Broker(ABC):
@@ -1744,7 +1751,7 @@ class Broker(ABC):
                     last_update_time = current_time_real
                     state_update_period = min(state_update_period + 1.0, self.results_save_period)
             
-            self.i_time += 1
+            #self.i_time += 1
         
         self.close_deals()
         

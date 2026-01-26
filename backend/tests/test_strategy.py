@@ -532,7 +532,7 @@ class TestBuySltpBasicPlacement:
         # Bar 2 has low around 90.0 (with spread), so stop should trigger
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         # Deal should be closed after stop triggers
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
@@ -540,7 +540,7 @@ class TestBuySltpBasicPlacement:
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation from comment above
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_buy_sltp_limit_one_stop_one_take(self, test_task):
@@ -629,7 +629,7 @@ class TestBuySltpBasicPlacement:
         
         # Check that entry executed on bar 2 (price 95.0)
         # Entry limit at 95.0 should execute when price reaches 95.0
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         # Entry should have executed, so deal should have quantity > 0 initially
         # Then stop should trigger, closing the deal
@@ -638,7 +638,7 @@ class TestBuySltpBasicPlacement:
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation from comment above
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
 
 
@@ -738,14 +738,14 @@ class TestBuySltpBasicPlacement:
         assert len(exit_orders) == 2, "Should have two exit orders (stop + take profit)"
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation from comment above
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_buy_sltp_market_only_stops(self, test_task):
@@ -837,14 +837,14 @@ class TestBuySltpBasicPlacement:
         assert exit_orders[0].trigger_price == 90.0
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation from comment above
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_buy_sltp_market_only_takes(self, test_task):
@@ -936,14 +936,14 @@ class TestBuySltpBasicPlacement:
         assert exit_orders[0].price == 110.0
         
         # Check final state: deal should be closed (take profit triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0, "Deal should be closed after take profit triggers"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation from comment above
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
 
 
@@ -992,10 +992,10 @@ class TestBuySltpBasicPlacement:
         assert method_result is not None
         assert len(method_result.error_messages) == 0
         assert len(method_result.orders) == 5
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
-        assert abs(deal.profit - expected_profit) < 0.01, f"Expected profit {expected_profit}, got {deal.profit}"
+        assert abs(deal.profit - expected_profit) < 1e-6, f"Expected profit {expected_profit}, got {deal.profit}"
 
     def test_buy_sltp_market_multiple_stops_custom_takes_custom(self, test_task):
         """Test A2.2: Market entry, multiple stops (custom fractions), multiple takes (custom fractions)."""
@@ -1081,13 +1081,13 @@ class TestBuySltpBasicPlacement:
         assert len(method_result.orders) == 5
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_buy_sltp_limit_multiple_stops_takes(self, test_task):
@@ -1172,13 +1172,13 @@ class TestBuySltpBasicPlacement:
         assert len(method_result.orders) == 5
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_buy_sltp_multiple_limits_multiple_stops_takes(self, test_task):
@@ -1267,13 +1267,13 @@ class TestBuySltpBasicPlacement:
         assert len(method_result.orders) == 6
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_buy_sltp_limit_only_stops(self, test_task):
@@ -1349,13 +1349,13 @@ class TestBuySltpBasicPlacement:
         assert len(method_result.orders) == 2
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_buy_sltp_limit_only_takes(self, test_task):
@@ -1431,13 +1431,13 @@ class TestBuySltpBasicPlacement:
         assert len(method_result.orders) == 2
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_buy_sltp_multiple_limits_only_stops(self, test_task):
@@ -1521,13 +1521,13 @@ class TestBuySltpBasicPlacement:
         assert len(method_result.orders) == 3
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_buy_sltp_multiple_limits_only_takes(self, test_task):
@@ -1611,13 +1611,13 @@ class TestBuySltpBasicPlacement:
         assert len(method_result.orders) == 3
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
 
 
@@ -1731,14 +1731,14 @@ class TestSellSltpBasicPlacement:
         assert take_orders[0].price == 90.0, "Take profit price should be 90.0"
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation from comment above
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_sell_sltp_limit_one_stop_one_take(self, test_task):
@@ -1825,14 +1825,14 @@ class TestSellSltpBasicPlacement:
         assert len(entry_orders) == 1
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation from comment above
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_sell_sltp_multiple_limits_one_stop_one_take(self, test_task):
@@ -1931,14 +1931,14 @@ class TestSellSltpBasicPlacement:
         assert len(exit_orders) == 2, "Should have two exit orders (stop + take profit)"
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation from comment above
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_sell_sltp_market_only_stops(self, test_task):
@@ -2032,14 +2032,14 @@ class TestSellSltpBasicPlacement:
         assert exit_orders[0].trigger_price == 110.0
         
         # Check final state: deal should be closed (stop triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0, "Deal should be closed after stop triggers"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation from comment above
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_sell_sltp_market_only_takes(self, test_task):
@@ -2133,14 +2133,14 @@ class TestSellSltpBasicPlacement:
         assert exit_orders[0].price == 90.0
         
         # Check final state: deal should be closed (take profit triggered)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0, "Deal should be closed after take profit triggers"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
         # Check actual profit matches expected calculation from comment above
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
 
 
@@ -2187,9 +2187,9 @@ class TestSellSltpBasicPlacement:
         method_result = collected_data[0]['method_result']
         assert method_result is not None and len(method_result.error_messages) == 0
         assert len(method_result.orders) == 5
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None and deal.quantity == 0.0
-        assert abs(deal.profit - expected_profit) < 0.01, f"Expected profit {expected_profit}, got {deal.profit}"
+        assert abs(deal.profit - expected_profit) < 1e-6, f"Expected profit {expected_profit}, got {deal.profit}"
 
     def test_sell_sltp_market_multiple_stops_custom_takes_custom(self, test_task):
         """Test A2.2: Market entry, multiple stops (custom fractions), multiple takes (custom fractions)."""
@@ -2275,13 +2275,13 @@ class TestSellSltpBasicPlacement:
         assert len(method_result.orders) == 5
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_sell_sltp_limit_multiple_stops_takes(self, test_task):
@@ -2366,13 +2366,13 @@ class TestSellSltpBasicPlacement:
         assert len(method_result.orders) == 5
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_sell_sltp_multiple_limits_multiple_stops_takes(self, test_task):
@@ -2461,13 +2461,13 @@ class TestSellSltpBasicPlacement:
         assert len(method_result.orders) == 6
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_sell_sltp_limit_only_stops(self, test_task):
@@ -2543,13 +2543,13 @@ class TestSellSltpBasicPlacement:
         assert len(method_result.orders) == 2
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_sell_sltp_limit_only_takes(self, test_task):
@@ -2625,13 +2625,13 @@ class TestSellSltpBasicPlacement:
         assert len(method_result.orders) == 2
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_sell_sltp_multiple_limits_only_stops(self, test_task):
@@ -2715,13 +2715,13 @@ class TestSellSltpBasicPlacement:
         assert len(method_result.orders) == 3
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
     
     def test_sell_sltp_multiple_limits_only_takes(self, test_task):
@@ -2805,13 +2805,13 @@ class TestSellSltpBasicPlacement:
         assert len(method_result.orders) == 3
         
         # Check final state
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None
         assert deal.quantity == 0.0
         assert deal.is_closed
         assert deal.profit is not None
         
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
 
 

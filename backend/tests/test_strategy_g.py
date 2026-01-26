@@ -119,7 +119,7 @@ class TestBuySltpFullPositionClosure:
         assert collected_data[2]['trades_count'] == 3, "No execution on bar 2"
         
         # Check final state: deal should be fully closed
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -129,7 +129,7 @@ class TestBuySltpFullPositionClosure:
         assert len(broker.trades) == 3, f"Expected 3 trades total (entry + stop1 + stop2), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry order was executed
@@ -244,7 +244,7 @@ class TestBuySltpFullPositionClosure:
         assert collected_data[2]['trades_count'] == 3, "No execution on bar 2"
         
         # Check final state: deal should be fully closed
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -254,7 +254,7 @@ class TestBuySltpFullPositionClosure:
         assert len(broker.trades) == 3, f"Expected 3 trades total (entry + take1 + take2), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry order was executed
@@ -384,7 +384,7 @@ class TestBuySltpFullPositionClosure:
         assert collected_data[3]['trades_count'] == 4, "Third stop should trigger on bar 3"
         
         # Check final state: deal should be fully closed
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -394,7 +394,7 @@ class TestBuySltpFullPositionClosure:
         assert len(broker.trades) == 4, f"Expected 4 trades total (entry + stop1 + stop2 + stop3), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry order was executed
@@ -524,7 +524,7 @@ class TestBuySltpFullPositionClosure:
         assert collected_data[3]['trades_count'] == 4, "Third take should trigger on bar 3"
         
         # Check final state: deal should be fully closed
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -534,7 +534,7 @@ class TestBuySltpFullPositionClosure:
         assert len(broker.trades) == 4, f"Expected 4 trades total (entry + take1 + take2 + take3), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry order was executed
@@ -653,7 +653,7 @@ class TestSellSltpFullPositionClosure:
         assert collected_data[2]['trades_count'] == 3, "No execution on bar 2"
         
         # Check final state: deal should be fully closed
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -663,7 +663,7 @@ class TestSellSltpFullPositionClosure:
         assert len(broker.trades) == 3, f"Expected 3 trades total (entry + stop1 + stop2), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry order was executed
@@ -778,7 +778,7 @@ class TestSellSltpFullPositionClosure:
         assert collected_data[2]['trades_count'] == 3, "No execution on bar 2"
         
         # Check final state: deal should be fully closed
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -788,7 +788,7 @@ class TestSellSltpFullPositionClosure:
         assert len(broker.trades) == 3, f"Expected 3 trades total (entry + take1 + take2), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry order was executed
@@ -918,7 +918,7 @@ class TestSellSltpFullPositionClosure:
         assert collected_data[3]['trades_count'] == 4, "Third stop should trigger on bar 3"
         
         # Check final state: deal should be fully closed
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -928,7 +928,7 @@ class TestSellSltpFullPositionClosure:
         assert len(broker.trades) == 4, f"Expected 4 trades total (entry + stop1 + stop2 + stop3), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry order was executed
@@ -1058,7 +1058,7 @@ class TestSellSltpFullPositionClosure:
         assert collected_data[3]['trades_count'] == 4, "Third take should trigger on bar 3"
         
         # Check final state: deal should be fully closed
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
@@ -1068,7 +1068,7 @@ class TestSellSltpFullPositionClosure:
         assert len(broker.trades) == 4, f"Expected 4 trades total (entry + take1 + take2 + take3), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 0.01, \
+        assert abs(deal.profit - expected_profit) < 1e-6, \
             f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry order was executed
@@ -1170,7 +1170,7 @@ class TestBuySltpPartialPositionClosure:
         assert collected_data[2]['trades_count'] == 2, "No execution on bar 2 (before autoclosure)"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -1270,7 +1270,7 @@ class TestBuySltpPartialPositionClosure:
         assert collected_data[2]['trades_count'] == 2, "No execution on bar 2 (before autoclosure)"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -1374,7 +1374,7 @@ class TestSellSltpPartialPositionClosure:
         assert collected_data[2]['trades_count'] == 2, "No execution on bar 2 (before autoclosure)"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -1474,7 +1474,7 @@ class TestSellSltpPartialPositionClosure:
         assert collected_data[2]['trades_count'] == 2, "No execution on bar 2 (before autoclosure)"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -1592,7 +1592,7 @@ class TestBuySltpOrderCancellation:
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         # (stops/takes were canceled, so deal remained open and was autoclosed)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -1697,7 +1697,7 @@ class TestBuySltpOrderCancellation:
         assert collected_data[0]['trades_count'] == 0, "Entry should NOT trigger on bar 0 (limit order)"
         
         # Check final state: deal should not exist or be empty (entry canceled)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         # Deal might exist but with no executed trades
         if deal:
             assert deal.quantity == 0.0, f"Deal should have no quantity (entry canceled), got {deal.quantity}"
@@ -1802,7 +1802,7 @@ class TestSellSltpOrderCancellation:
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         # (stops/takes were canceled, so deal remained open and was autoclosed)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -1908,7 +1908,7 @@ class TestSellSltpOrderCancellation:
         assert collected_data[0]['trades_count'] == 0, "Entry should NOT trigger on bar 0 (limit order)"
         
         # Check final state: deal should not exist or be empty (entry canceled)
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         # Deal might exist but with no executed trades
         if deal:
             assert deal.quantity == 0.0, f"Deal should have no quantity (entry canceled), got {deal.quantity}"
@@ -2003,7 +2003,7 @@ class TestBuySltpUnclosedDealsAtEnd:
         assert collected_data[2]['trades_count'] == 1, "No execution on bar 2 (before autoclosure)"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -2091,7 +2091,7 @@ class TestBuySltpUnclosedDealsAtEnd:
         assert collected_data[2]['trades_count'] == 1, "No execution on bar 2 (before autoclosure)"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -2183,7 +2183,7 @@ class TestBuySltpUnclosedDealsAtEnd:
         assert collected_data[2]['trades_count'] == 2, "No execution on bar 2 (before autoclosure)"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -2283,7 +2283,7 @@ class TestSellSltpUnclosedDealsAtEnd:
         assert collected_data[2]['trades_count'] == 1, "No execution on bar 2 (before autoclosure)"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -2371,7 +2371,7 @@ class TestSellSltpUnclosedDealsAtEnd:
         assert collected_data[2]['trades_count'] == 1, "No execution on bar 2 (before autoclosure)"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"
@@ -2463,7 +2463,7 @@ class TestSellSltpUnclosedDealsAtEnd:
         assert collected_data[2]['trades_count'] == 2, "No execution on bar 2 (before autoclosure)"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
-        deal = broker.get_deal_by_id(method_result.deal_id)
+        deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be fully closed after autoclosure (quantity=0.0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed after autoclosure"

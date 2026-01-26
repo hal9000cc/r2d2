@@ -582,7 +582,7 @@ Tests for the `modify_deal()` method that modifies existing deals by canceling a
 
 - **Order Links**:
   - All orders (entry + exit) should have the same `deal_id`
-  - Check via `broker.get_deal_by_id(deal_id)`
+  - Check via `broker.get_deal(deal_id)`
 
 ---
 
