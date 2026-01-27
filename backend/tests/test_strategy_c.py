@@ -115,7 +115,7 @@ class TestBuySltpOneEntryOneStop:
         # Bar 0: no execution (0 trades)
         # Bar 1: both entry and stop trigger simultaneously (2 trades - entry + stop)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "Both entry and stop should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "Both entry and stop should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (stop triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -224,8 +224,8 @@ class TestBuySltpOneEntryOneStop:
         # Check that entry executed on bar 0, stop triggers on bar 1
         # Bar 0: entry executed (1 trade)
         # Bar 1: stop triggered (2 trades - entry + stop)
-        assert collected_data[0]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "Stop should trigger on bar 1"
+        assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
+        assert collected_data[2]['trades_count'] == 2, "Stop should trigger on bar 1"
         
         # Check final state: deal should be closed (stop triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -338,7 +338,7 @@ class TestSellSltpOneEntryOneStop:
         # Bar 0: no execution (0 trades)
         # Bar 1: both entry and stop trigger simultaneously (2 trades - entry + stop)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "Both entry and stop should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "Both entry and stop should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (stop triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -447,8 +447,8 @@ class TestSellSltpOneEntryOneStop:
         # Check that entry executed on bar 0, stop triggers on bar 1
         # Bar 0: entry executed (1 trade)
         # Bar 1: stop triggered (2 trades - entry + stop)
-        assert collected_data[0]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "Stop should trigger on bar 1"
+        assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
+        assert collected_data[2]['trades_count'] == 2, "Stop should trigger on bar 1"
         
         # Check final state: deal should be closed (stop triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -566,7 +566,7 @@ class TestBuySltpOneEntryMultipleStops:
         # Bar 0: no execution (0 trades)
         # Bar 1: entry and both stops trigger simultaneously (3 trades - entry + stop1 + stop2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 3, "Entry and both stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "Entry and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -693,7 +693,7 @@ class TestBuySltpOneEntryMultipleStops:
         # Bar 1: entry and first two stops trigger simultaneously (3 trades - entry + stop1 + stop2)
         # Bar 2: auto-close after last bar
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 3, "Entry and first two stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "Entry and first two stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (two stops + auto-close)
         deal = broker.get_deal(method_result.deal_id)
@@ -808,8 +808,8 @@ class TestBuySltpOneEntryMultipleStops:
         # Check that entry executed on bar 0, both stops trigger simultaneously on bar 1
         # Bar 0: entry executed (1 trade)
         # Bar 1: both stops triggered simultaneously (3 trades - entry + stop1 + stop2)
-        assert collected_data[0]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
-        assert collected_data[1]['trades_count'] == 3, "Both stops should trigger simultaneously on bar 1"
+        assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
+        assert collected_data[2]['trades_count'] == 3, "Both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -927,7 +927,7 @@ class TestSellSltpOneEntryMultipleStops:
         # Bar 0: no execution (0 trades)
         # Bar 1: entry and both stops trigger simultaneously (3 trades - entry + stop1 + stop2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 3, "Entry and both stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "Entry and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -1054,7 +1054,7 @@ class TestSellSltpOneEntryMultipleStops:
         # Bar 1: entry and first two stops trigger simultaneously (3 trades - entry + stop1 + stop2)
         # Bar 2: auto-close after last bar
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 3, "Entry and first two stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "Entry and first two stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (two stops + auto-close)
         deal = broker.get_deal(method_result.deal_id)
@@ -1169,8 +1169,8 @@ class TestSellSltpOneEntryMultipleStops:
         # Check that entry executed on bar 0, both stops trigger simultaneously on bar 1
         # Bar 0: entry executed (1 trade)
         # Bar 1: both stops triggered simultaneously (3 trades - entry + stop1 + stop2)
-        assert collected_data[0]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
-        assert collected_data[1]['trades_count'] == 3, "Both stops should trigger simultaneously on bar 1"
+        assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
+        assert collected_data[2]['trades_count'] == 3, "Both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -1293,7 +1293,7 @@ class TestBuySltpMultipleEntriesAllStops:
         # Bar 0: no execution (0 trades)
         # Bar 1: both entries and both stops trigger simultaneously (4 trades - entry1 + entry2 + stop1 + stop2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 4, "Both entries and both stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 4, "Both entries and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -1430,7 +1430,7 @@ class TestBuySltpMultipleEntriesAllStops:
         # Bar 0: no execution (0 trades)
         # Bar 1: all three entries and both stops trigger simultaneously (5 trades - entry1 + entry2 + entry3 + stop1 + stop2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 5, "All three entries and both stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 5, "All three entries and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -1558,7 +1558,7 @@ class TestSellSltpMultipleEntriesAllStops:
         # Bar 0: no execution (0 trades)
         # Bar 1: both entries and both stops trigger simultaneously (4 trades - entry1 + entry2 + stop1 + stop2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 4, "Both entries and both stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 4, "Both entries and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -1695,7 +1695,7 @@ class TestSellSltpMultipleEntriesAllStops:
         # Bar 0: no execution (0 trades)
         # Bar 1: all three entries and both stops trigger simultaneously (5 trades - entry1 + entry2 + entry3 + stop1 + stop2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 5, "All three entries and both stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 5, "All three entries and both stops should trigger simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
         deal = broker.get_deal(method_result.deal_id)

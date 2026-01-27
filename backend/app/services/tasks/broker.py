@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from enum import Enum, IntEnum
 from typing import List, Optional, Set, Dict, Any, Tuple, Union, TYPE_CHECKING
 import math
+import sys
 import time
 
 import numpy as np
@@ -720,7 +721,12 @@ class Broker(ABC):
         if value == 0:
             return VOLUME_TYPE(0.0)
         
-        return VOLUME_TYPE(math.floor(value / self.precision_amount) * self.precision_amount)
+        # Use relative epsilon based on precision_amount to compensate for floating point errors
+        # This ensures values like 0.3 / 0.1 = 3.0 are handled correctly
+        # The epsilon is proportional to precision_amount to scale with the operation
+        epsilon = max(sys.float_info.epsilon, self.precision_amount * 1e-15)
+        quotient = value / self.precision_amount
+        return VOLUME_TYPE(math.floor(quotient + epsilon) * self.precision_amount)
     
     def format_price(self, value: PRICE_TYPE) -> PRICE_TYPE:
         """

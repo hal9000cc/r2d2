@@ -128,8 +128,8 @@ class TestBuySltpOneEntryOneTake:
         # Bar 1: entry triggers (1 trade - entry), take profit activates but doesn't trigger yet
         # Bar 2: take profit triggers (2 trades total - entry + take)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 2, "Take profit should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 2, "Take profit should trigger on bar 2"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -254,8 +254,8 @@ class TestSellSltpOneEntryOneTake:
         # Bar 1: entry triggers (1 trade - entry), take profit activates but doesn't trigger yet
         # Bar 2: take profit triggers (2 trades total - entry + take)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 2, "Take profit should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 2, "Take profit should trigger on bar 2"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -385,8 +385,8 @@ class TestBuySltpOneEntryMultipleTakes:
         # Bar 1: entry triggers (1 trade - entry), take profits activate but don't trigger yet
         # Bar 2: both take profits trigger (3 trades total - entry + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 3, "Both take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 3, "Both take profits should trigger on bar 2"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -528,8 +528,8 @@ class TestBuySltpOneEntryMultipleTakes:
         # Bar 1: entry triggers (1 trade - entry), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (3 trades total - entry + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 3, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 3, "First two take profits should trigger on bar 2"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -661,8 +661,8 @@ class TestSellSltpOneEntryMultipleTakes:
         # Bar 1: entry triggers (1 trade - entry), take profits activate but don't trigger yet
         # Bar 2: both take profits trigger (3 trades total - entry + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 3, "Both take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 3, "Both take profits should trigger on bar 2"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -804,8 +804,8 @@ class TestSellSltpOneEntryMultipleTakes:
         # Bar 1: entry triggers (1 trade - entry), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (3 trades total - entry + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 3, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 3, "First two take profits should trigger on bar 2"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -942,8 +942,8 @@ class TestBuySltpMultipleEntriesAllTakes:
         # Bar 1: both entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: both take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "Both entries should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 4, "Both take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "Both entries should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 4, "Both take profits should trigger on bar 2"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -1078,8 +1078,8 @@ class TestSellSltpMultipleEntriesAllTakes:
         # Bar 1: both entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: both take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "Both entries should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 4, "Both take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "Both entries should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 4, "Both take profits should trigger on bar 2"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -1228,8 +1228,8 @@ class TestBuySltpMultipleEntriesPartTakes:
         # Bar 1: both entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "Both entries should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 4, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "Both entries should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 4, "First two take profits should trigger on bar 2"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -1385,8 +1385,8 @@ class TestBuySltpMultipleEntriesPartTakes:
         # Bar 1: first two entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "First two entries should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 4, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "First two entries should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 4, "First two take profits should trigger on bar 2"
         
         # Check final state: deal should be closed (fully closed by takes)
         deal = broker.get_deal(method_result.deal_id)
@@ -1537,8 +1537,8 @@ class TestSellSltpMultipleEntriesPartTakes:
         # Bar 1: both entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "Both entries should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 4, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "Both entries should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 4, "First two take profits should trigger on bar 2"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -1694,8 +1694,8 @@ class TestSellSltpMultipleEntriesPartTakes:
         # Bar 1: first two entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "First two entries should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 4, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "First two entries should trigger on bar 1"
+        assert collected_data[3]['trades_count'] == 4, "First two take profits should trigger on bar 2"
         
         # Check final state: deal should be closed (fully closed by takes)
         deal = broker.get_deal(method_result.deal_id)
