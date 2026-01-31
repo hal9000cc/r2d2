@@ -301,26 +301,21 @@ class Deal(BaseModel):
         else:
             self.profit = None
         
-        # Update order volumes if there is a position or active entry orders
-        needs_update = self.quantity != 0 or any(
-            order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
-            and order.order_group == OrderGroup.NONE
-            for order in self.orders
-        )
-        
-        if needs_update:
-            self.update_order_volumes(broker)
-        elif self.quantity == 0:
-            # Close the deal: no position and no active entry orders
-            for order in self.orders:
-                if order.status == OrderStatus.ACTIVE:
-                    order._set_sync_field('status', OrderStatus.CANCELED)
-                    order.update_modify_time(broker)
-                elif order.status == OrderStatus.NEW:
-                    order._set_sync_field('status', OrderStatus.CANCELED)
-                    order.update_modify_time(broker)
+        # Close the deal if quantity == 0 and no active entry orders
+        if self.quantity == 0:
+            has_active_entry_orders = any(
+                order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+                and order.order_group == OrderGroup.NONE
+                for order in self.orders
+            )
             
-            self.is_closed = True
+            if not has_active_entry_orders:
+                # Close the deal: cancel all active/new orders
+                for order in self.orders:
+                    if order.status in (OrderStatus.ACTIVE, OrderStatus.NEW):
+                        order.cancel(broker)
+                
+                self.is_closed = True
 
     def unrealized_profit(self, broker: 'Broker') -> Optional[PRICE_TYPE]:
         """
@@ -343,67 +338,31 @@ class Deal(BaseModel):
         # (all sells done + value of remaining position) - all buys - all fees
         return self.sell_proceeds + current_value - self.buy_cost - self.fee
     
-    def cancel_orders(self, broker: 'Broker', group: Optional[OrderGroup] = None) -> Tuple[List[str], List['Order']]:
+    def cancel_orders(self, broker: 'Broker', group: Optional[OrderGroup] = None) -> List['Order']:
         """
         Cancel orders in this deal by specified group.
         
-        Iterates through orders, canceling each one. If cancellation is successful
-        and order status is CANCELED or EXECUTED, removes it from deal's orders list.
-        Continues on errors, collecting all errors. Repeats the cycle if there are errors,
-        stopping only when all orders are canceled or no orders were canceled in a cycle.
+        Filters orders by group and status (ACTIVE or NEW), then cancels each one.
+        Orders remain in deal's orders list for history tracking.
         
         Args:
-            group: OrderGroup to filter by. If None, cancels all orders.
+            broker: Broker instance
+            group: OrderGroup to filter by. If None, cancels all active/new orders.
         
         Returns:
-            Tuple[List[str], List[Order]]:
-            - List of error messages remaining after last pass. Empty list means all orders were canceled.
-            - List of orders that were successfully canceled/executed and removed from this deal during this call.
+            List of orders that were canceled (for information only).
         """
-        # Filter orders by group (if specified)
+        # Filter orders by group and status
         if group is None:
-            orders_to_cancel = list(self.orders)
+            orders_to_cancel = [o for o in self.orders if o.status in (OrderStatus.ACTIVE, OrderStatus.NEW)]
         else:
-            orders_to_cancel = [order for order in self.orders if order.order_group == group]
+            orders_to_cancel = [o for o in self.orders if o.order_group == group and o.status in (OrderStatus.ACTIVE, OrderStatus.NEW)]
         
-        all_errors: List[str] = []
-        canceled_orders: List['Order'] = []
+        # Cancel each order
+        for order in orders_to_cancel:
+            order.cancel(broker)
         
-        while True:
-            # Clear errors before each pass
-            all_errors.clear()
-            
-            # Count canceled orders in this pass
-            canceled_count = 0
-            
-            # Process each order
-            for order in list(orders_to_cancel):  # Use list() to avoid modification during iteration
-                # Skip already canceled/executed orders
-                if order.status in (OrderStatus.CANCELED, OrderStatus.EXECUTED):
-                    orders_to_cancel.remove(order)
-                    continue
-                
-                # Try to cancel order
-                order.cancel(broker)
-                
-                # Check if order was successfully canceled
-                if order.status in (OrderStatus.CANCELED, OrderStatus.EXECUTED):
-                    # Success: remove order from deal
-                    self.orders.remove(order)
-                    orders_to_cancel.remove(order)
-                    canceled_count += 1
-                    canceled_orders.append(order)
-            
-            # Check exit conditions
-            if not orders_to_cancel:
-                # All orders canceled
-                break
-            
-            if canceled_count == 0:
-                # No orders were canceled in this pass
-                break
-        
-        return all_errors, canceled_orders
+        return orders_to_cancel
     
     def add_order(self, order: 'Order') -> None:
         """
@@ -901,13 +860,9 @@ class Broker(ABC):
         """
         assert self.current_time is not None, "current_time must be set before executing deal"
         
-        deal, canceled_order_ids, errors = self._prepare_deal(
+        deal, canceled_order_ids = self._prepare_deal(
             deal_type, existing_deal_id, clear_enter, clear_stop_loss, clear_take_profit
         )
-        
-        # If there are errors during order cancellation, stop and return errors
-        if errors:
-            return (deal, [], canceled_order_ids, errors)
         
         new_orders = []
         entry_side = OrderSide.BUY if deal_type == DealType.LONG else OrderSide.SELL
@@ -932,7 +887,7 @@ class Broker(ABC):
         # This will be handled later by exchange synchronization logic
         # For now, we don't collect errors from start() as it no longer returns them
         
-        return (deal, new_orders, canceled_order_ids, errors)
+        return (deal, new_orders, canceled_order_ids, [])
     
     def _prepare_deal(
         self,
@@ -941,16 +896,16 @@ class Broker(ABC):
         clear_enter: bool,
         clear_stop_loss: bool,
         clear_take_profit: bool
-    ) -> Tuple['Deal', List[int], List[str]]:
+    ) -> Tuple['Deal', List[int]]:
         """
         Prepare deal for execution: create new or get existing and clear orders if needed.
         
         Returns:
-            Tuple of (deal, canceled_order_ids, errors)
+            Tuple of (deal, canceled_order_ids)
         """
         if existing_deal_id is not None:
             deal = self.get_deal(existing_deal_id)
-            canceled_order_ids, errors = self._clear_deal_orders(deal, clear_enter, clear_stop_loss, clear_take_profit)
+            canceled_order_ids = self._clear_deal_orders(deal, clear_enter, clear_stop_loss, clear_take_profit)
         else:
             new_deal_id = len(self.deals) + 1
             deal = Deal(
@@ -959,9 +914,8 @@ class Broker(ABC):
             )
             self.deals.append(deal)
             canceled_order_ids = []
-            errors = []
         
-        return (deal, canceled_order_ids, errors)
+        return (deal, canceled_order_ids)
     
     def _clear_deal_orders(
         self,
@@ -969,33 +923,29 @@ class Broker(ABC):
         clear_enter: bool,
         clear_stop_loss: bool,
         clear_take_profit: bool
-    ) -> Tuple[List[int], List[str]]:
+    ) -> List[int]:
         """
         Clear order groups from deal according to flags.
         
         Returns:
-            Tuple of (canceled_order_ids, errors)
+            List of canceled order IDs
         """
         canceled_order_ids = []
-        all_errors = []
         
         # Cancel in order: take profits, entries, stop losses
         if clear_take_profit:
-            errors, canceled = deal.cancel_orders(self, OrderGroup.TAKE_PROFIT)
+            canceled = deal.cancel_orders(self, OrderGroup.TAKE_PROFIT)
             canceled_order_ids.extend([o.order_id for o in canceled])
-            all_errors.extend(errors)
         
         if clear_enter:
-            errors, canceled = deal.cancel_orders(self, OrderGroup.NONE)
+            canceled = deal.cancel_orders(self, OrderGroup.NONE)
             canceled_order_ids.extend([o.order_id for o in canceled])
-            all_errors.extend(errors)
         
         if clear_stop_loss:
-            errors, canceled = deal.cancel_orders(self, OrderGroup.STOP_LOSS)
+            canceled = deal.cancel_orders(self, OrderGroup.STOP_LOSS)
             canceled_order_ids.extend([o.order_id for o in canceled])
-            all_errors.extend(errors)
         
-        return (canceled_order_ids, all_errors)
+        return canceled_order_ids
     
     def _create_entry_orders(
         self,
@@ -1215,17 +1165,20 @@ class Broker(ABC):
         """
         raise NotImplementedError("cancel_orders must be implemented by subclass")
     
-    def logging(self, message: str, level: str = "info") -> None:
+    def logging(self, message: str, level: str = "info", deal_id: Optional[int] = None) -> None:
         """
         Send log message to frontend via task.
         
         Args:
             message: Message text (required)
             level: Message level (optional, default: "info")
-                  Valid levels: info, warning, error, success, debug
+                  Valid levels: info, warning, error, critical, success, debug
+            deal_id: Deal ID associated with the message (optional, processing to be implemented later)
         """
         # Log to system logger
-        if level == "error":
+        if level == "critical":
+            logger.critical(message)
+        elif level == "error":
             logger.error(message)
         elif level == "warning":
             logger.warning(message)
@@ -1517,14 +1470,18 @@ class Broker(ABC):
             if not was_closed and deal.is_closed:
                 self.stats.add_deal(deal)
     
-    def fetch_new_trades(self) -> None:
+    def fetch_new_trades(self) -> Set[int]:
         """
         Fetch and process new trades from exchange.
         
         Fetches trades since last processed time, filters duplicates,
         and creates internal Trade objects for matched orders.
+        
+        Returns:
+            Set of deal_id for deals that had trades added during this call.
         """
-
+        updated_deal_ids: Set[int] = set()
+        
         trades = self.exchange_fetch_my_trades(self.symbol, since=self._last_trade_time)
             
         for trade_data in trades:
@@ -1552,13 +1509,14 @@ class Broker(ABC):
                         fee=float(trade_data['fee']),
                         exchange_trade_id=trade_id
                     )
+                    # Add deal_id to set of updated deals
+                    updated_deal_ids.add(order.deal_id)
                 except Exception as e:
-                    self.logging(f"Error creating trade for order {order.order_id}: {str(e)}", level="error")
+                    self.logging(f"Error creating trade for order {order.order_id}: {str(e)}", level="critical", deal_id=order.deal_id)
             else:
-                # Trade for unknown order - critical error
-                msg = f"Received trade {trade_id} for unknown order {exchange_order_id}"
-                logger.critical(msg)
-                self.logging(msg, level="error")
+                self.logging(f"Received trade {trade_id} for unknown order {exchange_order_id}", level="critical")
+        
+        return updated_deal_ids
     
     def place_orders(self) -> int:
         """
@@ -1614,7 +1572,7 @@ class Broker(ABC):
                         order.update_modify_time(self)
                         updated_count += 1
                     else:
-                        self.logging(f"Failed to place order {order.order_id}: {create_result}", level="error")
+                        self.logging(f"Failed to place order {order.order_id}: {create_result}", level="error", deal_id=order.deal_id)
                 
                 # Handle CANCELED or EXECUTED orders (need to remove from exchange if present)
                 elif order.status in (OrderStatus.CANCELED, OrderStatus.EXECUTED):
@@ -1633,7 +1591,7 @@ class Broker(ABC):
                         updated_count += 1
                         
             except Exception as e:
-                self.logging(f"Error processing order {order.order_id}: {str(e)}", level="error")
+                self.logging(f"Error processing order {order.order_id}: {str(e)}", level="error", deal_id=order.deal_id)
                 # Do not set actual=True, so we retry next time
                 
         return updated_count
@@ -1677,7 +1635,14 @@ class Broker(ABC):
         Repeats if orders were placed to handle immediate updates/fills.
         """
         while True:
-            self.fetch_new_trades()
+            updated_deal_ids = self.fetch_new_trades()
+            
+            # Update order volumes for deals that had trades added
+            for deal_id in updated_deal_ids:
+                deal = self.get_deal(deal_id)
+                if not deal.is_closed:
+                    deal.update_order_volumes(self)
+            
             placed_count = self.place_orders()
             
             if placed_count == 0:
