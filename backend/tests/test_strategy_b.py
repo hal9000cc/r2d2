@@ -645,10 +645,10 @@ class TestSellSltpSingleExecution:
     def test_sell_sltp_limit_entry_stop_triggers(self, test_task):
         """Test B1.3: Limit entry → entry triggers → stop triggers."""
         # Prepare quotes data: price 100.0, then rises to trigger limit entry, then to trigger stop
-        # Bar 0: high=101.0, limit=105.0 - limit не сработает (101.0 < 105.0)
-        # Bar 1: high=106.0, limit=105.0 - limit сработает (106.0 >= 105.0)
-        # Bar 2: high=107.0, stop=110.0 - стоп не сработает (107.0 < 110.0)
-        # Bar 3: high=111.0, stop=110.0 - стоп сработает (111.0 >= 110.0)
+        # Bar 0: high=101.0, limit=105.0 - limit will not trigger (101.0 < 105.0)
+        # Bar 1: high=106.0, limit=105.0 - limit will trigger (106.0 >= 105.0)
+        # Bar 2: high=107.0, stop=110.0 - stop will not trigger (107.0 < 110.0)
+        # Bar 3: high=111.0, stop=110.0 - stop will trigger (111.0 >= 110.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 103.0, 105.0, 110.0],
             highs=[101.0, 106.0, 107.0, 111.0]  # Bar 1 high=106.0 triggers limit at 105.0, Bar 3 high=111.0 triggers stop at 110.0
@@ -747,10 +747,10 @@ class TestSellSltpSingleExecution:
     def test_sell_sltp_limit_entry_take_triggers(self, test_task):
         """Test B1.4: Limit entry → entry triggers → take profit triggers."""
         # Prepare quotes data: price 100.0, then rises to trigger limit entry, then drops to trigger take profit
-        # Bar 0: high=101.0, limit=105.0 - limit не сработает (101.0 < 105.0)
-        # Bar 1: high=106.0, limit=105.0 - limit сработает (106.0 >= 105.0)
-        # Bar 2: low=104.0, take=90.0 - тейк не сработает (104.0 > 90.0)
-        # Bar 3: low=89.0, take=90.0 - тейк сработает (89.0 <= 90.0)
+        # Bar 0: high=101.0, limit=105.0 - limit will not trigger (101.0 < 105.0)
+        # Bar 1: high=106.0, limit=105.0 - limit will trigger (106.0 >= 105.0)
+        # Bar 2: low=104.0, take=90.0 - take will not trigger (104.0 > 90.0)
+        # Bar 3: low=89.0, take=90.0 - take will trigger (89.0 <= 90.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 103.0, 105.0, 90.0],
             highs=[101.0, 106.0, 107.0, 91.0],  # Bar 1 high=106.0 triggers limit at 105.0
@@ -857,8 +857,8 @@ class TestBuySltpMultipleExecutionSameBar:
     def test_buy_sltp_market_multiple_stops_simultaneous(self, test_task):
         """Test B2.1: Market entry → multiple stops trigger simultaneously (price hits all stops)."""
         # Prepare quotes data: price 100.0, then drops to trigger all stops simultaneously
-        # Bar 1: low=95.0, stops at 90.0 and 88.0 - stops не сработают (95.0 > 90.0, 95.0 > 88.0)
-        # Bar 2: low=87.0, stops at 90.0 and 88.0 - оба стопа сработают одновременно (87.0 <= 90.0, 87.0 <= 88.0)
+        # Bar 1: low=95.0, stops at 90.0 and 88.0 - stops will not trigger (95.0 > 90.0, 95.0 > 88.0)
+        # Bar 2: low=87.0, stops at 90.0 and 88.0 - both stops will trigger simultaneously (87.0 <= 90.0, 87.0 <= 88.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 95.0, 87.0, 92.0],
             lows=[99.0, 94.0, 86.0, 91.0]  # Bar 2 low=86.0 triggers both stops at 90.0 and 88.0 simultaneously
@@ -966,8 +966,8 @@ class TestBuySltpMultipleExecutionSameBar:
     def test_buy_sltp_market_multiple_takes_simultaneous(self, test_task):
         """Test B2.2: Market entry → multiple take profits trigger simultaneously (price hits all takes)."""
         # Prepare quotes data: price 100.0, then rises to trigger all take profits simultaneously
-        # Bar 1: high=105.0, takes at 110.0 and 112.0 - takes не сработают (105.0 < 110.0, 105.0 < 112.0)
-        # Bar 2: high=113.0, takes at 110.0 and 112.0 - оба тейка сработают одновременно (113.0 >= 110.0, 113.0 >= 112.0)
+        # Bar 1: high=105.0, takes at 110.0 and 112.0 - takes will not trigger (105.0 < 110.0, 105.0 < 112.0)
+        # Bar 2: high=113.0, takes at 110.0 and 112.0 - both takes will trigger simultaneously (113.0 >= 110.0, 113.0 >= 112.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 105.0, 113.0, 115.0],
             highs=[101.0, 106.0, 114.0, 116.0]  # Bar 2 high=114.0 triggers both takes at 110.0 and 112.0 simultaneously
@@ -1075,8 +1075,8 @@ class TestBuySltpMultipleExecutionSameBar:
     def test_buy_sltp_multiple_limits_simultaneous(self, test_task):
         """Test B2.3: Multiple limit entries → all trigger simultaneously."""
         # Prepare quotes data: price 100.0, then drops to trigger all limit entries simultaneously
-        # Bar 0: low=99.0, limits at 97.0 and 95.0 - лимитки не сработают (99.0 > 97.0, 99.0 > 95.0)
-        # Bar 1: low=94.0, limits at 97.0 and 95.0 - обе лимитки сработают одновременно (94.0 <= 97.0, 94.0 <= 95.0)
+        # Bar 0: low=99.0, limits at 97.0 and 95.0 - limits will not trigger (99.0 > 97.0, 99.0 > 95.0)
+        # Bar 1: low=94.0, limits at 97.0 and 95.0 - both limits will trigger simultaneously (94.0 <= 97.0, 94.0 <= 95.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 96.0, 98.0],
             lows=[99.0, 94.0, 97.0]  # Bar 1 low=94.0 triggers both limits at 97.0 and 95.0 simultaneously
@@ -1179,9 +1179,9 @@ class TestBuySltpMultipleExecutionSameBar:
     def test_buy_sltp_market_multiple_stops_sequential(self, test_task):
         """Test B2.4: Market entry → multiple stops trigger sequentially (on different bars)."""
         # Prepare quotes data: price 100.0, then drops to trigger stops sequentially
-        # Bar 1: low=94.0, stops at 90.0 and 86.0 - первый стоп не сработает (94.0 > 90.0), второй не сработает (94.0 > 86.0)
-        # Bar 2: low=88.0, stops at 90.0 and 86.0 - первый стоп сработает (88.0 <= 90.0), второй не сработает (88.0 > 86.0)
-        # Bar 3: low=86.0, stops at 90.0 and 86.0 - второй стоп сработает (86.0 <= 86.0)
+        # Bar 1: low=94.0, stops at 90.0 and 86.0 - first stop will not trigger (94.0 > 90.0), second will not trigger (94.0 > 86.0)
+        # Bar 2: low=88.0, stops at 90.0 and 86.0 - first stop will trigger (88.0 <= 90.0), second will not trigger (88.0 > 86.0)
+        # Bar 3: low=86.0, stops at 90.0 and 86.0 - second stop will trigger (86.0 <= 86.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 95.0, 89.0, 87.0, 92.0],
             lows=[99.0, 94.0, 88.0, 85.0, 91.0]  # Bar 2 low=88.0 triggers first stop at 90.0, Bar 3 low=85.0 triggers second stop at 86.0
@@ -1292,9 +1292,9 @@ class TestBuySltpMultipleExecutionSameBar:
     def test_buy_sltp_market_multiple_takes_sequential(self, test_task):
         """Test B2.5: Market entry → multiple take profits trigger sequentially (on different bars)."""
         # Prepare quotes data: price 100.0, then rises to trigger take profits sequentially
-        # Bar 1: high=105.0, takes at 110.0 and 112.0 - первый тейк не сработает (105.0 < 110.0), второй не сработает (105.0 < 112.0)
-        # Bar 2: high=111.0, takes at 110.0 and 112.0 - первый тейк сработает (111.0 >= 110.0), второй не сработает (111.0 < 112.0)
-        # Bar 3: high=113.0, takes at 110.0 and 112.0 - второй тейк сработает (113.0 >= 112.0)
+        # Bar 1: high=105.0, takes at 110.0 and 112.0 - first take will not trigger (105.0 < 110.0), second will not trigger (105.0 < 112.0)
+        # Bar 2: high=111.0, takes at 110.0 and 112.0 - first take will trigger (111.0 >= 110.0), second will not trigger (111.0 < 112.0)
+        # Bar 3: high=113.0, takes at 110.0 and 112.0 - second take will trigger (113.0 >= 112.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 105.0, 111.0, 113.0, 115.0],
             highs=[101.0, 106.0, 112.0, 114.0, 116.0]  # Bar 2 high=112.0 triggers first take at 110.0, Bar 3 high=114.0 triggers second take at 112.0
@@ -1413,8 +1413,8 @@ class TestSellSltpMultipleExecutionSameBar:
     def test_sell_sltp_market_multiple_stops_simultaneous(self, test_task):
         """Test B2.1: Market entry → multiple stops trigger simultaneously (price hits all stops)."""
         # Prepare quotes data: price 100.0, then rises to trigger all stops simultaneously
-        # Bar 1: high=105.0, stops at 110.0 and 112.0 - stops не сработают (105.0 < 110.0, 105.0 < 112.0)
-        # Bar 2: high=113.0, stops at 110.0 and 112.0 - оба стопа сработают одновременно (113.0 >= 110.0, 113.0 >= 112.0)
+        # Bar 1: high=105.0, stops at 110.0 and 112.0 - stops will not trigger (105.0 < 110.0, 105.0 < 112.0)
+        # Bar 2: high=113.0, stops at 110.0 and 112.0 - both stops will trigger simultaneously (113.0 >= 110.0, 113.0 >= 112.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 105.0, 113.0, 108.0],
             highs=[101.0, 106.0, 114.0, 109.0]  # Bar 2 high=114.0 triggers both stops at 110.0 and 112.0 simultaneously
@@ -1522,8 +1522,8 @@ class TestSellSltpMultipleExecutionSameBar:
     def test_sell_sltp_market_multiple_takes_simultaneous(self, test_task):
         """Test B2.2: Market entry → multiple take profits trigger simultaneously (price hits all takes)."""
         # Prepare quotes data: price 100.0, then drops to trigger all take profits simultaneously
-        # Bar 1: low=95.0, takes at 90.0 and 88.0 - takes не сработают (95.0 > 90.0, 95.0 > 88.0)
-        # Bar 2: low=87.0, takes at 90.0 and 88.0 - оба тейка сработают одновременно (87.0 <= 90.0, 87.0 <= 88.0)
+        # Bar 1: low=95.0, takes at 90.0 and 88.0 - takes will not trigger (95.0 > 90.0, 95.0 > 88.0)
+        # Bar 2: low=87.0, takes at 90.0 and 88.0 - both takes will trigger simultaneously (87.0 <= 90.0, 87.0 <= 88.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 95.0, 87.0, 92.0],
             lows=[99.0, 94.0, 86.0, 91.0]  # Bar 2 low=86.0 triggers both takes at 90.0 and 88.0 simultaneously
@@ -1631,8 +1631,8 @@ class TestSellSltpMultipleExecutionSameBar:
     def test_sell_sltp_multiple_limits_simultaneous(self, test_task):
         """Test B2.3: Multiple limit entries → all trigger simultaneously."""
         # Prepare quotes data: price 100.0, then rises to trigger all limit entries simultaneously
-        # Bar 0: high=101.0, limits at 103.0 and 105.0 - лимитки не сработают (101.0 < 103.0, 101.0 < 105.0)
-        # Bar 1: high=106.0, limits at 103.0 and 105.0 - обе лимитки сработают одновременно (106.0 >= 103.0, 106.0 >= 105.0)
+        # Bar 0: high=101.0, limits at 103.0 and 105.0 - limits will not trigger (101.0 < 103.0, 101.0 < 105.0)
+        # Bar 1: high=106.0, limits at 103.0 and 105.0 - both limits will trigger simultaneously (106.0 >= 103.0, 106.0 >= 105.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 104.0, 102.0],
             highs=[101.0, 106.0, 103.0]  # Bar 1 high=106.0 triggers both limits at 103.0 and 105.0 simultaneously
@@ -1735,9 +1735,9 @@ class TestSellSltpMultipleExecutionSameBar:
     def test_sell_sltp_market_multiple_stops_sequential(self, test_task):
         """Test B2.4: Market entry → multiple stops trigger sequentially (on different bars)."""
         # Prepare quotes data: price 100.0, then rises to trigger stops sequentially
-        # Bar 1: high=105.0, stops at 110.0 and 114.0 - первый стоп не сработает (105.0 < 110.0), второй не сработает (105.0 < 114.0)
-        # Bar 2: high=111.0, stops at 110.0 and 114.0 - первый стоп сработает (111.0 >= 110.0), второй не сработает (111.0 < 114.0)
-        # Bar 3: high=115.0, stops at 110.0 and 114.0 - второй стоп сработает (115.0 >= 114.0)
+        # Bar 1: high=105.0, stops at 110.0 and 114.0 - first stop will not trigger (105.0 < 110.0), second will not trigger (105.0 < 114.0)
+        # Bar 2: high=111.0, stops at 110.0 and 114.0 - first stop will trigger (111.0 >= 110.0), second will not trigger (111.0 < 114.0)
+        # Bar 3: high=115.0, stops at 110.0 and 114.0 - second stop will trigger (115.0 >= 114.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 105.0, 111.0, 115.0, 108.0],
             highs=[101.0, 106.0, 112.0, 116.0, 109.0]  # Bar 2 high=112.0 triggers first stop at 110.0, Bar 3 high=116.0 triggers second stop at 114.0
@@ -1848,9 +1848,9 @@ class TestSellSltpMultipleExecutionSameBar:
     def test_sell_sltp_market_multiple_takes_sequential(self, test_task):
         """Test B2.5: Market entry → multiple take profits trigger sequentially (on different bars)."""
         # Prepare quotes data: price 100.0, then drops to trigger take profits sequentially
-        # Bar 1: low=95.0, takes at 90.0 and 88.0 - первый тейк не сработает (95.0 > 90.0), второй не сработает (95.0 > 88.0)
-        # Bar 2: low=89.0, takes at 90.0 and 88.0 - первый тейк сработает (89.0 <= 90.0), второй не сработает (89.0 > 88.0)
-        # Bar 3: low=87.0, takes at 90.0 and 88.0 - второй тейк сработает (87.0 <= 88.0)
+        # Bar 1: low=95.0, takes at 90.0 and 88.0 - first take will not trigger (95.0 > 90.0), second will not trigger (95.0 > 88.0)
+        # Bar 2: low=89.0, takes at 90.0 and 88.0 - first take will trigger (89.0 <= 90.0), second will not trigger (89.0 > 88.0)
+        # Bar 3: low=87.0, takes at 90.0 and 88.0 - second take will trigger (87.0 <= 88.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 95.0, 89.0, 87.0, 92.0],
             lows=[99.0, 94.0, 88.0, 86.0, 91.0]  # Bar 2 low=88.0 triggers first take at 90.0, Bar 3 low=86.0 triggers second take at 88.0
@@ -1969,9 +1969,9 @@ class TestBuySltpPartialExecution:
     def test_buy_sltp_market_multiple_stops_one_triggers(self, test_task):
         """Test B3.1: Market entry → multiple stops, only one triggers (price hits one stop)."""
         # Prepare quotes data: price 100.0, then drops to trigger only one stop
-        # Bar 1: low=94.0, stops at 90.0 and 88.0 - stops не сработают (94.0 > 90.0, 94.0 > 88.0)
-        # Bar 2: low=89.0, stops at 90.0 and 88.0 - первый стоп сработает (89.0 <= 90.0), второй не сработает (89.0 > 88.0)
-        # Bar 3: low=91.0, stops at 90.0 and 88.0 - второй стоп не сработает (91.0 > 88.0), цена откатилась
+        # Bar 1: low=94.0, stops at 90.0 and 88.0 - stops will not trigger (94.0 > 90.0, 94.0 > 88.0)
+        # Bar 2: low=89.0, stops at 90.0 and 88.0 - first stop will trigger (89.0 <= 90.0), second will not trigger (89.0 > 88.0)
+        # Bar 3: low=91.0, stops at 90.0 and 88.0 - second stop will not trigger (91.0 > 88.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 95.0, 89.0, 92.0, 95.0],
             lows=[99.0, 94.0, 89.0, 91.0, 94.0]  # Bar 2 low=89.0 triggers first stop at 90.0, second stop at 88.0 doesn't trigger (89.0 > 88.0)
@@ -2084,9 +2084,9 @@ class TestBuySltpPartialExecution:
     def test_buy_sltp_market_multiple_stops_part_triggers(self, test_task):
         """Test B3.2: Market entry → multiple stops, part triggers (price hits part of stops)."""
         # Prepare quotes data: price 100.0, then drops to trigger part of stops
-        # Bar 1: low=94.0, stops at 90.0, 88.0, 86.0 - stops не сработают (94.0 > 90.0, 94.0 > 88.0, 94.0 > 86.0)
-        # Bar 2: low=87.0, stops at 90.0, 88.0, 86.0 - первые два стопа сработают (87.0 <= 90.0, 87.0 <= 88.0), третий не сработает (87.0 > 86.0)
-        # Bar 3: low=91.0, stops at 90.0, 88.0, 86.0 - третий стоп не сработает (91.0 > 86.0), цена откатилась
+        # Bar 1: low=94.0, stops at 90.0, 88.0, 86.0 - stops will not trigger (94.0 > 90.0, 94.0 > 88.0, 94.0 > 86.0)
+        # Bar 2: low=87.0, stops at 90.0, 88.0, 86.0 - first two stops will trigger (87.0 <= 90.0, 87.0 <= 88.0), third will not trigger (87.0 > 86.0)
+        # Bar 3: low=91.0, stops at 90.0, 88.0, 86.0 - third stop will not trigger (91.0 > 86.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 95.0, 87.0, 92.0, 95.0],
             lows=[99.0, 94.0, 87.0, 91.0, 94.0]  # Bar 2 low=87.0 triggers first two stops at 90.0 and 88.0, third stop at 86.0 doesn't trigger (87.0 > 86.0)
@@ -2097,20 +2097,20 @@ class TestBuySltpPartialExecution:
         # Expected: first two stops trigger on bar 2, third stop remains active but doesn't trigger
         # Expected profit calculation (with volume rounding to precision_amount=0.1):
         # Entry volume: 1.0 (already multiple of 0.1, no rounding needed)
-        # Stop volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Stop volumes are calculated using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third stop (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
+        # First stop: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second stop: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third stop (extreme, gets remainder): 1.0 - 0.7 = 0.3
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
         entry_quantity = 1.0  # Already multiple of precision_amount=0.1
         
         stop_trigger1 = 90.0
         stop_trigger2 = 88.0
-        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third stop/auto-close)
+        quantity1 = 0.3  # First stop: 0.33 rounded to 0.3
+        quantity2 = 0.4  # Second stop: 0.36 rounded to 0.4 (accumulated error from first)
+        quantity3 = 0.3  # Third stop: remainder 1.0 - 0.7 = 0.3 (for third stop/auto-close)
         
         entry_execution = entry_price + slippage  # 100.1
         entry_fee = entry_execution * entry_quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
@@ -2196,23 +2196,23 @@ class TestBuySltpPartialExecution:
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
-        # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 1e-6, \
-            f"Expected profit {expected_profit}, got {deal.profit}"
-        
         # Check that only two stop orders were executed
         stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
         assert len(stop_orders) == 3, "Should have three stop orders"
         executed_stops = [o for o in stop_orders if o.status == OrderStatus.EXECUTED]
         assert len(executed_stops) == 2, "Only two stop orders should be executed"
+        
+        # Check actual profit matches expected calculation
+        assert abs(deal.profit - expected_profit) < 1e-6, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
 
     
     def test_buy_sltp_market_multiple_takes_one_triggers(self, test_task):
         """Test B3.3: Market entry → multiple take profits, only one triggers."""
         # Prepare quotes data: price 100.0, then rises to trigger only one take profit
-        # Bar 1: high=105.0, takes at 110.0 and 112.0 - takes не сработают (105.0 < 110.0, 105.0 < 112.0)
-        # Bar 2: high=111.0, takes at 110.0 and 112.0 - первый тейк сработает (111.0 >= 110.0), второй не сработает (111.0 < 112.0)
-        # Bar 3: high=109.0, takes at 110.0 and 112.0 - второй тейк не сработает (109.0 < 112.0), цена откатилась
+        # Bar 1: high=105.0, takes at 110.0 and 112.0 - takes will not trigger (105.0 < 110.0, 105.0 < 112.0)
+        # Bar 2: high=111.0, takes at 110.0 and 112.0 - first take will trigger (111.0 >= 110.0), second will not trigger (111.0 < 112.0)
+        # Bar 3: high=109.0, takes at 110.0 and 112.0 - second take will not trigger (109.0 < 112.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 105.0, 111.0, 109.0, 108.0],
             highs=[101.0, 106.0, 112.0, 110.0, 109.0]  # Bar 2 high=112.0 triggers first take at 110.0, second take at 112.0 doesn't trigger
@@ -2324,9 +2324,9 @@ class TestBuySltpPartialExecution:
     def test_buy_sltp_market_multiple_takes_part_triggers(self, test_task):
         """Test B3.4: Market entry → multiple take profits, part triggers."""
         # Prepare quotes data: price 100.0, then rises to trigger part of take profits
-        # Bar 1: high=105.0, takes at 110.0, 112.0, 114.0 - takes не сработают (105.0 < 110.0, 105.0 < 112.0, 105.0 < 114.0)
-        # Bar 2: high=113.0, takes at 110.0, 112.0, 114.0 - первые два тейка сработают (113.0 >= 110.0, 113.0 >= 112.0), третий не сработает (113.0 < 114.0)
-        # Bar 3: high=111.0, takes at 110.0, 112.0, 114.0 - третий тейк не сработает (111.0 < 114.0), цена откатилась
+        # Bar 1: high=105.0, takes at 110.0, 112.0, 114.0 - takes will not trigger (105.0 < 110.0, 105.0 < 112.0, 105.0 < 114.0)
+        # Bar 2: high=113.0, takes at 110.0, 112.0, 114.0 - first two takes will trigger (113.0 >= 110.0, 113.0 >= 112.0), third will not trigger (113.0 < 114.0)
+        # Bar 3: high=111.0, takes at 110.0, 112.0, 114.0 - third take will not trigger (111.0 < 114.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 105.0, 113.0, 111.0, 110.0],
             highs=[101.0, 106.0, 114.0, 112.0, 111.0]  # Bar 2 high=114.0 triggers first two takes at 110.0 and 112.0, third take at 114.0 doesn't trigger
@@ -2337,20 +2337,20 @@ class TestBuySltpPartialExecution:
         # Expected: first two takes trigger on bar 2, third take remains active but doesn't trigger
         # Expected profit calculation (with volume rounding to precision_amount=0.1):
         # Entry volume: 1.0 (already multiple of 0.1, no rounding needed)
-        # Take volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Take volumes are calculated using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First take: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second take: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third take (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
+        # First take: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second take: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third take (extreme, gets remainder): 1.0 - 0.7 = 0.3
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
         entry_quantity = 1.0  # Already multiple of precision_amount=0.1
         
         take_trigger1 = 110.0
         take_trigger2 = 112.0
-        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third take/auto-close)
+        quantity1 = 0.3  # First take: 0.33 rounded to 0.3
+        quantity2 = 0.4  # Second take: 0.36 rounded to 0.4 (accumulated error from first)
+        quantity3 = 0.3  # Third take: remainder 1.0 - 0.7 = 0.3 (for third take/auto-close)
         
         entry_execution = entry_price + slippage  # 100.1
         entry_fee = entry_execution * entry_quantity * test_task.fee_taker  # 100.1 * 1.0 * 0.001 = 0.1001
@@ -2448,9 +2448,9 @@ class TestBuySltpPartialExecution:
     def test_buy_sltp_multiple_limits_one_triggers(self, test_task):
         """Test B3.5: Multiple limit entries → only one triggers."""
         # Prepare quotes data: price 100.0, then drops to trigger only one limit entry
-        # Bar 0: low=99.0, limits at 97.0 and 95.0 - лимитки не сработают (99.0 > 97.0, 99.0 > 95.0)
-        # Bar 1: low=96.0, limits at 97.0 and 95.0 - первая лимитка сработает (96.0 <= 97.0), вторая не сработает (96.0 > 95.0)
-        # Bar 2: low=97.0, limits at 97.0 and 95.0 - вторая лимитка не сработает (97.0 > 95.0), цена откатилась
+        # Bar 0: low=99.0, limits at 97.0 and 95.0 - limits will not trigger (99.0 > 97.0, 99.0 > 95.0)
+        # Bar 1: low=96.0, limits at 97.0 and 95.0 - first limit will trigger (96.0 <= 97.0), second will not trigger (96.0 > 95.0)
+        # Bar 2: low=97.0, limits at 97.0 and 95.0 - second limit will not trigger (97.0 > 95.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 96.0, 98.0, 99.0],
             lows=[99.0, 96.0, 97.0, 98.0]  # Bar 1 low=96.0 triggers first limit at 97.0 (96.0 <= 97.0), second limit at 95.0 doesn't trigger (96.0 > 95.0)
@@ -2556,9 +2556,9 @@ class TestBuySltpPartialExecution:
     def test_buy_sltp_multiple_limits_part_triggers(self, test_task):
         """Test B3.6: Multiple limit entries → part triggers."""
         # Prepare quotes data: price 100.0, then drops to trigger part of limit entries
-        # Bar 0: low=99.0, limits at 97.0, 95.0, 93.0 - лимитки не сработают (99.0 > 97.0, 99.0 > 95.0, 99.0 > 93.0)
-        # Bar 1: low=94.0, limits at 97.0, 95.0, 93.0 - первые две лимитки сработают (94.0 <= 97.0, 94.0 <= 95.0), третья не сработает (94.0 > 93.0)
-        # Bar 2: low=95.0, limits at 97.0, 95.0, 93.0 - третья лимитка не сработает (95.0 > 93.0), цена откатилась
+        # Bar 0: low=99.0, limits at 97.0, 95.0, 93.0 - limits will not trigger (99.0 > 97.0, 99.0 > 95.0, 99.0 > 93.0)
+        # Bar 1: low=94.0, limits at 97.0, 95.0, 93.0 - first two limits will trigger (94.0 <= 97.0, 94.0 <= 95.0), third will not trigger (94.0 > 93.0)
+        # Bar 2: low=95.0, limits at 97.0, 95.0, 93.0 - third limit will not trigger (95.0 > 93.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 94.0, 96.0, 98.0],
             lows=[99.0, 94.0, 95.0, 97.0]  # Bar 1 low=94.0 triggers first two limits at 97.0 and 95.0 (94.0 <= 97.0, 94.0 <= 95.0), third limit at 93.0 doesn't trigger (94.0 > 93.0)
@@ -2682,9 +2682,9 @@ class TestSellSltpPartialExecution:
     def test_sell_sltp_market_multiple_stops_one_triggers(self, test_task):
         """Test B3.1: Market entry → multiple stops, only one triggers (price hits one stop)."""
         # Prepare quotes data: price 100.0, then rises to trigger only one stop
-        # Bar 1: high=105.0, stops at 110.0 and 112.0 - stops не сработают (105.0 < 110.0, 105.0 < 112.0)
-        # Bar 2: high=111.0, stops at 110.0 and 112.0 - первый стоп сработает (111.0 >= 110.0), второй не сработает (111.0 < 112.0)
-        # Bar 3: high=109.0, stops at 110.0 and 112.0 - второй стоп не сработает (109.0 < 112.0), цена откатилась
+        # Bar 1: high=105.0, stops at 110.0 and 112.0 - stops will not trigger (105.0 < 110.0, 105.0 < 112.0)
+        # Bar 2: high=111.0, stops at 110.0 and 112.0 - first stop will trigger (111.0 >= 110.0), second will not trigger (111.0 < 112.0)
+        # Bar 3: high=109.0, stops at 110.0 and 112.0 - second stop will not trigger (109.0 < 112.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 105.0, 111.0, 109.0, 108.0],
             highs=[101.0, 106.0, 111.0, 110.0, 109.0]  # Bar 2 high=111.0 triggers first stop at 110.0 (111.0 >= 110.0), second stop at 112.0 doesn't trigger (111.0 < 112.0)
@@ -2796,9 +2796,9 @@ class TestSellSltpPartialExecution:
     def test_sell_sltp_market_multiple_stops_part_triggers(self, test_task):
         """Test B3.2: Market entry → multiple stops, part triggers (price hits part of stops)."""
         # Prepare quotes data: price 100.0, then rises to trigger part of stops
-        # Bar 1: high=105.0, stops at 110.0, 112.0, 114.0 - stops не сработают (105.0 < 110.0, 105.0 < 112.0, 105.0 < 114.0)
-        # Bar 2: high=113.0, stops at 110.0, 112.0, 114.0 - первые два стопа сработают (113.0 >= 110.0, 113.0 >= 112.0), третий не сработает (113.0 < 114.0)
-        # Bar 3: high=111.0, stops at 110.0, 112.0, 114.0 - третий стоп не сработает (111.0 < 114.0), цена откатилась
+        # Bar 1: high=105.0, stops at 110.0, 112.0, 114.0 - stops will not trigger (105.0 < 110.0, 105.0 < 112.0, 105.0 < 114.0)
+        # Bar 2: high=113.0, stops at 110.0, 112.0, 114.0 - first two stops will trigger (113.0 >= 110.0, 113.0 >= 112.0), third will not trigger (113.0 < 114.0)
+        # Bar 3: high=111.0, stops at 110.0, 112.0, 114.0 - third stop will not trigger (111.0 < 114.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 105.0, 113.0, 111.0, 110.0],
             highs=[101.0, 106.0, 113.0, 112.0, 111.0]  # Bar 2 high=113.0 triggers first two stops at 110.0 and 112.0, third stop at 114.0 doesn't trigger
@@ -2809,20 +2809,20 @@ class TestSellSltpPartialExecution:
         # Expected: first two stops trigger on bar 2, third stop remains active but doesn't trigger
         # Expected profit calculation (with volume rounding to precision_amount=0.1):
         # Entry volume: 1.0 (already multiple of 0.1, no rounding needed)
-        # Stop volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Stop volumes are calculated using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third stop (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
+        # First stop: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second stop: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third stop (extreme, gets remainder): 1.0 - 0.7 = 0.3
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
         entry_quantity = 1.0  # Already multiple of precision_amount=0.1
         
         stop_trigger1 = 110.0
         stop_trigger2 = 112.0
-        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third stop/auto-close)
+        quantity1 = 0.3  # First stop: 0.33 rounded to 0.3
+        quantity2 = 0.4  # Second stop: 0.36 rounded to 0.4 (accumulated error from first)
+        quantity3 = 0.3  # Third stop: remainder 1.0 - 0.7 = 0.3 (for third stop/auto-close)
         
         entry_execution = entry_price - slippage  # 100.0 - 0.1 = 99.9 (SELL market, slippage decreases price)
         entry_fee = entry_execution * entry_quantity * test_task.fee_taker  # 99.9 * 1.0 * 0.001 = 0.0999
@@ -2920,9 +2920,9 @@ class TestSellSltpPartialExecution:
     def test_sell_sltp_market_multiple_takes_one_triggers(self, test_task):
         """Test B3.3: Market entry → multiple take profits, only one triggers."""
         # Prepare quotes data: price 100.0, then drops to trigger only one take profit
-        # Bar 1: low=95.0, takes at 90.0 and 88.0 - takes не сработают (95.0 > 90.0, 95.0 > 88.0)
-        # Bar 2: low=89.0, takes at 90.0 and 88.0 - первый тейк сработает (89.0 <= 90.0), второй не сработает (89.0 > 88.0)
-        # Bar 3: low=91.0, takes at 90.0 and 88.0 - второй тейк не сработает (91.0 > 88.0), цена откатилась
+        # Bar 1: low=95.0, takes at 90.0 and 88.0 - takes will not trigger (95.0 > 90.0, 95.0 > 88.0)
+        # Bar 2: low=89.0, takes at 90.0 and 88.0 - first take will trigger (89.0 <= 90.0), second will not trigger (89.0 > 88.0)
+        # Bar 3: low=91.0, takes at 90.0 and 88.0 - second take will not trigger (91.0 > 88.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 95.0, 89.0, 91.0, 92.0],
             lows=[99.0, 94.0, 88.0, 90.0, 91.0]  # Bar 2 low=88.0 triggers first take at 90.0, second take at 88.0 doesn't trigger
@@ -3033,9 +3033,9 @@ class TestSellSltpPartialExecution:
     def test_sell_sltp_market_multiple_takes_part_triggers(self, test_task):
         """Test B3.4: Market entry → multiple take profits, part triggers."""
         # Prepare quotes data: price 100.0, then drops to trigger part of take profits
-        # Bar 1: low=95.0, takes at 90.0, 88.0, 86.0 - takes не сработают (95.0 > 90.0, 95.0 > 88.0, 95.0 > 86.0)
-        # Bar 2: low=87.0, takes at 90.0, 88.0, 86.0 - первые два тейка сработают (87.0 <= 90.0, 87.0 <= 88.0), третий не сработает (87.0 > 86.0)
-        # Bar 3: low=89.0, takes at 90.0, 88.0, 86.0 - третий тейк не сработает (89.0 > 86.0), цена откатилась
+        # Bar 1: low=95.0, takes at 90.0, 88.0, 86.0 - takes will not trigger (95.0 > 90.0, 95.0 > 88.0, 95.0 > 86.0)
+        # Bar 2: low=87.0, takes at 90.0, 88.0, 86.0 - first two takes will trigger (87.0 <= 90.0, 87.0 <= 88.0), third will not trigger (87.0 > 86.0)
+        # Bar 3: low=89.0, takes at 90.0, 88.0, 86.0 - third take will not trigger (89.0 > 86.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 95.0, 87.0, 89.0, 90.0],
             lows=[99.0, 94.0, 86.0, 88.0, 89.0]  # Bar 2 low=86.0 triggers first two takes at 90.0 and 88.0, third take at 86.0 doesn't trigger
@@ -3046,20 +3046,20 @@ class TestSellSltpPartialExecution:
         # Expected: first two takes trigger on bar 2, third take remains active but doesn't trigger
         # Expected profit calculation (with volume rounding to precision_amount=0.1):
         # Entry volume: 1.0 (already multiple of 0.1, no rounding needed)
-        # Take volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Take volumes are calculated using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First take: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second take: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third take (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
+        # First take: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second take: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third take (extreme, gets remainder): 1.0 - 0.7 = 0.3
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
         entry_quantity = 1.0  # Already multiple of precision_amount=0.1
         
         take_trigger1 = 90.0
         take_trigger2 = 88.0
-        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third take/auto-close)
+        quantity1 = 0.3  # First take: 0.33 rounded to 0.3
+        quantity2 = 0.4  # Second take: 0.36 rounded to 0.4 (accumulated error from first)
+        quantity3 = 0.3  # Third take: remainder 1.0 - 0.7 = 0.3 (for third take/auto-close)
         
         entry_execution = entry_price - slippage  # 100.0 - 0.1 = 99.9 (SELL market, slippage decreases price)
         entry_fee = entry_execution * entry_quantity * test_task.fee_taker  # 99.9 * 1.0 * 0.001 = 0.0999
@@ -3157,9 +3157,9 @@ class TestSellSltpPartialExecution:
     def test_sell_sltp_multiple_limits_one_triggers(self, test_task):
         """Test B3.5: Multiple limit entries → only one triggers."""
         # Prepare quotes data: price 100.0, then rises to trigger only one limit entry
-        # Bar 0: high=101.0, limits at 103.0 and 105.0 - лимитки не сработают (101.0 < 103.0, 101.0 < 105.0)
-        # Bar 1: high=104.0, limits at 103.0 and 105.0 - первая лимитка сработает (104.0 >= 103.0), вторая не сработает (104.0 < 105.0)
-        # Bar 2: high=103.0, limits at 103.0 and 105.0 - вторая лимитка не сработает (103.0 < 105.0), цена откатилась
+        # Bar 0: high=101.0, limits at 103.0 and 105.0 - limits will not trigger (101.0 < 103.0, 101.0 < 105.0)
+        # Bar 1: high=104.0, limits at 103.0 and 105.0 - first limit will trigger (104.0 >= 103.0), second will not trigger (104.0 < 105.0)
+        # Bar 2: high=103.0, limits at 103.0 and 105.0 - second limit will not trigger (103.0 < 105.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 104.0, 102.0, 101.0],
             highs=[101.0, 104.0, 103.0, 102.0]  # Bar 1 high=104.0 triggers first limit at 103.0 (104.0 >= 103.0), second limit at 105.0 doesn't trigger (104.0 < 105.0)
@@ -3265,9 +3265,9 @@ class TestSellSltpPartialExecution:
     def test_sell_sltp_multiple_limits_part_triggers(self, test_task):
         """Test B3.6: Multiple limit entries → part triggers."""
         # Prepare quotes data: price 100.0, then rises to trigger part of limit entries
-        # Bar 0: high=101.0, limits at 103.0, 105.0, 107.0 - лимитки не сработают (101.0 < 103.0, 101.0 < 105.0, 101.0 < 107.0)
-        # Bar 1: high=106.0, limits at 103.0, 105.0, 107.0 - первые две лимитки сработают (106.0 >= 103.0, 106.0 >= 105.0), третья не сработает (106.0 < 107.0)
-        # Bar 2: high=104.0, limits at 103.0, 105.0, 107.0 - третья лимитка не сработает (104.0 < 107.0), цена откатилась
+        # Bar 0: high=101.0, limits at 103.0, 105.0, 107.0 - limits will not trigger (101.0 < 103.0, 101.0 < 105.0, 101.0 < 107.0)
+        # Bar 1: high=106.0, limits at 103.0, 105.0, 107.0 - first two limits will trigger (106.0 >= 103.0, 106.0 >= 105.0), third will not trigger (106.0 < 107.0)
+        # Bar 2: high=104.0, limits at 103.0, 105.0, 107.0 - third limit will not trigger (104.0 < 107.0), price bounced back
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 106.0, 104.0, 102.0],
             highs=[101.0, 106.0, 105.0, 103.0]  # Bar 1 high=106.0 triggers first two limits at 103.0 and 105.0 (106.0 >= 103.0, 106.0 >= 105.0), third limit at 107.0 doesn't trigger (106.0 < 107.0)

@@ -816,9 +816,10 @@ class TestBuySltpOneEntryMultipleStopsOneTake:
         # Expected profit calculation (with volume rounding to precision_amount=0.1):
         # Entry volume: 1.0 (no rounding needed)
         # Stop volumes: calculated from all requested entry volumes (1.0)
-        #   First stop: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        #   Second stop: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        #   Third stop (extreme): 1.0 - 0.3 - 0.3 = 0.4
+        # Using cumulative rounding algorithm:
+        #   First stop: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        #   Second stop: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        #   Third stop (extreme): 1.0 - 0.7 = 0.3
         # Take profit does NOT trigger
         entry_price = 95.0
         entry_quantity = 1.0
@@ -826,8 +827,8 @@ class TestBuySltpOneEntryMultipleStopsOneTake:
         stop_trigger_price2 = 88.0
         stop_trigger_price3 = 86.0
         stop_quantity1 = 0.3  # First stop closes 0.3 position
-        stop_quantity2 = 0.3  # Second stop closes 0.3 position
-        stop_quantity3 = 0.4  # Third stop closes remaining 0.4 position
+        stop_quantity2 = 0.4  # Second stop closes 0.4 position (accumulated error from first)
+        stop_quantity3 = 0.3  # Third stop closes remaining 0.3 position
         take_price = 110.0  # Does NOT trigger
         
         entry_execution = entry_price  # 95.0 (limit, no slippage)
@@ -1120,9 +1121,10 @@ class TestSellSltpOneEntryMultipleStopsOneTake:
         # Expected profit calculation (with volume rounding to precision_amount=0.1):
         # Entry volume: 1.0 (no rounding needed)
         # Stop volumes: calculated from all requested entry volumes (1.0)
-        #   First stop: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        #   Second stop: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        #   Third stop (extreme): 1.0 - 0.3 - 0.3 = 0.4
+        # Using cumulative rounding algorithm:
+        #   First stop: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        #   Second stop: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        #   Third stop (extreme): 1.0 - 0.7 = 0.3
         # Take profit does NOT trigger
         entry_price = 105.0
         entry_quantity = 1.0
@@ -1130,8 +1132,8 @@ class TestSellSltpOneEntryMultipleStopsOneTake:
         stop_trigger_price2 = 112.0
         stop_trigger_price3 = 114.0
         stop_quantity1 = 0.3  # First stop closes 0.3 position
-        stop_quantity2 = 0.3  # Second stop closes 0.3 position
-        stop_quantity3 = 0.4  # Third stop closes remaining 0.4 position
+        stop_quantity2 = 0.4  # Second stop closes 0.4 position (accumulated error from first)
+        stop_quantity3 = 0.3  # Third stop closes remaining 0.3 position
         take_price = 90.0  # Does NOT trigger
         
         entry_execution = entry_price  # 105.0 (limit, no slippage)

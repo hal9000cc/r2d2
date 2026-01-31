@@ -128,8 +128,7 @@ class TestBuySltpOneEntryOneTake:
         # Bar 1: entry triggers (1 trade - entry), take profit activates but doesn't trigger yet
         # Bar 2: take profit triggers (2 trades total - entry + take)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 2, "Take profit should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "Entry should trigger on bar 1 and take profit on bar 2 (both visible after bar 2 processing)"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -254,8 +253,7 @@ class TestSellSltpOneEntryOneTake:
         # Bar 1: entry triggers (1 trade - entry), take profit activates but doesn't trigger yet
         # Bar 2: take profit triggers (2 trades total - entry + take)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 2, "Take profit should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "Entry should trigger on bar 1 and take profit on bar 2 (both visible after bar 2 processing)"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -385,8 +383,7 @@ class TestBuySltpOneEntryMultipleTakes:
         # Bar 1: entry triggers (1 trade - entry), take profits activate but don't trigger yet
         # Bar 2: both take profits trigger (3 trades total - entry + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 3, "Both take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 3, "Entry should trigger on bar 1 and both take profits on bar 2 (all visible after bar 2 processing)"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -446,14 +443,15 @@ class TestBuySltpOneEntryMultipleTakes:
         take_price1 = 110.0
         take_price2 = 112.0
         # Takes are calculated from TOTAL actual rounded-down entry volumes (1.0)
+        # Using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First take: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second take: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third take (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4 (but doesn't trigger)
-        # First two takes trigger, closing 0.3 + 0.3 = 0.6 of 1.0
-        take_quantity1 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        take_quantity2 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        remaining_quantity = quantity - take_quantity1 - take_quantity2  # 1.0 - 0.3 - 0.3 = 0.4
+        # First take: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second take: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third take (extreme, gets remainder): 1.0 - 0.7 = 0.3 (but doesn't trigger)
+        # First two takes trigger, closing 0.3 + 0.4 = 0.7 of 1.0
+        take_quantity1 = 0.3  # First take: 0.33 rounded to 0.3
+        take_quantity2 = 0.4  # Second take: 0.36 rounded to 0.4 (accumulated error from first)
+        remaining_quantity = quantity - take_quantity1 - take_quantity2  # 1.0 - 0.3 - 0.4 = 0.3
         
         entry_execution = entry_price  # 95.0 (limit, no slippage)
         entry_fee = entry_execution * quantity * test_task.fee_maker  # 95.0 * 1.0 * 0.0005 = 0.0475
@@ -528,8 +526,7 @@ class TestBuySltpOneEntryMultipleTakes:
         # Bar 1: entry triggers (1 trade - entry), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (3 trades total - entry + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 3, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 3, "Entry should trigger on bar 1 and first two take profits on bar 2 (all visible after bar 2 processing)"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -661,8 +658,7 @@ class TestSellSltpOneEntryMultipleTakes:
         # Bar 1: entry triggers (1 trade - entry), take profits activate but don't trigger yet
         # Bar 2: both take profits trigger (3 trades total - entry + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 3, "Both take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 3, "Entry should trigger on bar 1 and both take profits on bar 2 (all visible after bar 2 processing)"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -722,14 +718,15 @@ class TestSellSltpOneEntryMultipleTakes:
         take_price1 = 90.0
         take_price2 = 88.0
         # Takes are calculated from TOTAL actual rounded-down entry volumes (1.0)
+        # Using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First take: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second take: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third take (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4 (but doesn't trigger)
-        # First two takes trigger, closing 0.3 + 0.3 = 0.6 of 1.0
-        take_quantity1 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        take_quantity2 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        remaining_quantity = quantity - take_quantity1 - take_quantity2  # 1.0 - 0.3 - 0.3 = 0.4
+        # First take: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second take: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third take (extreme, gets remainder): 1.0 - 0.7 = 0.3 (but doesn't trigger)
+        # First two takes trigger, closing 0.3 + 0.4 = 0.7 of 1.0
+        take_quantity1 = 0.3  # First take: 0.33 rounded to 0.3
+        take_quantity2 = 0.4  # Second take: 0.36 rounded to 0.4 (accumulated error from first)
+        remaining_quantity = quantity - take_quantity1 - take_quantity2  # 1.0 - 0.3 - 0.4 = 0.3
         
         entry_execution = entry_price  # 105.0 (limit, no slippage)
         entry_fee = entry_execution * quantity * test_task.fee_maker  # 105.0 * 1.0 * 0.0005 = 0.0525
@@ -737,16 +734,16 @@ class TestSellSltpOneEntryMultipleTakes:
         exit_execution1 = take_price1  # 90.0 (limit, no slippage)
         exit_fee1 = exit_execution1 * take_quantity1 * test_task.fee_maker  # 90.0 * 0.3 * 0.0005 = 0.0135
         exit_execution2 = take_price2  # 88.0 (limit, no slippage)
-        exit_fee2 = exit_execution2 * take_quantity2 * test_task.fee_maker  # 88.0 * 0.3 * 0.0005 = 0.0132
+        exit_fee2 = exit_execution2 * take_quantity2 * test_task.fee_maker  # 88.0 * 0.4 * 0.0005 = 0.0176
         
-        # Remaining position (0.4) will be auto-closed at end of test at bar 2 closing price (87.0)
+        # Remaining position (0.3) will be auto-closed at end of test at bar 2 closing price (87.0)
         auto_close_price = 87.0  # Price close of last bar (bar 2)
         auto_close_execution = auto_close_price + test_task.slippage_in_steps * test_task.price_step  # 87.0 + 0.1 = 87.1 (BUY market, slippage increases price)
-        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 87.1 * 0.4 * 0.001 = 0.03484
+        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 87.1 * 0.3 * 0.001 = 0.02613
         
         entry_proceeds = entry_execution * quantity - entry_fee  # 105.0*1.0 - 0.0525 = 104.9475
-        total_exit_cost = exit_execution1 * take_quantity1 + exit_fee1 + exit_execution2 * take_quantity2 + exit_fee2 + auto_close_execution * remaining_quantity + auto_close_fee  # 90.0*0.3 + 0.0135 + 88.0*0.3 + 0.0132 + 87.1*0.4 + 0.03484 = 27.0135 + 26.4132 + 34.87484 = 88.30154
-        expected_profit = entry_proceeds - total_exit_cost  # = 104.9475 - 88.30154 = 16.64596
+        total_exit_cost = exit_execution1 * take_quantity1 + exit_fee1 + exit_execution2 * take_quantity2 + exit_fee2 + auto_close_execution * remaining_quantity + auto_close_fee  # 90.0*0.3 + 0.0135 + 88.0*0.4 + 0.0176 + 87.1*0.3 + 0.02613 = 27.0135 + 35.2176 + 26.15613 = 88.38723
+        expected_profit = entry_proceeds - total_exit_cost  # = 104.9475 - 88.38723 = 16.56027
         
         protocol = [
             {
@@ -804,8 +801,7 @@ class TestSellSltpOneEntryMultipleTakes:
         # Bar 1: entry triggers (1 trade - entry), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (3 trades total - entry + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "Entry should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 3, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 3, "Entry should trigger on bar 1 and first two take profits on bar 2 (all visible after bar 2 processing)"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -816,10 +812,6 @@ class TestSellSltpOneEntryMultipleTakes:
         
         # Check total trades count (including auto-close)
         assert len(broker.trades) == 4, f"Expected 4 trades total (entry + take1 + take2 + auto_close), got {len(broker.trades)}"
-        
-        # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 1e-6, \
-            f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that entry order was executed
         entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
@@ -834,6 +826,10 @@ class TestSellSltpOneEntryMultipleTakes:
         assert len(executed_takes) == 2, "First two take profit orders should be executed"
         active_takes = [o for o in take_orders if o.status == OrderStatus.ACTIVE]
         assert len(active_takes) == 0, "No take profit orders should remain active after auto-close"
+        
+        # Check actual profit matches expected calculation
+        assert abs(deal.profit - expected_profit) < 1e-6, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
 
 
 # ============================================================================
@@ -942,8 +938,7 @@ class TestBuySltpMultipleEntriesAllTakes:
         # Bar 1: both entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: both take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "Both entries should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 4, "Both take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 4, "Both entries should trigger on bar 1 and both take profits on bar 2 (all visible after bar 2 processing)"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -1078,8 +1073,7 @@ class TestSellSltpMultipleEntriesAllTakes:
         # Bar 1: both entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: both take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "Both entries should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 4, "Both take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 4, "Both entries should trigger on bar 1 and both take profits on bar 2 (all visible after bar 2 processing)"
         
         # Check final state: deal should be closed
         deal = broker.get_deal(method_result.deal_id)
@@ -1143,34 +1137,35 @@ class TestBuySltpMultipleEntriesPartTakes:
         take_price1 = 110.0
         take_price2 = 112.0
         # Takes are calculated from actual entered volume (1.0)
+        # Using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First take: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second take: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third take (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
-        # Only first two takes trigger, closing 0.3 + 0.3 = 0.6 of 1.0
-        take_quantity1 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        take_quantity2 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        remaining_quantity = total_entry_quantity - take_quantity1 - take_quantity2  # 1.0 - 0.3 - 0.3 = 0.4
+        # First take: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second take: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third take (extreme, gets remainder): 1.0 - 0.7 = 0.3
+        # Only first two takes trigger, closing 0.3 + 0.4 = 0.7 of 1.0
+        take_quantity1 = 0.3  # First take: 0.33 rounded to 0.3
+        take_quantity2 = 0.4  # Second take: 0.36 rounded to 0.4 (accumulated error from first)
+        remaining_quantity = total_entry_quantity - take_quantity1 - take_quantity2  # 1.0 - 0.3 - 0.4 = 0.3
         
         entry_execution1 = entry_price1  # 97.0 (limit, no slippage)
         entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 97.0 * 0.5 * 0.0005 = 0.02425
         entry_execution2 = entry_price2  # 95.0 (limit, no slippage)
         entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 95.0 * 0.5 * 0.0005 = 0.02375
         
-        # First two takes close 0.6 of 1.0
+        # First two takes close 0.7 of 1.0 (0.3 + 0.4)
         exit_execution1 = take_price1  # 110.0 (limit, no slippage)
         exit_fee1 = exit_execution1 * take_quantity1 * test_task.fee_maker  # 110.0 * 0.3 * 0.0005 = 0.0165
         exit_execution2 = take_price2  # 112.0 (limit, no slippage)
-        exit_fee2 = exit_execution2 * take_quantity2 * test_task.fee_maker  # 112.0 * 0.3 * 0.0005 = 0.0168
+        exit_fee2 = exit_execution2 * take_quantity2 * test_task.fee_maker  # 112.0 * 0.4 * 0.0005 = 0.0224
         
-        # Remaining position (0.4) will be auto-closed at end of test at bar 2 closing price (113.0)
+        # Remaining position (0.3) will be auto-closed at end of test at bar 2 closing price (113.0)
         auto_close_price = 113.0  # Price close of last bar (bar 2)
         auto_close_execution = auto_close_price - test_task.slippage_in_steps * test_task.price_step  # 113.0 - 0.1 = 112.9 (SELL market, slippage decreases price)
-        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 112.9 * 0.4 * 0.001 = 0.04516
+        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 112.9 * 0.3 * 0.001 = 0.03387
         
         entry_cost = entry_execution1 * quantity1 + entry_fee1 + entry_execution2 * quantity2 + entry_fee2  # 97.0*0.5 + 0.02425 + 95.0*0.5 + 0.02375 = 96.048
-        total_exit_proceeds = exit_execution1 * take_quantity1 - exit_fee1 + exit_execution2 * take_quantity2 - exit_fee2 + auto_close_execution * remaining_quantity - auto_close_fee  # 110.0*0.3 - 0.0165 + 112.0*0.3 - 0.0168 + 112.9*0.4 - 0.04516 = 32.9835 + 33.5832 + 45.11484 = 111.68154
-        expected_profit = total_exit_proceeds - entry_cost  # = 111.68154 - 96.048 = 15.63354
+        total_exit_proceeds = exit_execution1 * take_quantity1 - exit_fee1 + exit_execution2 * take_quantity2 - exit_fee2 + auto_close_execution * remaining_quantity - auto_close_fee  # 110.0*0.3 - 0.0165 + 112.0*0.4 - 0.0224 + 112.9*0.3 - 0.03387 = 32.9835 + 44.7776 + 33.83613 = 111.59723
+        expected_profit = total_exit_proceeds - entry_cost  # = 111.59723 - 96.048 = 15.54923
         
         protocol = [
             {
@@ -1228,8 +1223,7 @@ class TestBuySltpMultipleEntriesPartTakes:
         # Bar 1: both entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "Both entries should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 4, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 4, "Both entries should trigger on bar 1 and first two take profits on bar 2 (all visible after bar 2 processing)"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -1296,38 +1290,38 @@ class TestBuySltpMultipleEntriesPartTakes:
         total_actual_entry_quantity = quantity1 + quantity2  # 0.3 + 0.3 = 0.6
         take_price1 = 110.0
         take_price2 = 112.0
-        # IMPORTANT: Take profit volumes are calculated from FULL ENTRY VOLUME (deal.enter_volume = 0.9), 
-        # MINUS executed stop volumes (0.0 in this test), NOT from actually opened position (0.6)
-        # This is the same logic as stop losses: calculated from all requested entry volumes (including unexecuted limits)
-        # Total rounded entry volume (deal.enter_volume): 0.3 + 0.3 + 0.3 = 0.9
-        # Executed stop volume: 0.0 (no stops executed)
-        # Target volume for takes: 0.9 - 0.0 = 0.9
-        # Fractions: 0.33, 0.33, 0.34
-        # First take: round(0.33 * 0.9 / 0.1) * 0.1 = round(2.97) * 0.1 = 3 * 0.1 = 0.3
-        # Second take: round(0.33 * 0.9 / 0.1) * 0.1 = round(2.97) * 0.1 = 3 * 0.1 = 0.3
-        # Third take (extreme, gets remainder from current position): 0.6 - 0.3 - 0.3 = 0.0 (but doesn't trigger)
-        # Only first two takes trigger, closing 0.3 + 0.3 = 0.6 of actual entered volume (0.6)
-        take_quantity1 = 0.3  # round(0.33 * 0.9 / 0.1) * 0.1 = 0.3
-        take_quantity2 = 0.3  # round(0.33 * 0.9 / 0.1) * 0.1 = 0.3
-        remaining_quantity = total_actual_entry_quantity - take_quantity1 - take_quantity2  # 0.6 - 0.3 - 0.3 = 0.0
+        # Take profit volumes are calculated from CURRENT market volume (quantity = 0.6), not from full entry volume
+        # Using cumulative rounding algorithm:
+        # Fractions: 0.33, 0.33, 0.34, fraction_sum = 1.0
+        # Target volume = current quantity = 0.6
+        # First take: exact=0.33*0.6/1.0=0.198, exact_sum=0.198, order_vol=0.198-0.0=0.198, rounded=0.2, rounded_sum=0.2
+        # Second take: exact=0.33*0.6/1.0=0.198, exact_sum=0.396, order_vol=0.396-0.2=0.196, rounded=0.2, rounded_sum=0.4
+        # Third take (extreme, gets remainder from target volume): 0.6 - 0.4 = 0.2, rounded=0.2 (but doesn't trigger)
+        # Only first two takes trigger, closing 0.2 + 0.2 = 0.4 of actual entered volume (0.6)
+        take_quantity1 = 0.2  # First take: 0.198 rounded to 0.2
+        take_quantity2 = 0.2  # Second take: 0.196 rounded to 0.2
+        remaining_quantity = total_actual_entry_quantity - take_quantity1 - take_quantity2  # 0.6 - 0.2 - 0.2 = 0.2
         
         entry_execution1 = entry_price1  # 97.0 (limit, no slippage)
         entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 97.0 * 0.3 * 0.0005 = 0.01455
         entry_execution2 = entry_price2  # 95.0 (limit, no slippage)
         entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 95.0 * 0.3 * 0.0005 = 0.01425
         
-        # First two takes close 0.6 of 0.6 (0.3 + 0.3) - fully closes position
+        # First two takes close 0.4 of 0.6 (0.2 + 0.2)
         exit_execution1 = take_price1  # 110.0 (limit, no slippage)
-        exit_fee1 = exit_execution1 * take_quantity1 * test_task.fee_maker  # 110.0 * 0.3 * 0.0005 = 0.0165
+        exit_fee1 = exit_execution1 * take_quantity1 * test_task.fee_maker  # 110.0 * 0.2 * 0.0005 = 0.011
         exit_execution2 = take_price2  # 112.0 (limit, no slippage)
-        exit_fee2 = exit_execution2 * take_quantity2 * test_task.fee_maker  # 112.0 * 0.3 * 0.0005 = 0.0168
+        exit_fee2 = exit_execution2 * take_quantity2 * test_task.fee_maker  # 112.0 * 0.2 * 0.0005 = 0.0112
         
-        # No remaining position (0.0) - position fully closed by takes
-        # No auto-close needed
+        # Remaining position (0.2) will be auto-closed at end of test at bar 2 closing price (113.0)
+        auto_close_price = 113.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        auto_close_execution = auto_close_price - slippage  # 113.0 - 0.1 = 112.9 (SELL market, slippage decreases price)
+        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 112.9 * 0.2 * 0.001 = 0.02258
         
         entry_cost = entry_execution1 * quantity1 + entry_fee1 + entry_execution2 * quantity2 + entry_fee2  # 97.0*0.3 + 0.01455 + 95.0*0.3 + 0.01425 = 57.6288
-        total_exit_proceeds = exit_execution1 * take_quantity1 - exit_fee1 + exit_execution2 * take_quantity2 - exit_fee2  # 110.0*0.3 - 0.0165 + 112.0*0.3 - 0.0168 = 33.0 - 0.0165 + 33.6 - 0.0168 = 66.5667
-        expected_profit = total_exit_proceeds - entry_cost  # = 66.5667 - 57.6288 = 8.9379
+        total_exit_proceeds = exit_execution1 * take_quantity1 - exit_fee1 + exit_execution2 * take_quantity2 - exit_fee2 + auto_close_execution * remaining_quantity - auto_close_fee  # 110.0*0.2 - 0.011 + 112.0*0.2 - 0.0112 + 112.9*0.2 - 0.02258 = 22.0 - 0.011 + 22.4 - 0.0112 + 22.58 - 0.02258 = 66.93522
+        expected_profit = total_exit_proceeds - entry_cost  # = 66.93522 - 57.6288 = 9.30642
         
         protocol = [
             {
@@ -1384,19 +1378,19 @@ class TestBuySltpMultipleEntriesPartTakes:
         # Bar 0: no execution (0 trades)
         # Bar 1: first two entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
+        # Trades from bar 2 are processed after loop completion, remaining position auto-closed (5 trades total)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First two entries should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 4, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 4, "First two entries should trigger on bar 1 and first two take profits on bar 2 (all visible after bar 2 processing)"
         
-        # Check final state: deal should be closed (fully closed by takes)
+        # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
-        # Check total trades count (no auto-close, position fully closed by takes)
-        assert len(broker.trades) == 4, f"Expected 4 trades total (entry1 + entry2 + take1 + take2), got {len(broker.trades)}"
+        # Check total trades count (including auto-close)
+        assert len(broker.trades) == 5, f"Expected 5 trades total (entry1 + entry2 + take1 + take2 + auto_close), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
         assert abs(deal.profit - expected_profit) < 1e-6, \
@@ -1452,34 +1446,35 @@ class TestSellSltpMultipleEntriesPartTakes:
         take_price1 = 90.0
         take_price2 = 88.0
         # Takes are calculated from actual entered volume (1.0)
+        # Using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First take: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second take: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third take (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
-        # Only first two takes trigger, closing 0.3 + 0.3 = 0.6 of 1.0
-        take_quantity1 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        take_quantity2 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        remaining_quantity = total_entry_quantity - take_quantity1 - take_quantity2  # 1.0 - 0.3 - 0.3 = 0.4
+        # First take: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second take: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third take (extreme, gets remainder): 1.0 - 0.7 = 0.3
+        # Only first two takes trigger, closing 0.3 + 0.4 = 0.7 of 1.0
+        take_quantity1 = 0.3  # First take: 0.33 rounded to 0.3
+        take_quantity2 = 0.4  # Second take: 0.36 rounded to 0.4 (accumulated error from first)
+        remaining_quantity = total_entry_quantity - take_quantity1 - take_quantity2  # 1.0 - 0.3 - 0.4 = 0.3
         
         entry_execution1 = entry_price1  # 103.0 (limit, no slippage)
         entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 103.0 * 0.5 * 0.0005 = 0.02575
         entry_execution2 = entry_price2  # 105.0 (limit, no slippage)
         entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 105.0 * 0.5 * 0.0005 = 0.02625
         
-        # First two takes close 0.6 of 1.0
+        # First two takes close 0.7 of 1.0 (0.3 + 0.4)
         exit_execution1 = take_price1  # 90.0 (limit, no slippage)
         exit_fee1 = exit_execution1 * take_quantity1 * test_task.fee_maker  # 90.0 * 0.3 * 0.0005 = 0.0135
         exit_execution2 = take_price2  # 88.0 (limit, no slippage)
-        exit_fee2 = exit_execution2 * take_quantity2 * test_task.fee_maker  # 88.0 * 0.3 * 0.0005 = 0.0132
+        exit_fee2 = exit_execution2 * take_quantity2 * test_task.fee_maker  # 88.0 * 0.4 * 0.0005 = 0.0176
         
-        # Remaining position (0.4) will be auto-closed at end of test at bar 2 closing price (87.0)
+        # Remaining position (0.3) will be auto-closed at end of test at bar 2 closing price (87.0)
         auto_close_price = 87.0  # Price close of last bar (bar 2)
         auto_close_execution = auto_close_price + test_task.slippage_in_steps * test_task.price_step  # 87.0 + 0.1 = 87.1 (BUY market, slippage increases price)
-        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 87.1 * 0.4 * 0.001 = 0.03484
+        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 87.1 * 0.3 * 0.001 = 0.02613
         
         entry_proceeds = entry_execution1 * quantity1 - entry_fee1 + entry_execution2 * quantity2 - entry_fee2  # 103.0*0.5 - 0.02575 + 105.0*0.5 - 0.02625 = 103.948
-        total_exit_cost = exit_execution1 * take_quantity1 + exit_fee1 + exit_execution2 * take_quantity2 + exit_fee2 + auto_close_execution * remaining_quantity + auto_close_fee  # 90.0*0.3 + 0.0135 + 88.0*0.3 + 0.0132 + 87.1*0.4 + 0.03484 = 27.0135 + 26.4132 + 34.87484 = 88.30154
-        expected_profit = entry_proceeds - total_exit_cost  # = 103.948 - 88.30154 = 15.64646
+        total_exit_cost = exit_execution1 * take_quantity1 + exit_fee1 + exit_execution2 * take_quantity2 + exit_fee2 + auto_close_execution * remaining_quantity + auto_close_fee  # 90.0*0.3 + 0.0135 + 88.0*0.4 + 0.0176 + 87.1*0.3 + 0.02613 = 27.0135 + 35.2176 + 26.15613 = 88.38723
+        expected_profit = entry_proceeds - total_exit_cost  # = 103.948 - 88.38723 = 15.56077
         
         protocol = [
             {
@@ -1537,8 +1532,7 @@ class TestSellSltpMultipleEntriesPartTakes:
         # Bar 1: both entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
         # Bar 2: first two take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "Both entries should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 4, "First two take profits should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 4, "Both entries should trigger on bar 1 and first two take profits on bar 2 (all visible after bar 2 processing)"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -1570,22 +1564,22 @@ class TestSellSltpMultipleEntriesPartTakes:
     
     def test_sell_sltp_multiple_limits_part_entries_part_takes_simultaneous(self, test_task):
         """Test D4.2: Multiple limit entries and part of take profits hit on same bar → part of entries trigger on bar 1, part of takes trigger on bar 2."""
-        # Prepare quotes data: price 100.0, then falls to trigger part of limit entries on bar 1, part of take profits on bar 2
+        # Prepare quotes data: price 100.0, then falls to trigger part of limit entries and take profits on bar 1, part of take profits on bar 2
         # Bar 0: high=101.0, low=99.0, limits at 103.0, 105.0, 107.0, takes at 90.0, 88.0, 86.0 - won't trigger (101.0 < 103.0, 101.0 < 105.0, 101.0 < 107.0, 99.0 > 90.0, 99.0 > 88.0, 99.0 > 86.0)
-        # Bar 1: high=106.0, low=89.0, limits at 103.0, 105.0, 107.0, takes at 90.0, 88.0, 86.0 - first two entries trigger (106.0 >= 103.0, 106.0 >= 105.0, 106.0 < 107.0), takes activate but don't trigger yet
+        # Bar 1: high=106.0, low=89.0, limits at 103.0, 105.0, 107.0, takes at 90.0, 88.0, 86.0 - first two entries and first take trigger
         #   Entry limits (SELL, triggers when high >= price): 106.0 >= 103.0 ✓, 106.0 >= 105.0 ✓, 106.0 < 107.0 ✗
-        #   Take profits (BUY limits, trigger when low <= price): 89.0 <= 90.0 ✓, 89.0 <= 88.0 ✗, 89.0 > 86.0 ✗, but takes are NEW, activate after entry executes
-        # Bar 2: low=87.0, takes at 90.0, 88.0, 86.0 - first two take profits trigger (87.0 <= 90.0, 87.0 <= 88.0), third doesn't trigger (87.0 > 86.0)
+        #   Take profits (BUY limits, trigger when low <= price): 89.0 <= 90.0 ✓ (take1 triggers), 89.0 <= 88.0 ✗, 89.0 > 86.0 ✗
+        # Bar 2: low=87.0, takes at 90.0, 88.0, 86.0 - second take profit triggers (87.0 <= 88.0), third doesn't trigger (87.0 > 86.0)
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 97.0, 87.0],
             highs=[101.0, 106.0, 92.0],  # Bar 1 high=106.0 triggers first two limit entries at 103.0 and 105.0 (106.0 >= 103.0, 106.0 >= 105.0) but not third at 107.0 (106.0 < 107.0)
-            lows=[99.0, 89.0, 87.0]  # Bar 1 low=89.0 (entries trigger), Bar 2 low=87.0 triggers first two take profits at 90.0 and 88.0 (87.0 <= 90.0, 87.0 <= 88.0) but not third at 86.0 (87.0 > 86.0)
+            lows=[99.0, 89.0, 87.0]  # Bar 1 low=89.0 triggers first take profit at 90.0 (89.0 <= 90.0) but not second at 88.0 (89.0 > 88.0), Bar 2 low=87.0 triggers second take profit at 88.0 (87.0 <= 88.0) but not third at 86.0 (87.0 > 86.0)
         )
         
         # Protocol: On bar 0, enter SELL with three limits (0.33 at 103.0, 0.33 at 105.0, 0.34 at 107.0) with three take profits (0.33 at 90.0, 0.33 at 88.0, 0.34 at 86.0) and stop loss 110.0
         # Entry prices: 103.0 and 105.0 (limits, no slippage, fee_maker) - only first two trigger
-        # Take triggers: 90.0 and 88.0 (takes execute as limits, no slippage, fee_maker) - only first two trigger
-        # Expected: first two limit entries trigger on bar 1, first two take profits activate and trigger on bar 2, third entry and third take remain active
+        # Take triggers: 90.0 on bar 1, 88.0 on bar 2 (takes execute as limits, no slippage, fee_maker) - first two trigger
+        # Expected: first two limit entries and first take profit trigger on bar 1, second take profit triggers on bar 2, third entry and third take remain active
         # Expected profit calculation (with volume rounding to precision_amount=0.1):
         # Volume calculation rules:
         # 1. Entry volumes are rounded DOWN (floor_to_precision) independently for each order
@@ -1605,38 +1599,38 @@ class TestSellSltpMultipleEntriesPartTakes:
         total_actual_entry_quantity = quantity1 + quantity2  # 0.3 + 0.3 = 0.6
         take_price1 = 90.0
         take_price2 = 88.0
-        # IMPORTANT: Take profit volumes are calculated from FULL ENTRY VOLUME (deal.enter_volume = 0.9), 
-        # MINUS executed stop volumes (0.0 in this test), NOT from actually opened position (0.6)
-        # This is the same logic as stop losses: calculated from all requested entry volumes (including unexecuted limits)
-        # Total rounded entry volume (deal.enter_volume): 0.3 + 0.3 + 0.3 = 0.9
-        # Executed stop volume: 0.0 (no stops executed)
-        # Target volume for takes: 0.9 - 0.0 = 0.9
-        # Fractions: 0.33, 0.33, 0.34
-        # First take: round(0.33 * 0.9 / 0.1) * 0.1 = round(2.97) * 0.1 = 3 * 0.1 = 0.3
-        # Second take: round(0.33 * 0.9 / 0.1) * 0.1 = round(2.97) * 0.1 = 3 * 0.1 = 0.3
-        # Third take (extreme, gets remainder from current position): 0.6 - 0.3 - 0.3 = 0.0 (but doesn't trigger)
-        # Only first two takes trigger, closing 0.3 + 0.3 = 0.6 of actual entered volume (0.6)
-        take_quantity1 = 0.3  # round(0.33 * 0.9 / 0.1) * 0.1 = 0.3
-        take_quantity2 = 0.3  # round(0.33 * 0.9 / 0.1) * 0.1 = 0.3
-        remaining_quantity = total_actual_entry_quantity - take_quantity1 - take_quantity2  # 0.6 - 0.3 - 0.3 = 0.0
+        # Take profit volumes are calculated from CURRENT market volume (quantity = 0.6), not from full entry volume
+        # Using cumulative rounding algorithm:
+        # Fractions: 0.33, 0.33, 0.34, fraction_sum = 1.0
+        # Target volume = current quantity = 0.6
+        # First take: exact=0.33*0.6/1.0=0.198, exact_sum=0.198, order_vol=0.198-0.0=0.198, rounded=0.2, rounded_sum=0.2
+        # Second take: exact=0.33*0.6/1.0=0.198, exact_sum=0.396, order_vol=0.396-0.2=0.196, rounded=0.2, rounded_sum=0.4
+        # Third take (extreme, gets remainder from target volume): 0.6 - 0.4 = 0.2, rounded=0.2 (but doesn't trigger)
+        # Only first two takes trigger, closing 0.2 + 0.2 = 0.4 of actual entered volume (0.6)
+        take_quantity1 = 0.2  # First take: 0.198 rounded to 0.2
+        take_quantity2 = 0.2  # Second take: 0.196 rounded to 0.2
+        remaining_quantity = total_actual_entry_quantity - take_quantity1 - take_quantity2  # 0.6 - 0.2 - 0.2 = 0.2
         
         entry_execution1 = entry_price1  # 103.0 (limit, no slippage)
         entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 103.0 * 0.3 * 0.0005 = 0.01545
         entry_execution2 = entry_price2  # 105.0 (limit, no slippage)
         entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 105.0 * 0.3 * 0.0005 = 0.01575
         
-        # First two takes close 0.6 of 0.6 (0.3 + 0.3) - fully closes position
+        # First two takes close 0.4 of 0.6 (0.2 + 0.2)
         exit_execution1 = take_price1  # 90.0 (limit, no slippage)
-        exit_fee1 = exit_execution1 * take_quantity1 * test_task.fee_maker  # 90.0 * 0.3 * 0.0005 = 0.0135
+        exit_fee1 = exit_execution1 * take_quantity1 * test_task.fee_maker  # 90.0 * 0.2 * 0.0005 = 0.009
         exit_execution2 = take_price2  # 88.0 (limit, no slippage)
-        exit_fee2 = exit_execution2 * take_quantity2 * test_task.fee_maker  # 88.0 * 0.3 * 0.0005 = 0.0132
+        exit_fee2 = exit_execution2 * take_quantity2 * test_task.fee_maker  # 88.0 * 0.2 * 0.0005 = 0.0088
         
-        # No remaining position (0.0) - position fully closed by takes
-        # No auto-close needed
+        # Remaining position (0.2) will be auto-closed at end of test at bar 2 closing price (87.0)
+        auto_close_price = 87.0
+        slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
+        auto_close_execution = auto_close_price + slippage  # 87.0 + 0.1 = 87.1 (BUY market, slippage increases price)
+        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 87.1 * 0.2 * 0.001 = 0.01742
         
         entry_proceeds = entry_execution1 * quantity1 - entry_fee1 + entry_execution2 * quantity2 - entry_fee2  # 103.0*0.3 - 0.01545 + 105.0*0.3 - 0.01575 = 62.3688
-        total_exit_cost = exit_execution1 * take_quantity1 + exit_fee1 + exit_execution2 * take_quantity2 + exit_fee2  # 90.0*0.3 + 0.0135 + 88.0*0.3 + 0.0132 = 27.0135 + 26.4132 = 53.4267
-        expected_profit = entry_proceeds - total_exit_cost  # = 62.3688 - 53.4267 = 8.9421
+        total_exit_cost = exit_execution1 * take_quantity1 + exit_fee1 + exit_execution2 * take_quantity2 + exit_fee2 + auto_close_execution * remaining_quantity + auto_close_fee  # 90.0*0.2 + 0.009 + 88.0*0.2 + 0.0088 + 87.1*0.2 + 0.01742 = 18.0 + 0.009 + 17.6 + 0.0088 + 17.42 + 0.01742 = 53.05522
+        expected_profit = entry_proceeds - total_exit_cost  # = 62.3688 - 53.05522 = 9.31358
         
         protocol = [
             {
@@ -1689,23 +1683,25 @@ class TestSellSltpMultipleEntriesPartTakes:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that first two entries trigger on bar 1, first two take profits trigger on bar 2
+        # Check that first two entries and first take profit trigger on bar 1, second take profit triggers on bar 2
         # Bar 0: no execution (0 trades)
-        # Bar 1: first two entries trigger (2 trades - entry1 + entry2), take profits activate but don't trigger yet
-        # Bar 2: first two take profits trigger (4 trades total - entry1 + entry2 + take1 + take2)
+        # Bar 1: first two entries and first take profit trigger (3 trades - entry1 + entry2 + take1)
+        # Bar 2: second take profit triggers (4 trades total - entry1 + entry2 + take1 + take2)
+        # Trades from bar 2 are processed after loop completion, remaining position auto-closed (5 trades total)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First two entries should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 4, "First two take profits should trigger on bar 2"
+        assert collected_data[1]['trades_count'] == 0, "No execution on bar 0 (visible on bar 1)"
+        assert collected_data[2]['trades_count'] == 3, "First two entries and first take profit should trigger on bar 1 (visible on bar 2)"
+        # Trades from bar 2 (take2) are processed after loop completion, remaining position auto-closed, check final broker state
         
-        # Check final state: deal should be closed (fully closed by takes)
+        # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
         assert deal is not None, "Deal should exist"
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
-        # Check total trades count (no auto-close, position fully closed by takes)
-        assert len(broker.trades) == 4, f"Expected 4 trades total (entry1 + entry2 + take1 + take2), got {len(broker.trades)}"
+        # Check total trades count (including auto-close)
+        assert len(broker.trades) == 5, f"Expected 5 trades total (entry1 + entry2 + take1 + take2 + auto_close), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
         assert abs(deal.profit - expected_profit) < 1e-6, \

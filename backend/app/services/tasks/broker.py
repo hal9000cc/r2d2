@@ -490,70 +490,99 @@ class Deal(BaseModel):
         """
         Update volumes for stop loss orders.
         
-        Combines entry orders and stop loss orders, sorts them, and calculates
-        volumes based on simulated volume progression.
+        Calculates volumes based on:
+        1. Current position volume in market (quantity)
+        2. Sum of unexecuted entry orders (OrderGroup.NONE with status ACTIVE or NEW)
+        3. Target volume = quantity + unexecuted entry orders volume
+        4. Each stop loss order volume = fraction * target_volume (rounded)
+        5. Last stop loss order (extreme) closes remaining volume
         """
-        # Collect entry and stop orders with sort keys in one pass
-        # For entry orders: use price, for stop orders: use trigger_price
-        # Market orders (price is None) are not added to orders_with_keys,
-        # but their volume is added to sim_volume immediately
-        orders_with_keys = []
-        has_stop_orders = False
+        # 1. Get current position volume in market
+        quantity = abs(self.quantity)
         
-        # Initialize simulated volume with current deal quantity
-        sim_volume = abs(self.quantity)
-        
+        # 2. Calculate unexecuted entry orders volume
+        # Entry orders: OrderGroup.NONE with status ACTIVE or NEW (all types including MARKET)
+        unexecuted_entry_volume = 0.0
         for order in self.orders:
-            if order.status not in (OrderStatus.ACTIVE, OrderStatus.NEW):
-                continue
-            
-            if order.order_group == OrderGroup.NONE:
-                # Entry order
-                if order.order_type == OrderType.MARKET:
-                    # Market order: add volume to sim_volume immediately, don't add to sort list
-                    sim_volume += order.volume
-                else:
-                    # Limit order: must have price, add to sort list
-                    assert order.price is not None, f"Entry limit order {order.order_id} must have price set"
-                    orders_with_keys.append((order.price, order, 'entry'))
-            elif order.order_group == OrderGroup.STOP_LOSS:
-                # Stop loss order
-                assert order.trigger_price is not None, f"Stop order {order.order_id} must have trigger_price set"
-                orders_with_keys.append((order.trigger_price, order, 'stop'))
-                has_stop_orders = True
+            if (order.order_group == OrderGroup.NONE and 
+                order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)):
+                unexecuted_entry_volume += order.volume
         
-        if not has_stop_orders:
+        # 3. Calculate target volume
+        target_volume = quantity + unexecuted_entry_volume
+        
+        # 4. Get all stop loss orders
+        stop_orders = [
+            order for order in self.orders
+            if order.order_group == OrderGroup.STOP_LOSS
+            and order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+        ]
+        
+        if not stop_orders:
             return
         
-        # Determine sort direction: for LONG descending, for SHORT ascending
+        # 5. Sort stop orders
+        # For LONG: descending by trigger_price (farthest down first)
+        # For SHORT: ascending by trigger_price (farthest up first)
         reverse = (self.type == DealType.LONG)
-        orders_with_keys.sort(key=lambda x: x[0], reverse=reverse)
+        sorted_stop_orders = sorted(
+            stop_orders,
+            key=lambda o: o.trigger_price if o.trigger_price is not None else (float('-inf') if reverse else float('inf')),
+            reverse=reverse
+        )
         
-        # Process each order
-        for sort_key, order, order_type in orders_with_keys:
-            if order_type == 'entry':
-                # Entry order: add its volume to sim_volume
-                sim_volume += order.volume
-            else:  # stop
-                # Stop order: update volume = sim_volume * fraction_remain, then subtract from sim_volume
-                assert order.fraction_remain is not None, f"Stop order {order.order_id} must have fraction_remain set"
-                new_volume = sim_volume * order.fraction_remain
-                formatted_volume = broker.format_volume(new_volume)
-                order._set_sync_field('volume', formatted_volume)
-                order.update_modify_time(broker)
-                sim_volume -= order.volume
+        # 6. Calculate sum of fractions for active orders
+        fraction_sum = sum(order.fraction for order in sorted_stop_orders if order.fraction is not None)
+        if fraction_sum == 0:
+            return
+        
+        # 7. Initialize accumulators
+        exact_volume_sum = 0.0  # Accumulated exact (non-rounded) volume
+        rounded_volume_sum = 0.0  # Accumulated rounded volume that went into orders
+        
+        # 8. Process all orders except last
+        for order in sorted_stop_orders[:-1]:
+            # Calculate exact volume for this order
+            assert order.fraction is not None, f"Stop order {order.order_id} must have fraction set"
+            exact_volume = order.fraction * target_volume / fraction_sum
+            exact_volume_sum += exact_volume
+            
+            # Calculate order volume as difference between exact sum and rounded sum
+            order_volume = exact_volume_sum - rounded_volume_sum
+            formatted_volume = broker.format_volume_round(order_volume)
+            rounded_volume_sum += formatted_volume
+            
+            # Update order immediately
+            order._set_sync_field('volume', formatted_volume)
+            order.update_modify_time(broker)
+        
+        # 9. Process last order (closes remaining volume)
+        last_order = sorted_stop_orders[-1]
+        last_order_volume = target_volume - rounded_volume_sum
+        # Apply rounding to last order as well to ensure proper precision
+        last_order._set_sync_field('volume', broker.format_volume_round(last_order_volume))
+        last_order.update_modify_time(broker)
     
     def update_take_profit_volumes(self, broker: 'Broker') -> None:
         """
         Update volumes for take profit orders.
         
-        Sorts take profit orders and calculates volumes based on simulated volume.
+        Calculates volumes based on:
+        1. Current position volume in market (quantity)
+        2. Target volume = quantity
+        3. Each take profit order volume = fraction * target_volume (rounded)
+        4. Last take profit order (extreme) closes remaining volume
         """
-
         if self.quantity == 0:
             return
 
-        # Get take profit orders (ACTIVE or NEW)
+        # 1. Get current position volume in market
+        quantity = abs(self.quantity)
+        
+        # 2. Calculate target volume
+        target_volume = quantity
+        
+        # 4. Get all take profit orders
         take_orders = [
             order for order in self.orders
             if order.order_group == OrderGroup.TAKE_PROFIT
@@ -563,31 +592,55 @@ class Deal(BaseModel):
         if not take_orders:
             return
         
-        # Determine sort direction: for LONG ascending, for SHORT descending
+        # 5. Sort take profit orders
+        # For LONG: ascending by price (farthest up first)
+        # For SHORT: descending by price (farthest down first)
         reverse = (self.type == DealType.SHORT)
-        # Sort by price
-        take_orders.sort(
-            key=lambda o: o.price if o.price is not None else float('-inf'),
+        sorted_take_orders = sorted(
+            take_orders,
+            key=lambda o: o.price if o.price is not None else (float('-inf') if reverse else float('inf')),
             reverse=reverse
         )
         
-        # Initialize simulated volume with current deal quantity
-        sim_volume = abs(self.quantity)
+        # 6. Calculate sum of fractions for active orders
+        fraction_sum = sum(order.fraction for order in sorted_take_orders if order.fraction is not None)
+        if fraction_sum == 0:
+            return
         
-        # Process each order
-        for order in take_orders:
-            assert order.fraction_remain is not None, f"Take profit order {order.order_id} must have fraction_remain set"
-            # Update volume = sim_volume * fraction_remain
-            new_volume = sim_volume * order.fraction_remain
-            formatted_volume = broker.format_volume(new_volume)
+        # 7. Initialize accumulators
+        exact_volume_sum = 0.0  # Accumulated exact (non-rounded) volume
+        rounded_volume_sum = 0.0  # Accumulated rounded volume that went into orders
+        
+        # 8. Process all orders except last
+        for order in sorted_take_orders[:-1]:
+            # Calculate exact volume for this order
+            assert order.fraction is not None, f"Take profit order {order.order_id} must have fraction set"
+            exact_volume = order.fraction * target_volume / fraction_sum
+            exact_volume_sum += exact_volume
+            
+            # Calculate order volume as difference between exact sum and rounded sum
+            order_volume = exact_volume_sum - rounded_volume_sum
+            formatted_volume = broker.format_volume_round(order_volume)
+            rounded_volume_sum += formatted_volume
+            
+            # Update order immediately
             order._set_sync_field('volume', formatted_volume)
             order.update_modify_time(broker)
-            # Subtract volume from sim_volume
-            sim_volume -= order.volume
             
             # Activate order if it's in NEW status
             if order.status == OrderStatus.NEW:
                 order._set_sync_field('status', OrderStatus.ACTIVE)
+        
+        # 9. Process last order (closes remaining volume)
+        last_order = sorted_take_orders[-1]
+        last_order_volume = target_volume - rounded_volume_sum
+        # Apply rounding to last order as well to ensure proper precision
+        last_order._set_sync_field('volume', broker.format_volume_round(last_order_volume))
+        last_order.update_modify_time(broker)
+        
+        # Activate last order if it's in NEW status
+        if last_order.status == OrderStatus.NEW:
+            last_order._set_sync_field('status', OrderStatus.ACTIVE)
 
 
 class Broker(ABC):
@@ -686,6 +739,29 @@ class Broker(ABC):
         epsilon = max(sys.float_info.epsilon, self.precision_amount * 1e-15)
         quotient = value / self.precision_amount
         return VOLUME_TYPE(math.floor(quotient + epsilon) * self.precision_amount)
+    
+    def format_volume_round(self, value: VOLUME_TYPE) -> VOLUME_TYPE:
+        """
+        Format volume by rounding to nearest multiple of precision_amount.
+        
+        Used for order volume calculations where rounding is preferred over floor.
+        
+        Args:
+            value: Volume value to format (must be >= 0)
+        
+        Returns:
+            Formatted volume rounded to nearest precision_amount
+        
+        Raises:
+            AssertionError: If value < 0 or precision_amount <= 0
+        """
+        assert value >= 0, f"Volume must be >= 0, got {value}"
+        assert self.precision_amount > 0, f"precision_amount must be > 0, got {self.precision_amount}"
+        
+        if value == 0:
+            return VOLUME_TYPE(0.0)
+        
+        return VOLUME_TYPE(round(value / self.precision_amount) * self.precision_amount)
     
     def format_price(self, value: PRICE_TYPE) -> PRICE_TYPE:
         """
@@ -877,8 +953,8 @@ class Broker(ABC):
         take_orders = self._create_take_profit_orders(deal, take_profits, opposite_side)
         new_orders.extend(take_orders)
         
-        deal.calc_fraction_remain(self, OrderGroup.STOP_LOSS)
-        deal.calc_fraction_remain(self, OrderGroup.TAKE_PROFIT)
+        #deal.calc_fraction_remain(self, OrderGroup.STOP_LOSS)
+        #deal.calc_fraction_remain(self, OrderGroup.TAKE_PROFIT)
         
         # Start deal: activate entry and stop loss orders
         orders_to_sync = deal.start(self)

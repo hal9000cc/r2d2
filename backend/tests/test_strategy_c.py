@@ -606,19 +606,19 @@ class TestBuySltpOneEntryMultipleStops:
         # Stop triggers: 90.0 and 88.0 (stops execute as market, with slippage -0.1)
         # Expected: limit entry and first two stops trigger simultaneously on bar 1, third stop remains active
         # Expected profit calculation (with volume rounding to precision_amount=0.1):
-        # Stop volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Stop volumes are calculated using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third stop (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
+        # First stop: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second stop: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third stop (extreme, gets remainder): 1.0 - 0.7 = 0.3
         entry_price = 95.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
         entry_quantity = 1.0
         stop_trigger1 = 90.0
         stop_trigger2 = 88.0
-        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third stop, which doesn't trigger)
+        quantity1 = 0.3  # First stop: 0.33 rounded to 0.3
+        quantity2 = 0.4  # Second stop: 0.36 rounded to 0.4 (accumulated error from first)
+        quantity3 = 0.3  # Third stop: remainder 1.0 - 0.7 = 0.3 (for third stop, which doesn't trigger)
         
         entry_execution = entry_price  # 95.0 (limit, no slippage)
         entry_fee = entry_execution * entry_quantity * test_task.fee_maker  # 95.0 * 1.0 * 0.0005 = 0.0475
@@ -967,19 +967,19 @@ class TestSellSltpOneEntryMultipleStops:
         # Stop triggers: 110.0 and 112.0 (BUY stops execute as market, with slippage +0.1)
         # Expected: limit entry and first two stops trigger simultaneously on bar 1, third stop remains active
         # Expected profit calculation (with volume rounding to precision_amount=0.1):
-        # Stop volumes are rounded to precision_amount=0.1: first two get rounded, third gets remainder
+        # Stop volumes are calculated using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second stop: round(0.33 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third stop (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
+        # First stop: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second stop: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third stop (extreme, gets remainder): 1.0 - 0.7 = 0.3
         entry_price = 105.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
         entry_quantity = 1.0
         stop_trigger1 = 110.0
         stop_trigger2 = 112.0
-        quantity1 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity2 = 0.3  # round(0.33 / 0.1) * 0.1 = 0.3
-        quantity3 = 0.4  # remainder: 1.0 - 0.3 - 0.3 = 0.4 (for third stop, which doesn't trigger)
+        quantity1 = 0.3  # First stop: 0.33 rounded to 0.3
+        quantity2 = 0.4  # Second stop: 0.36 rounded to 0.4 (accumulated error from first)
+        quantity3 = 0.3  # Third stop: remainder 1.0 - 0.7 = 0.3 (for third stop, which doesn't trigger)
         
         entry_execution = entry_price  # 105.0 (limit, no slippage)
         entry_fee = entry_execution * entry_quantity * test_task.fee_maker  # 105.0 * 1.0 * 0.0005 = 0.0525
@@ -1751,14 +1751,15 @@ class TestBuySltpMultipleEntriesPartStops:
         stop_trigger1 = 90.0
         stop_trigger2 = 88.0
         # Stops are calculated from actual entered volume (1.0)
+        # Using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First stop: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second stop: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third stop (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
-        # Only first two stops trigger, closing 0.3 + 0.3 = 0.6 of 1.0
-        stop_quantity1 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        stop_quantity2 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        remaining_quantity = total_entry_quantity - stop_quantity1 - stop_quantity2  # 1.0 - 0.3 - 0.3 = 0.4
+        # First stop: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second stop: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third stop (extreme, gets remainder): 1.0 - 0.7 = 0.3
+        # Only first two stops trigger, closing 0.3 + 0.4 = 0.7 of 1.0
+        stop_quantity1 = 0.3  # First stop: 0.33 rounded to 0.3
+        stop_quantity2 = 0.4  # Second stop: 0.36 rounded to 0.4 (accumulated error from first)
+        remaining_quantity = total_entry_quantity - stop_quantity1 - stop_quantity2  # 1.0 - 0.3 - 0.4 = 0.3
         
         entry_execution1 = entry_price1  # 97.0 (limit, no slippage)
         entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 97.0 * 0.5 * 0.0005 = 0.02425
@@ -1834,8 +1835,9 @@ class TestBuySltpMultipleEntriesPartStops:
         # Check that both entries and first two stops trigger simultaneously on bar 1
         # Bar 0: no execution (0 trades)
         # Bar 1: both entries and first two stops trigger simultaneously (4 trades - entry1 + entry2 + stop1 + stop2)
+        # Trades from bar 1 are visible on bar 2
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 4, "Both entries and first two stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 4, "Both entries and first two stops should trigger simultaneously on bar 1 (visible on bar 2)"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -1901,34 +1903,35 @@ class TestBuySltpMultipleEntriesPartStops:
         stop_trigger1 = 96.0
         stop_trigger2 = 94.0
         # Stops are calculated from TOTAL actual rounded-down entry volumes (0.9), not from actual entered volume (0.6)
+        # Using cumulative rounding algorithm:
         # Fractions: 0.25, 0.25, 0.5
-        # First stop: round(0.25 * 0.9 / 0.1) * 0.1 = round(2.25) * 0.1 = 2 * 0.1 = 0.2
-        # Second stop: round(0.25 * 0.9 / 0.1) * 0.1 = round(2.25) * 0.1 = 2 * 0.1 = 0.2
-        # Third stop (extreme, gets remainder): 0.9 - 0.2 - 0.2 = 0.5 (but doesn't trigger)
-        # Only first two stops trigger, closing 0.2 + 0.2 = 0.4 of actual entered volume (0.6)
-        stop_quantity1 = 0.2  # round(0.25 * 0.9 / 0.1) * 0.1 = 0.2
-        stop_quantity2 = 0.2  # round(0.25 * 0.9 / 0.1) * 0.1 = 0.2
-        remaining_quantity = total_actual_entry_quantity - stop_quantity1 - stop_quantity2  # 0.6 - 0.2 - 0.2 = 0.2
+        # First stop: exact=0.25*0.9=0.225, exact_sum=0.225, order_vol=0.225-0.0=0.225, rounded=0.2, rounded_sum=0.2
+        # Second stop: exact=0.25*0.9=0.225, exact_sum=0.45, order_vol=0.45-0.2=0.25, rounded=0.3, rounded_sum=0.5
+        # Third stop (extreme, gets remainder from target volume): 0.9 - 0.5 = 0.4 (but doesn't trigger)
+        # Only first two stops trigger, closing 0.2 + 0.3 = 0.5 of actual entered volume (0.6)
+        stop_quantity1 = 0.2  # First stop: 0.225 rounded to 0.2
+        stop_quantity2 = 0.3  # Second stop: 0.25 rounded to 0.3 (accumulated error from first)
+        remaining_quantity = total_actual_entry_quantity - stop_quantity1 - stop_quantity2  # 0.6 - 0.2 - 0.3 = 0.1
         
         entry_execution1 = entry_price1  # 97.0 (limit, no slippage)
         entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 97.0 * 0.3 * 0.0005 = 0.01455
         entry_execution2 = entry_price2  # 95.0 (limit, no slippage)
         entry_fee2 = entry_execution2 * quantity2 * test_task.fee_maker  # 95.0 * 0.3 * 0.0005 = 0.01425
         
-        # First two stops close 0.4 of 0.6
+        # First two stops close 0.5 of 0.6 (0.2 + 0.3)
         exit_execution1 = stop_trigger1 - slippage  # 96.0 - 0.1 = 95.9 (SELL stop, slippage decreases price)
         exit_fee1 = exit_execution1 * stop_quantity1 * test_task.fee_taker  # 95.9 * 0.2 * 0.001 = 0.01918
         exit_execution2 = stop_trigger2 - slippage  # 94.0 - 0.1 = 93.9 (SELL stop, slippage decreases price)
-        exit_fee2 = exit_execution2 * stop_quantity2 * test_task.fee_taker  # 93.9 * 0.2 * 0.001 = 0.01878
+        exit_fee2 = exit_execution2 * stop_quantity2 * test_task.fee_taker  # 93.9 * 0.3 * 0.001 = 0.02817
         
-        # Remaining position (0.2) will be auto-closed at end of test at bar 2 closing price (95.0)
+        # Remaining position (0.1) will be auto-closed at end of test at bar 2 closing price (95.0)
         auto_close_price = 95.0
         auto_close_execution = auto_close_price - slippage  # 95.0 - 0.1 = 94.9 (SELL market, slippage decreases price)
-        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 94.9 * 0.2 * 0.001 = 0.01898
+        auto_close_fee = auto_close_execution * remaining_quantity * test_task.fee_taker  # 94.9 * 0.1 * 0.001 = 0.00949
         
         entry_cost = entry_execution1 * quantity1 + entry_fee1 + entry_execution2 * quantity2 + entry_fee2  # 97.0*0.3 + 0.01455 + 95.0*0.3 + 0.01425 = 57.6288
-        total_exit_proceeds = exit_execution1 * stop_quantity1 - exit_fee1 + exit_execution2 * stop_quantity2 - exit_fee2 + auto_close_execution * remaining_quantity - auto_close_fee  # 95.9*0.2 - 0.01918 + 93.9*0.2 - 0.01878 + 94.9*0.2 - 0.01898 = 56.74506
-        expected_profit = total_exit_proceeds - entry_cost  # = 56.74506 - 57.6288 = -0.88374
+        total_exit_proceeds = exit_execution1 * stop_quantity1 - exit_fee1 + exit_execution2 * stop_quantity2 - exit_fee2 + auto_close_execution * remaining_quantity - auto_close_fee  # 95.9*0.2 - 0.01918 + 93.9*0.3 - 0.02817 + 94.9*0.1 - 0.00949 = 56.74457
+        expected_profit = total_exit_proceeds - entry_cost  # = 56.74457 - 57.6288 = -0.88423
         
         protocol = [
             {
@@ -1984,8 +1987,9 @@ class TestBuySltpMultipleEntriesPartStops:
         # Check that first two entries and first two stops trigger simultaneously on bar 1
         # Bar 0: no execution (0 trades)
         # Bar 1: first two entries and first two stops trigger simultaneously (4 trades - entry1 + entry2 + stop1 + stop2)
+        # Trades from bar 1 are visible on bar 2
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 4, "First two entries and first two stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 4, "First two entries and first two stops should trigger simultaneously on bar 1 (visible on bar 2)"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -1996,10 +2000,6 @@ class TestBuySltpMultipleEntriesPartStops:
         
         # Check total trades count (including auto-close)
         assert len(broker.trades) == 5, f"Expected 5 trades total (entry1 + entry2 + stop1 + stop2 + auto_close), got {len(broker.trades)}"
-        
-        # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 1e-6, \
-            f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that first two entry orders were executed, third remains active
         entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
@@ -2014,6 +2014,10 @@ class TestBuySltpMultipleEntriesPartStops:
         assert len(executed_stops) == 2, "First two stop orders should be executed"
         active_stops = [o for o in stop_orders if o.status == OrderStatus.ACTIVE]
         assert len(active_stops) == 0, "No stop orders should remain active after auto-close"
+        
+        # Check actual profit matches expected calculation
+        assert abs(deal.profit - expected_profit) < 1e-6, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
 
 
 # ============================================================================
@@ -2047,14 +2051,15 @@ class TestSellSltpMultipleEntriesPartStops:
         stop_trigger1 = 110.0
         stop_trigger2 = 112.0
         # Stops are calculated from actual entered volume (1.0)
+        # Using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First stop: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Second stop: round(0.33 * 1.0 / 0.1) * 0.1 = round(3.3) * 0.1 = 3 * 0.1 = 0.3
-        # Third stop (extreme, gets remainder): 1.0 - 0.3 - 0.3 = 0.4
-        # Only first two stops trigger, closing 0.3 + 0.3 = 0.6 of 1.0
-        stop_quantity1 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        stop_quantity2 = 0.3  # round(0.33 * 1.0 / 0.1) * 0.1 = 0.3
-        remaining_quantity = total_entry_quantity - stop_quantity1 - stop_quantity2  # 1.0 - 0.3 - 0.3 = 0.4
+        # First stop: exact=0.33, exact_sum=0.33, order_vol=0.33-0.0=0.33, rounded=0.3, rounded_sum=0.3
+        # Second stop: exact=0.33, exact_sum=0.66, order_vol=0.66-0.3=0.36, rounded=0.4, rounded_sum=0.7
+        # Third stop (extreme, gets remainder): 1.0 - 0.7 = 0.3
+        # Only first two stops trigger, closing 0.3 + 0.4 = 0.7 of 1.0
+        stop_quantity1 = 0.3  # First stop: 0.33 rounded to 0.3
+        stop_quantity2 = 0.4  # Second stop: 0.36 rounded to 0.4 (accumulated error from first)
+        remaining_quantity = total_entry_quantity - stop_quantity1 - stop_quantity2  # 1.0 - 0.3 - 0.4 = 0.3
         
         entry_execution1 = entry_price1  # 103.0 (limit, no slippage)
         entry_fee1 = entry_execution1 * quantity1 * test_task.fee_maker  # 103.0 * 0.5 * 0.0005 = 0.02575
@@ -2130,8 +2135,9 @@ class TestSellSltpMultipleEntriesPartStops:
         # Check that both entries and first two stops trigger simultaneously on bar 1
         # Bar 0: no execution (0 trades)
         # Bar 1: both entries and first two stops trigger simultaneously (4 trades - entry1 + entry2 + stop1 + stop2)
+        # Trades from bar 1 are visible on bar 2
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 4, "Both entries and first two stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 4, "Both entries and first two stops should trigger simultaneously on bar 1 (visible on bar 2)"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -2203,13 +2209,14 @@ class TestSellSltpMultipleEntriesPartStops:
         stop_trigger1 = 110.0
         stop_trigger2 = 112.0
         # Stops are calculated from TOTAL actual rounded-down entry volumes (0.9), not from actual entered volume
+        # Using cumulative rounding algorithm:
         # Fractions: 0.33, 0.33, 0.34
-        # First stop: round(0.33 * 0.9 / 0.1) * 0.1 = round(2.97) * 0.1 = 3 * 0.1 = 0.3
-        # Second stop: round(0.33 * 0.9 / 0.1) * 0.1 = round(2.97) * 0.1 = 3 * 0.1 = 0.3
-        # Third stop (extreme, gets remainder): 0.9 - 0.3 - 0.3 = 0.3 (but doesn't trigger)
+        # First stop: exact=0.33*0.9=0.297, exact_sum=0.297, order_vol=0.297-0.0=0.297, rounded=0.3, rounded_sum=0.3
+        # Second stop: exact=0.33*0.9=0.297, exact_sum=0.594, order_vol=0.594-0.3=0.294, rounded=0.3, rounded_sum=0.6
+        # Third stop (extreme, gets remainder): 0.9 - 0.6 = 0.3 (but doesn't trigger)
         # First and second stops trigger, closing 0.3 + 0.3 = 0.6 of 0.9
-        stop_quantity1 = 0.3  # round(0.33 * 0.9 / 0.1) * 0.1 = 0.3
-        stop_quantity2 = 0.3  # round(0.33 * 0.9 / 0.1) * 0.1 = 0.3
+        stop_quantity1 = 0.3  # First stop: 0.297 rounded to 0.3
+        stop_quantity2 = 0.3  # Second stop: 0.294 rounded to 0.3
         remaining_quantity = total_actual_entry_quantity - stop_quantity1 - stop_quantity2  # 0.9 - 0.3 - 0.3 = 0.3
         
         entry_execution1 = entry_price1  # 103.0 (limit, no slippage)
@@ -2288,8 +2295,9 @@ class TestSellSltpMultipleEntriesPartStops:
         # Check that all three entries and first and second stops trigger simultaneously on bar 1
         # Bar 0: no execution (0 trades)
         # Bar 1: all three entries and first and second stops trigger simultaneously (5 trades - entry1 + entry2 + entry3 + stop1 + stop2)
+        # Trades from bar 1 are visible on bar 2
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 5, "All three entries and first and second stops should trigger simultaneously on bar 1"
+        assert collected_data[2]['trades_count'] == 5, "All three entries and first and second stops should trigger simultaneously on bar 1 (visible on bar 2)"
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)
@@ -2300,10 +2308,6 @@ class TestSellSltpMultipleEntriesPartStops:
         
         # Check total trades count (including auto-close)
         assert len(broker.trades) == 6, f"Expected 6 trades total (entry1 + entry2 + entry3 + stop1 + stop2 + auto_close), got {len(broker.trades)}"
-        
-        # Check actual profit matches expected calculation
-        assert abs(deal.profit - expected_profit) < 1e-6, \
-            f"Expected profit {expected_profit}, got {deal.profit}"
         
         # Check that all three entry orders were executed
         entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
@@ -2318,4 +2322,8 @@ class TestSellSltpMultipleEntriesPartStops:
         assert len(executed_stops) == 2, "First and second stop orders should be executed"
         active_stops = [o for o in stop_orders if o.status == OrderStatus.ACTIVE]
         assert len(active_stops) == 0, "No stop orders should remain active after auto-close"
+
+        # Check actual profit matches expected calculation
+        assert abs(deal.profit - expected_profit) < 1e-6, \
+            f"Expected profit {expected_profit}, got {deal.profit}"
 
