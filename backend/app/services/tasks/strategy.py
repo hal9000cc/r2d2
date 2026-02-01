@@ -627,8 +627,21 @@ class Strategy(ABC):
                             f"Entry {i}: SHORT sell limit order price ({price}) must be above current price ({current_price})"
                         )
         
-        # Stop loss validation is handled by "protected by stop loss" check below
-        # No need to validate stop loss relative to current price
+        # Validate stop loss orders relative to current price
+        if stop_losses:
+            for i, (fraction, price) in enumerate(stop_losses):
+                if deal_type == DealType.LONG:
+                    # LONG: stop loss trigger price must be below current price
+                    if not self.lt(price, current_price):
+                        errors.append(
+                            f"stop_loss {i}: LONG stop loss trigger price ({price}) must be below current price ({current_price})"
+                        )
+                else:  # SHORT
+                    # SHORT: stop loss trigger price must be above current price
+                    if not self.gt(price, current_price):
+                        errors.append(
+                            f"stop_loss {i}: SHORT stop loss trigger price ({price}) must be above current price ({current_price})"
+                        )
         
         # Validate take_profits relative to maximum/minimum entry price
         if take_profits:

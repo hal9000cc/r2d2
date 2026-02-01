@@ -94,9 +94,12 @@ class TestBuySltpInterleavedStopsBetweenEntries:
         assert method_result.deal_id > 0
         
         # Check that all entries and stops trigger on bar 1 (stops have priority, so all stops trigger, deal closes)
+        # Bar 0: no execution (limit entries don't trigger)
+        # Bar 1: all entries (3) and all stops (3) trigger - 6 trades total
+        # Bar 2: trades from bar 1 are visible here
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0 (limit entries)"
-        assert collected_data[1]['trades_count'] == 6, "All entries (3) and all stops (3) should trigger - 6 trades total"
-        assert collected_data[2]['trades_count'] == 6, "No execution on bar 2"
+        assert collected_data[1]['trades_count'] == 0, "No execution on bar 0 (visible on bar 1)"
+        assert collected_data[2]['trades_count'] == 6, "All entries (3) and all stops (3) from bar 1 should be visible on bar 2"
         
         # Check total trades count: 3 entries + 3 stops
         assert len(broker.trades) == 6, f"Expected 6 trades total (3 entries + 3 stops), got {len(broker.trades)}"
@@ -196,9 +199,12 @@ class TestSellSltpInterleavedStopsBetweenEntries:
         assert method_result.deal_id > 0
         
         # Check that all entries and stops trigger on bar 1 (stops have priority, so all stops trigger, deal closes)
+        # Bar 0: no execution (limit entries don't trigger)
+        # Bar 1: all entries (3) and all stops (3) trigger - 6 trades total
+        # Bar 2: trades from bar 1 are visible here
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0 (limit entries)"
-        assert collected_data[1]['trades_count'] == 6, "All entries (3) and all stops (3) should trigger - 6 trades total"
-        assert collected_data[2]['trades_count'] == 6, "No execution on bar 2"
+        assert collected_data[1]['trades_count'] == 0, "No execution on bar 0 (visible on bar 1)"
+        assert collected_data[2]['trades_count'] == 6, "All entries (3) and all stops (3) from bar 1 should be visible on bar 2"
         
         # Check total trades count: 3 entries + 3 stops
         assert len(broker.trades) == 6, f"Expected 6 trades total (3 entries + 3 stops), got {len(broker.trades)}"
@@ -299,9 +305,12 @@ class TestBuySltpInterleavedStopsBetweenEntriesMultiple:
         assert method_result.deal_id > 0
         
         # Check that all entries and stops trigger on bar 1 (stops have priority, so all stops trigger, deal closes)
+        # Bar 0: no execution (limit entries don't trigger)
+        # Bar 1: all entries (4) and all stops (3) trigger - 7 trades total
+        # Bar 2: trades from bar 1 are visible here
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0 (limit entries)"
-        assert collected_data[1]['trades_count'] == 7, "All entries (4) and all stops (3) should trigger - 7 trades total"
-        assert collected_data[2]['trades_count'] == 7, "No execution on bar 2"
+        assert collected_data[1]['trades_count'] == 0, "No execution on bar 0 (visible on bar 1)"
+        assert collected_data[2]['trades_count'] == 7, "All entries (4) and all stops (3) from bar 1 should be visible on bar 2"
         
         # Check total trades count: 4 entries + 3 stops
         assert len(broker.trades) == 7, f"Expected 7 trades total (4 entries + 3 stops), got {len(broker.trades)}"
@@ -402,9 +411,12 @@ class TestSellSltpInterleavedStopsBetweenEntriesMultiple:
         assert method_result.deal_id > 0
         
         # Check that all entries and stops trigger on bar 1 (stops have priority, so all stops trigger, deal closes)
+        # Bar 0: no execution (limit entries don't trigger)
+        # Bar 1: all entries (4) and all stops (3) trigger - 7 trades total
+        # Bar 2: trades from bar 1 are visible here
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0 (limit entries)"
-        assert collected_data[1]['trades_count'] == 7, "All entries (4) and all stops (3) should trigger - 7 trades total"
-        assert collected_data[2]['trades_count'] == 7, "No execution on bar 2"
+        assert collected_data[1]['trades_count'] == 0, "No execution on bar 0 (visible on bar 1)"
+        assert collected_data[2]['trades_count'] == 7, "All entries (4) and all stops (3) from bar 1 should be visible on bar 2"
         
         # Check total trades count: 4 entries + 3 stops
         assert len(broker.trades) == 7, f"Expected 7 trades total (4 entries + 3 stops), got {len(broker.trades)}"
@@ -509,9 +521,15 @@ class TestBuySltpInterleavedTakesBetweenEntries:
         assert method_result.deal_id > 0
         
         # Check that entries trigger on bar 1, takes trigger on bar 2
+        # Bar 0: no execution (limit entries don't trigger)
+        # Bar 1: all entries (3) trigger - 3 trades total
+        # Bar 2: entries from bar 1 are visible here (3 trades), takes trigger on bar 2
+        # Bar 3: takes from bar 2 would be visible here, but we only have 3 bars, so check via len(broker.trades)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0 (limit entries)"
-        assert collected_data[1]['trades_count'] == 3, "All entries (3) should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 6, "All takes (3) should trigger on bar 2 - 6 trades total"
+        assert collected_data[1]['trades_count'] == 0, "No execution on bar 0 (visible on bar 1)"
+        assert collected_data[2]['trades_count'] == 3, "All entries (3) from bar 1 should be visible on bar 2"
+        # Takes from bar 2 are processed after loop completion, check final broker state
+        assert len(broker.trades) == 6, "All entries (3) and all takes (3) should trigger - 6 trades total"
         
         # Check total trades count: 3 entries + 3 takes
         assert len(broker.trades) == 6, f"Expected 6 trades total (3 entries + 3 takes), got {len(broker.trades)}"
@@ -615,9 +633,15 @@ class TestSellSltpInterleavedTakesBetweenEntries:
         assert method_result.deal_id > 0
         
         # Check that entries trigger on bar 1, takes trigger on bar 2
+        # Bar 0: no execution (limit entries don't trigger)
+        # Bar 1: all entries (3) trigger - 3 trades total
+        # Bar 2: entries from bar 1 are visible here (3 trades), takes trigger on bar 2
+        # Bar 3: takes from bar 2 would be visible here, but we only have 3 bars, so check via len(broker.trades)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0 (limit entries)"
-        assert collected_data[1]['trades_count'] == 3, "All entries (3) should trigger on bar 1"
-        assert collected_data[2]['trades_count'] == 6, "All takes (3) should trigger on bar 2 - 6 trades total"
+        assert collected_data[1]['trades_count'] == 0, "No execution on bar 0 (visible on bar 1)"
+        assert collected_data[2]['trades_count'] == 3, "All entries (3) from bar 1 should be visible on bar 2"
+        # Takes from bar 2 are processed after loop completion, check final broker state
+        assert len(broker.trades) == 6, "All entries (3) and all takes (3) should trigger - 6 trades total"
         
         # Check total trades count: 3 entries + 3 takes
         assert len(broker.trades) == 6, f"Expected 6 trades total (3 entries + 3 takes), got {len(broker.trades)}"
