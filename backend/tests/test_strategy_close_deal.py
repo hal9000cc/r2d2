@@ -423,6 +423,127 @@ class TestCloseDealBuy:
     # Group 2: close_deal on Next Bar (Bar 1) - BUY Tests
     # ============================================================================
     
+    def test_close_deal_limit_entry_next_bar_before_entry_triggers(self, test_task):
+        """Test 4.5: BUY limit entry on Bar 0, close_deal on Bar 1 before entry triggers.
+        
+        Scenario:
+        - Bar 0: buy_sltp(limit entry at 95, stop=90, take=110)
+          - Entry limit does NOT trigger (low=96.0 > 95.0)
+          - Stop/Take don't trigger
+        - Bar 1: close_deal() BEFORE entry limit can trigger
+          - Entry limit would trigger (low=94.0 <= 95.0), but close_deal cancels it first
+          - close_deal cancels all orders
+          - No trades executed
+        
+        Expected:
+        - 0 trades
+        - Deal closed, quantity = 0
+        - All orders CANCELED
+        - Profit = None
+        """
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            highs=[101.0, 101.0, 101.0],
+            lows=[96.0, 94.0, 99.0]  # Bar 0: low=96.0 > 95.0 (no trigger), Bar 1: low=94.0 <= 95.0 (would trigger)
+        )
+        
+        deal_id = None
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'buy_sltp',
+                'args': {
+                    'enter': (1.0, 95.0),  # Limit order at 95.0
+                    'stop_loss': 90.0,
+                    'take_profit': 110.0
+                }
+            },
+            {
+                'bar_index': 1,
+                'method': 'close_deal',
+                'args': {
+                    'deal_id': None
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            nonlocal deal_id
+            
+            # Find or create data entry for this bar
+            bar_data = None
+            for data in collected_data:
+                if data['bar'] == bar_index:
+                    bar_data = data
+                    break
+            
+            if bar_data is None:
+                bar_data = {
+                    'bar': bar_index,
+                    'price': current_price,
+                    'trades_count': len(strategy.broker.trades),
+                }
+                collected_data.append(bar_data)
+            else:
+                bar_data['trades_count'] = len(strategy.broker.trades)
+            
+            if method_result:
+                bar_data['method_result'] = method_result
+            
+            if bar_index == 0 and method_result and method_result.deal_id > 0:
+                deal_id = method_result.deal_id
+                for action in strategy.test_protocol:
+                    if action.get('method') == 'close_deal':
+                        action['args']['deal_id'] = deal_id
+                        break
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_close_deal_4_5")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check no trades on any bar
+        assert collected_data[0]['trades_count'] == 0, "No trades on bar 0"
+        assert collected_data[1]['trades_count'] == 0, "No trades on bar 1 (entry canceled before trigger)"
+        assert collected_data[2]['trades_count'] == 0, "No trades on bar 2"
+        assert len(broker.trades) == 0, "Total trades should be 0"
+        
+        # Check deal state
+        deal = broker.get_deal(deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is None, f"Expected profit None (no trades), got {deal.profit}"
+        
+        # Check order statuses - all should be CANCELED
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 1, "Should have one limit entry order"
+        assert entry_orders[0].status == OrderStatus.CANCELED, "Entry limit order should be CANCELED"
+        
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 1, "Should have one stop order"
+        assert stop_orders[0].status == OrderStatus.CANCELED, "Stop order should be CANCELED"
+        
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        assert take_orders[0].status == OrderStatus.CANCELED, "Take profit order should be CANCELED"
+    
     def test_close_deal_market_entry_next_bar_no_trigger(self, test_task):
         """Test 5: BUY market entry on Bar 0, close_deal on Bar 1, no stop/take trigger.
         
@@ -1236,6 +1357,127 @@ class TestCloseDealSell:
     # ============================================================================
     # Group 2: close_deal on Next Bar (Bar 1) - SELL Tests
     # ============================================================================
+    
+    def test_close_deal_limit_entry_next_bar_before_entry_triggers(self, test_task):
+        """Test 4.5 SELL: SELL limit entry on Bar 0, close_deal on Bar 1 before entry triggers.
+        
+        Scenario:
+        - Bar 0: sell_sltp(limit entry at 105, stop=110, take=90)
+          - Entry limit does NOT trigger (high=104.0 < 105.0)
+          - Stop/Take don't trigger
+        - Bar 1: close_deal() BEFORE entry limit can trigger
+          - Entry limit would trigger (high=106.0 >= 105.0), but close_deal cancels it first
+          - close_deal cancels all orders
+          - No trades executed
+        
+        Expected:
+        - 0 trades
+        - Deal closed, quantity = 0
+        - All orders CANCELED
+        - Profit = None
+        """
+        quotes_data = create_custom_quotes_data(
+            prices=[100.0, 100.0, 100.0],
+            highs=[104.0, 106.0, 101.0],  # Bar 0: high=104.0 < 105.0 (no trigger), Bar 1: high=106.0 >= 105.0 (would trigger)
+            lows=[99.0, 99.0, 99.0]
+        )
+        
+        deal_id = None
+        
+        protocol = [
+            {
+                'bar_index': 0,
+                'method': 'sell_sltp',
+                'args': {
+                    'enter': (1.0, 105.0),  # Limit order at 105.0
+                    'stop_loss': 110.0,
+                    'take_profit': 90.0
+                }
+            },
+            {
+                'bar_index': 1,
+                'method': 'close_deal',
+                'args': {
+                    'deal_id': None
+                }
+            }
+        ]
+        
+        collected_data = []
+        
+        def check_callback(strategy, bar_index, current_price, method_result=None):
+            nonlocal deal_id
+            
+            # Find or create data entry for this bar
+            bar_data = None
+            for data in collected_data:
+                if data['bar'] == bar_index:
+                    bar_data = data
+                    break
+            
+            if bar_data is None:
+                bar_data = {
+                    'bar': bar_index,
+                    'price': current_price,
+                    'trades_count': len(strategy.broker.trades),
+                }
+                collected_data.append(bar_data)
+            else:
+                bar_data['trades_count'] = len(strategy.broker.trades)
+            
+            if method_result:
+                bar_data['method_result'] = method_result
+            
+            if bar_index == 0 and method_result and method_result.deal_id > 0:
+                deal_id = method_result.deal_id
+                for action in strategy.test_protocol:
+                    if action.get('method') == 'close_deal':
+                        action['args']['deal_id'] = deal_id
+                        break
+        
+        test_task.parameters = {
+            'test_protocol': protocol,
+            'test_callback': check_callback
+        }
+        
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = quotes_data
+            mock_client_class.return_value = mock_client
+            
+            test_task.isRunning = True
+            with patch('app.services.tasks.tasks.Task.load', return_value=test_task):
+                broker, strategy = create_broker_and_strategy(test_task, quotes_data, "test_close_deal_sell_4_5")
+                broker.run(save_results=False)
+        
+        # Check results
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
+        
+        # Check no trades on any bar
+        assert collected_data[0]['trades_count'] == 0, "No trades on bar 0"
+        assert collected_data[1]['trades_count'] == 0, "No trades on bar 1 (entry canceled before trigger)"
+        assert collected_data[2]['trades_count'] == 0, "No trades on bar 2"
+        assert len(broker.trades) == 0, "Total trades should be 0"
+        
+        # Check deal state
+        deal = broker.get_deal(deal_id)
+        assert deal is not None, "Deal should exist"
+        assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
+        assert deal.is_closed, "Deal should be closed"
+        assert deal.profit is None, f"Expected profit None (no trades), got {deal.profit}"
+        
+        # Check order statuses - all should be CANCELED
+        entry_orders = [o for o in deal.orders if o.order_group == OrderGroup.NONE and o.order_type == OrderType.LIMIT]
+        assert len(entry_orders) == 1, "Should have one limit entry order"
+        assert entry_orders[0].status == OrderStatus.CANCELED, "Entry limit order should be CANCELED"
+        
+        stop_orders = [o for o in deal.orders if o.order_group == OrderGroup.STOP_LOSS]
+        assert len(stop_orders) == 1, "Should have one stop order"
+        assert stop_orders[0].status == OrderStatus.CANCELED, "Stop order should be CANCELED"
+        
+        take_orders = [o for o in deal.orders if o.order_group == OrderGroup.TAKE_PROFIT]
+        assert len(take_orders) == 1, "Should have one take profit order"
+        assert take_orders[0].status == OrderStatus.CANCELED, "Take profit order should be CANCELED"
     
     def test_close_deal_market_entry_next_bar_no_trigger(self, test_task):
         """Test 5 SELL: SELL market entry on Bar 0, close_deal on Bar 1, no stop/take trigger.

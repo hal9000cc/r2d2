@@ -1224,7 +1224,7 @@ class Broker(ABC):
             order.update_modify_time(self)
             
         # 3. Process orders (cancel old ones and place closing order)
-        self.order_processing()
+        self.order_processing(True)
         
         # 4. Check if deal should be closed (quantity == 0 after processing)
         assert deal.quantity == 0
@@ -1549,19 +1549,22 @@ class Broker(ABC):
             if not was_closed and deal.is_closed:
                 self.stats.add_deal(deal)
     
-    def fetch_new_trades(self) -> Set[int]:
+    def fetch_new_trades(self, markets_only: bool = False) -> Set[int]:
         """
         Fetch and process new trades from exchange.
         
         Fetches trades since last processed time, filters duplicates,
         and creates internal Trade objects for matched orders.
         
+        Args:
+            markets_only: If True, only process market orders (skip stop and limit order checks)
+        
         Returns:
             Set of deal_id for deals that had trades added during this call.
         """
         updated_deal_ids: Set[int] = set()
         
-        trades = self.exchange_fetch_my_trades(self.symbol, since=self._last_trade_time)
+        trades = self.exchange_fetch_my_trades(self.symbol, since=self._last_trade_time, markets_only=markets_only)
             
         for trade_data in trades:
 
@@ -1708,13 +1711,16 @@ class Broker(ABC):
             assert bar_data is not None, "bar_data must be present when status is RECEIVED"
             return bar_data
 
-    def order_processing(self) -> None:
+    def order_processing(self, markets_only: bool = False) -> None:
         """
         Process orders cycle: fetch updates and place pending orders.
         Repeats if orders were placed to handle immediate updates/fills.
+        
+        Args:
+            markets_only: If True, only process market orders (skip stop and limit order checks)
         """
         while True:
-            updated_deal_ids = self.fetch_new_trades()
+            updated_deal_ids = self.fetch_new_trades(markets_only=markets_only)
             
             # Update order volumes for deals that had trades added
             for deal_id in updated_deal_ids:

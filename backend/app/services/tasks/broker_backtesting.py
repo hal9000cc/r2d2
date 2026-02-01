@@ -245,20 +245,21 @@ class BrokerBacktesting(Broker):
             'info': {}
         }
 
-    def exchange_fetch_my_trades(self, symbol: str, since: Optional[int] = None) -> List[Dict]:
+    def exchange_fetch_my_trades(self, symbol: str, since: Optional[int] = None, markets_only: bool = False) -> List[Dict]:
         """
         Fetch executed trades (backtesting implementation).
         
         Args:
             symbol: Trading symbol
             since: Timestamp in ms to fetch trades from (optional)
+            markets_only: If True, only process market orders (skip stop and limit order checks)
             
         Returns:
             List of dictionaries with trade details
         """
         # In backtesting, we process orders on demand and return newly executed trades
         # The 'since' parameter is ignored as we always return trades from the current processing step
-        return self._backtesting_process_orders(self.price, self.current_time)
+        return self._backtesting_process_orders(self.price, self.current_time, markets_only=markets_only)
 
     def _process_market_orders(self, current_price: float, current_time: np.datetime64) -> List[Dict]:
         """Process market orders execution."""
@@ -447,30 +448,34 @@ class BrokerBacktesting(Broker):
             
         return trades
 
-    def _backtesting_process_orders(self, current_price: float, current_time: np.datetime64) -> List[Dict]:
+    def _backtesting_process_orders(self, current_price: float, current_time: np.datetime64, markets_only: bool = False) -> List[Dict]:
         """
         Process orders execution based on current price (matching engine).
         
         Args:
             current_price: Current market price (close of bar)
             current_time: Current timestamp
+            markets_only: If True, only process market orders (skip stop and limit order checks)
             
         Returns:
             List of executed trades
         """
         trades = []
         
-        # Get bar high and low for stop order processing
-        if self.bar_high is None or self.bar_low is None:
-            return []
-        
-        bar_high = self.bar_high
-        bar_low = self.bar_low
-        
-        # Process all order types
+        # Process market orders (always processed)
         trades.extend(self._process_market_orders(current_price, current_time))
-        trades.extend(self._process_stop_orders(bar_high, bar_low, current_time))
-        trades.extend(self._process_limit_orders(bar_high, bar_low, current_time))
+        
+        # Process stop and limit orders only if markets_only is False
+        if not markets_only:
+            # Get bar high and low for stop/limit order processing
+            if self.bar_high is None or self.bar_low is None:
+                return trades
+            
+            bar_high = self.bar_high
+            bar_low = self.bar_low
+            
+            trades.extend(self._process_stop_orders(bar_high, bar_low, current_time))
+            trades.extend(self._process_limit_orders(bar_high, bar_low, current_time))
         
         # Remove executed orders from exchange_orders dictionary
         for trade in trades:
