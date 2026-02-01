@@ -1199,6 +1199,9 @@ class Broker(ABC):
         Default implementation (stub). Should be overridden in subclasses if needed.
         """
         deal = self.get_deal(deal_id)
+
+        if deal.is_closed:
+            return
         
         # 1. Cancel all active/new orders associated with the deal
         deal.cancel_orders(self)
@@ -1224,8 +1227,8 @@ class Broker(ABC):
         self.order_processing()
         
         # 4. Check if deal should be closed (quantity == 0 after processing)
-        if deal.quantity == 0:
-            deal.is_closed = True
+        assert deal.quantity == 0
+        deal.is_closed = True
     
     def cancel_orders(self, order_ids: List[int]) -> List['Order']:
         """
@@ -1374,8 +1377,8 @@ class Broker(ABC):
             if deal.deal_id != i + 1
         ])
         
-        # Collect all trades from all deals
-        all_trades = [trade for deal in self.deals for trade in deal.trades]
+        # Use trades from broker's trades list
+        all_trades = self.trades
         
         if not all_trades:
             return errors

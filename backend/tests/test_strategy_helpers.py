@@ -72,45 +72,58 @@ class TestStrategy(Strategy):
         # Get current price
         current_price = self.close[-1] if len(self.close) > 0 else 0.0
         
-        # Check if there's an action for this bar
-        method_result = None
-        action = None
+        # Find ALL actions for this bar (not just the first one)
+        actions_for_bar = [
+            protocol_action for protocol_action in self.test_protocol
+            if protocol_action.get('bar_index') == self.bar_index
+        ]
         
-        for protocol_action in self.test_protocol:
-            if protocol_action.get('bar_index') == self.bar_index:
-                action = protocol_action
-                break
-        
-        # Execute action if found
-        if action and 'method' in action:
-            method_name = action['method']
-            method_args = action.get('args', {})
+        # Execute all actions sequentially, calling callback after each
+        last_method_result = None
+        for action in actions_for_bar:
+            method_result = None
+            if 'method' in action:
+                method_name = action['method']
+                method_args = action.get('args', {})
+                
+                # Get method from strategy
+                method = getattr(self, method_name, None)
+                if method:
+                    try:
+                        method_result = method(**method_args)
+                        last_method_result = method_result
+                    except Exception as e:
+                        # Create error result
+                        method_result = OrderOperationResult(
+                            orders=[],
+                            error_messages=[f"Exception calling {method_name}: {str(e)}"],
+                            active=[],
+                            executed=[],
+                            canceled=[],
+                            error=[],
+                            deal_id=0,
+                            volume=0.0
+                        )
+                        last_method_result = method_result
+                        raise
             
-            # Get method from strategy
-            method = getattr(self, method_name, None)
-            if method:
-                try:
-                    method_result = method(**method_args)
-                except Exception as e:
-                    # Create error result
-                    method_result = OrderOperationResult(
-                        orders=[],
-                        error_messages=[f"Exception calling {method_name}: {str(e)}"],
-                        active=[],
-                        executed=[],
-                        canceled=[],
-                        error=[],
-                        deal_id=0,
-                        volume=0.0
-                    )
+            # Call callback after each action (so it can update protocol for next actions)
+            if self.test_callback:
+                self.test_callback(
+                    strategy=self,
+                    bar_index=self.bar_index,
+                    current_price=current_price,
+                    method_result=method_result
+                )
         
-        # Call callback if provided
-        if self.test_callback:
+        # Always call callback at end of bar if no actions were executed
+        # This ensures callback is called once per bar for data collection
+        if not actions_for_bar and self.test_callback:
             self.test_callback(
                 strategy=self,
                 bar_index=self.bar_index,
                 current_price=current_price,
-                method_result=method_result
+                method_result=None
             )
 
 

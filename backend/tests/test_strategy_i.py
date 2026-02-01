@@ -91,8 +91,8 @@ class TestModifyDealValidation:
     def test_modify_deal_deal_already_closed(self, test_task):
         """Test I1.2: modify_deal - deal already closed (quantity == 0) → validation error."""
         quotes_data = create_custom_quotes_data(
-            prices=[100.0, 110.0],  # Price rises to trigger take profit
-            highs=[101.0, 111.0]
+            prices=[100.0, 110.0, 110.0],  # Price rises to trigger take profit on bar 1
+            highs=[101.0, 111.0, 111.0]  # Bar 1 high=111.0 triggers take profit at 110.0
         )
         
         protocol = [
@@ -106,7 +106,7 @@ class TestModifyDealValidation:
                 }
             },
             {
-                'bar_index': 1,
+                'bar_index': 2,
                 'method': 'modify_deal',
                 'args': {
                     'deal_id': None,  # Will be set from first result
@@ -131,9 +131,9 @@ class TestModifyDealValidation:
             # Get deal_id from first result
             if bar_index == 0 and method_result and method_result.deal_id > 0:
                 deal_id = method_result.deal_id
-                # Update protocol for next bar
+                # Update protocol for bar 2
                 for action in strategy.test_protocol:
-                    if action.get('bar_index') == 1:
+                    if action.get('bar_index') == 2:
                         action['args']['deal_id'] = deal_id
                         break
         
@@ -154,11 +154,12 @@ class TestModifyDealValidation:
                 broker.run(save_results=False)
         
         # Check results
-        assert len(collected_data) == 2, f"Expected 2 bars, got {len(collected_data)}"
+        assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
         
-        # Check method result on bar 1 (modify_deal)
-        assert collected_data[1]['method_result'] is not None
-        method_result = collected_data[1]['method_result']
+        # Check method result on bar 2 (modify_deal)
+        # Take profit triggers on bar 1, trades are visible on bar 2, deal is closed
+        assert collected_data[2]['method_result'] is not None
+        method_result = collected_data[2]['method_result']
         assert isinstance(method_result, OrderOperationResult)
         
         # Should have validation errors
