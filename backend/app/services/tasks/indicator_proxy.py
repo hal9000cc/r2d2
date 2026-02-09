@@ -8,6 +8,7 @@ import inspect
 import re
 import numpy as np
 import talib
+import pyita as ta
 from pydantic import BaseModel, ConfigDict
 from app.core.logger import get_logger
 from app.core.utils import generate_random_color
@@ -666,4 +667,176 @@ class ta_proxy_talib(ta_proxy):
         except Exception as e:
             # Re-raise with more context
             raise RuntimeError(f"Error calling talib.{name}(*args, **kwargs): {e}") from e
+
+
+class ta_proxy_pyita(ta_proxy):
+    """
+    Technical analysis proxy for pyita library.
+    """
+    
+    # Dictionary of indicator descriptions with series names, price chart displayability, and line settings
+    # Format: {'is_price': bool, 'lines': Optional[str], 'series': Optional[List[Dict]]}
+    # If 'series' is provided, uses those names. If not, generates generic names (series0, series1, ...)
+    # Each series can override 'is_price' by including it in its dict
+    # Lines priority: kwargs.lines > indicator.lines > defaults
+    INDICATOR_SERIES_NAMES = {
+        # Single-series Moving Averages (price overlay)
+        'sma': {'is_price': True},
+        'ema': {'is_price': True},
+        'tema': {'is_price': True},
+        'vwma': {'is_price': True},
+        'ma': {'is_price': True},
+        
+        # Single-series Oscillators (separate chart)
+        'rsi': {'is_price': False},
+        'williams_r': {'is_price': False},
+        'cci': {'is_price': False},
+        'mfi': {'is_price': False},
+        'roc': {'is_price': False},
+        'awesome': {'is_price': False},
+        'trix': {'is_price': False},
+        
+        # Single-series Volume indicators
+        'obv': {'is_price': False},
+        'vwap': {'is_price': True},
+        'volume_osc': {'is_price': False},
+        
+        # Multi-series Trend indicators
+        'adx': {
+            'is_price': False,
+            'series': [{'name': 'adx'}, {'name': 'p_di'}, {'name': 'm_di'}]
+        },
+        'aroon': {
+            'is_price': False,
+            'series': [{'name': 'up'}, {'name': 'down'}, {'name': 'oscillator'}]
+        },
+        'parabolic_sar': {
+            'is_price': True,
+            'series': [{'name': 'sar'}, {'name': 'signal'}]
+        },
+        'supertrend': {
+            'is_price': True,
+            'series': [{'name': 'supertrend'}, {'name': 'signal'}]
+        },
+        'macd': {
+            'is_price': False,
+            'series': [{'name': 'macd'}, {'name': 'signal'}, {'name': 'histogram'}]
+        },
+        'ichimoku': {
+            'is_price': True,
+            'series': [
+                {'name': 'tenkan'}, 
+                {'name': 'kijun'}, 
+                {'name': 'senkou_a'}, 
+                {'name': 'senkou_b'}, 
+                {'name': 'chikou'}
+            ]
+        },
+        
+        # Multi-series Oscillators
+        'stochastic': {
+            'is_price': False,
+            'series': [{'name': 'value_k'}, {'name': 'value_d'}, {'name': 'oscillator'}]
+        },
+        
+        # Multi-series Volatility indicators
+        'bollinger_bands': {
+            'is_price': True,
+            'lines': '#006666;2;solid|#B0B0B0;2;solid|#006666;2;solid',
+            'series': [
+                {'name': 'mid_line'}, 
+                {'name': 'up_line'}, 
+                {'name': 'down_line'}, 
+                {'name': 'width', 'is_price': False}, 
+                {'name': 'z_score', 'is_price': False}
+            ]
+        },
+        'atr': {
+            'is_price': False,
+            'series': [{'name': 'atr'}, {'name': 'atrp'}, {'name': 'tr'}]
+        },
+        'keltner': {
+            'is_price': True,
+            'series': [
+                {'name': 'mid_line'}, 
+                {'name': 'up_line'}, 
+                {'name': 'down_line'}, 
+                {'name': 'width', 'is_price': False}
+            ]
+        },
+        'chandelier': {
+            'is_price': True,
+            'series': [{'name': 'exit_long'}, {'name': 'exit_short'}]
+        },
+        
+        # Multi-series Volume indicators
+        'adl': {
+            'is_price': False,
+            'series': [{'name': 'adl'}, {'name': 'adl_ema'}]
+        },
+        
+        # Other indicators
+        'zigzag': {
+            'is_price': True,
+            'series': [{'name': 'pivots'}, {'name': 'pivot_types', 'is_price': False}]
+        },
+    }
+    
+    def __init__(self, broker):
+        """
+        Initialize pyita proxy.
+        
+        Args:
+            broker: Reference to broker instance
+        """
+        super().__init__(broker)
+    
+    def calc_indicator(self, name: str, **kwargs) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
+        """
+        Calculate indicator values using pyita.
+        
+        Args:
+            name: Indicator name (e.g., 'sma', 'ema', 'rsi')
+            **kwargs: Indicator parameters
+            
+        Returns:
+            Numpy array or tuple of numpy arrays with indicator values for entire dataset
+            
+        Raises:
+            ValueError: If indicator name is not found
+            AttributeError: If indicator function doesn't exist in pyita
+        """
+        # Create Quotes object from quotes_data
+        quotes = ta.Quotes(self.quotes_data)
+        
+        # Get indicator function via getattr
+        try:
+            indicator_func = getattr(ta, name.lower())
+        except AttributeError:
+            raise ValueError(f"pyita indicator '{name}' is not available")
+        
+        # Call indicator
+        try:
+            result = indicator_func(quotes, **kwargs)
+        except Exception as e:
+            raise RuntimeError(f"Error calling pyita.{name}(**kwargs): {e}") from e
+        
+        # Extract arrays from IndicatorResult
+        # Determine which attributes are available in result
+        result_attrs = [attr for attr in dir(result) if not attr.startswith('_')]
+        
+        # Filter only numpy arrays
+        arrays = []
+        for attr_name in result_attrs:
+            attr_value = getattr(result, attr_name)
+            if isinstance(attr_value, np.ndarray):
+                arrays.append(attr_value)
+        
+        # Return single array or tuple of arrays
+        if len(arrays) == 1:
+            return arrays[0]
+        elif len(arrays) > 1:
+            return tuple(arrays)
+        else:
+            raise ValueError(f"pyita indicator '{name}' returned no arrays")
 

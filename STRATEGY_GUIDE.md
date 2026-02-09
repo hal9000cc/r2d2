@@ -222,6 +222,143 @@ def on_bar(self):
 
 ---
 
+## pyita Library (self.ta)
+
+In addition to TA-Lib, the **pyita** library is available with an extended set of technical indicators.
+
+### Basic Usage
+
+Indicators are called as methods of the `self.ta` object:
+
+```python
+# Simple moving average
+sma = self.ta.sma(period=20, value='close')
+
+# Exponential moving average
+ema = self.ta.ema(period=12, value='close')
+
+# RSI (value='close' by default)
+rsi = self.ta.rsi(period=14)
+
+# MACD (returns tuple of 3 arrays)
+macd, signal, histogram = self.ta.macd(period_fast=12, period_slow=26, period_signal=9)
+
+# Bollinger Bands (returns 5 arrays)
+mid, upper, lower, width, z_score = self.ta.bollinger_bands(period=20, deviation=2)
+```
+
+### Key Differences from TA-Lib
+
+| Parameter | TA-Lib | pyita |
+|-----------|--------|-------|
+| Period | `timeperiod` | `period` |
+| Value | `value` | `value` |
+| MA Type | - | `ma_type='sma'/'ema'/'mma'` |
+
+### Available Indicators
+
+**Moving Averages:**
+- `sma(period, value='close')` - Simple Moving Average
+- `ema(period, value='close')` - Exponential Moving Average
+- `tema(period, value='close')` - Triple Exponential Moving Average
+- `vwma(period, value='close')` - Volume Weighted Moving Average
+- `ma(period, value='close', ma_type='sma')` - Universal Moving Average
+
+**Trend Indicators:**
+- `adx(period=14, smooth=14, ma_type='mma')` - Average Directional Index (returns: adx, p_di, m_di)
+- `aroon(period=14)` - Aroon Indicator (returns: up, down, oscillator)
+- `parabolic_sar(start=0.02, maximum=0.2, increment=0.02)` - Parabolic SAR (returns: sar, signal)
+- `supertrend(period=10, multiplier=3, ma_type='mma')` - SuperTrend (returns: supertrend, signal)
+- `macd(period_fast=12, period_slow=26, period_signal=9, value='close')` - MACD (returns: macd, signal, histogram)
+- `ichimoku(period_short=9, period_mid=26, period_long=52, offset_senkou=26, offset_chikou=26)` - Ichimoku Cloud (returns: tenkan, kijun, senkou_a, senkou_b, chikou)
+
+**Oscillators:**
+- `rsi(period=14, ma_type='mma', value='close')` - Relative Strength Index (0-100)
+- `stochastic(period=5, period_d=3, smooth=3, ma_type='sma')` - Stochastic Oscillator (returns: value_k, value_d, oscillator)
+- `williams_r(period=14)` - Williams %R (-100 to 0)
+- `cci(period=20)` - Commodity Channel Index
+- `mfi(period=14)` - Money Flow Index
+- `roc(period=14, value='close')` - Rate of Change
+- `awesome(period_fast=5, period_slow=34, normalized=False)` - Awesome Oscillator
+- `trix(period, value='close')` - Triple Exponential Average Oscillator
+
+**Volatility:**
+- `bollinger_bands(period=20, deviation=2, ma_type='sma', value='close')` - Bollinger Bands (returns: mid_line, up_line, down_line, width, z_score)
+- `atr(smooth=14, ma_type='mma')` - Average True Range (returns: atr, atrp, tr)
+- `keltner(period=10, multiplier=1, period_atr=10, ma_type='ema')` - Keltner Channels (returns: mid_line, up_line, down_line, width)
+- `chandelier(period=22, multiplier=3, use_close=False)` - Chandelier Exit (returns: exit_long, exit_short)
+
+**Volume Indicators:**
+- `obv()` - On-Balance Volume
+- `vwap()` - Volume Weighted Average Price
+- `volume_osc(period_short=5, period_long=10, ma_type='ema')` - Volume Oscillator
+- `adl(ma_period=None, ma_type='sma')` - Accumulation/Distribution Line (returns: adl, adl_ema)
+
+**Other:**
+- `zigzag(delta=0.02, depth=1, type='high_low', end_points=False)` - ZigZag (returns: pivots, pivot_types)
+
+### Moving Average Types
+
+Many pyita indicators support selecting the moving average type via the `ma_type` parameter:
+
+- `'sma'` - Simple Moving Average
+- `'ema'` - Exponential Moving Average (α = 2 / (period + 1))
+- `'mma'` (or `'smma'`, `'rma'`) - Modified/Smoothed Moving Average (α = 1 / period)
+- `'ema0'` - EMA with first value initialization
+- `'mma0'` - MMA with first value initialization
+- `'emaw'` - EMA with dynamic warmup period (TA-Lib compatible)
+- `'mmaw'` - MMA with dynamic warmup period (TA-Lib compatible)
+
+**Example:**
+
+```python
+# Bollinger Bands with EMA
+bb_mid, bb_up, bb_down, bb_width, bb_z = self.ta.bollinger_bands(
+    period=20, 
+    deviation=2, 
+    ma_type='ema'
+)
+
+# RSI with EMA smoothing instead of default MMA
+rsi = self.ta.rsi(period=14, ma_type='ema')
+```
+
+### Usage Features
+
+All pyita indicators work the same way as TA-Lib indicators:
+
+1. **Return data only up to current bar** - arrays have length `self.broker.i_time + 1`
+2. **Caching** - indicators are cached, repeated calls return cached values
+3. **NaN values** - initial array elements may be NaN until enough data is available
+
+**Example Strategy with pyita:**
+
+```python
+def on_bar(self):
+    # Check if enough data
+    if len(self.close) < 50:
+        return
+    
+    # Calculate indicators
+    sma_fast = self.ta.sma(period=20, value='close')
+    sma_slow = self.ta.sma(period=50, value='close')
+    rsi = self.ta.rsi(period=14)
+    
+    # Check if indicators are calculated
+    if np.isnan(sma_fast[-1]) or np.isnan(sma_slow[-1]) or np.isnan(rsi[-1]):
+        return
+    
+    # Strategy logic
+    if sma_fast[-1] > sma_slow[-1] and rsi[-1] < 70:
+        self.buy(quantity=0.1)
+    elif sma_fast[-1] < sma_slow[-1] or rsi[-1] > 80:
+        self.sell(quantity=0.1)
+```
+
+For detailed documentation, see: https://github.com/hal9000cc/pyita
+
+---
+
 ## Strategy Parameters
 
 A strategy can have parameters that are configured by the user before starting backtesting.

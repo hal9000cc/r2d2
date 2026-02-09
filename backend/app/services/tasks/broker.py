@@ -1,15 +1,14 @@
 from abc import ABC, abstractmethod
-from enum import Enum, IntEnum
 from typing import List, Optional, Set, Dict, Any, Tuple, Union, TYPE_CHECKING
 import math
 import sys
 import time
 
 import numpy as np
-from pydantic import BaseModel, Field, ConfigDict, model_validator, PrivateAttr
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
-from app.services.tasks.indicator_proxy import ta_proxy_talib
+from app.services.tasks.indicator_proxy import ta_proxy_talib, ta_proxy_pyita
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 from app.core.config import BAR_WAIT_INTERVAL, ORDER_WAIT_INTERVAL
@@ -1749,7 +1748,8 @@ class Broker(ABC):
         self.initialize_run()
         
         ta_proxies = {
-            'talib': ta_proxy_talib(broker=self)
+            'talib': ta_proxy_talib(broker=self),
+            'ta': ta_proxy_pyita(broker=self)
         }
         
         # Calls set_quotes on proxies inside
