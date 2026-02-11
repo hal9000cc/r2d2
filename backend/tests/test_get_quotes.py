@@ -64,16 +64,21 @@ def test_get_quotes_success(client, quotes_service_production):
     assert "volume" in first_item
     
     # Check types
-    assert isinstance(first_item["time"], str)
+    # Note: JSON may serialize large integers as float, so we check for numeric type
+    # and verify it's a whole number
+    assert isinstance(first_item["time"], (int, float)), f"time should be int or float, got {type(first_item['time'])}"
+    # Verify it's a whole number (no fractional part)
+    assert first_item["time"] == int(first_item["time"]), "time should be a whole number (Unix timestamp)"
     assert isinstance(first_item["open"], float)
     assert isinstance(first_item["high"], float)
     assert isinstance(first_item["low"], float)
     assert isinstance(first_item["close"], float)
     assert isinstance(first_item["volume"], float)
     
-    # Check that time is in ISO format
-    assert "T" in first_item["time"]
-    assert first_item["time"].endswith("Z") or "+" in first_item["time"]
+    # Check that time is a valid Unix timestamp (positive number)
+    assert first_item["time"] > 0
+    # Check that timestamp is reasonable (after 2000-01-01)
+    assert first_item["time"] >= 946684800  # 2000-01-01 00:00:00 UTC
     
     # Check that prices are positive
     assert first_item["open"] > 0
