@@ -210,6 +210,8 @@ class QuotesServer:
         Raises:
             R2D2Exception: If query fails
         """
+        # Create local client to avoid concurrent query issues
+        client = self.connect_database(database=self.clickhouse_database)
 
         date_start_str = date_start.strftime('%Y-%m-%d %H:%M:%S')
         date_end_str = date_end.strftime('%Y-%m-%d %H:%M:%S')
@@ -232,7 +234,7 @@ class QuotesServer:
         """
         
         # Read data directly as numpy array (more efficient than reading rows)
-        result_array = self.clickhouse_client.query_np(query)
+        result_array = client.query_np(query)
         # Check if we have any results
         if result_array.size == 0 or len(result_array) == 0:
             # Return empty arrays if no data
@@ -463,12 +465,15 @@ class QuotesServer:
         if not bars:
             return
         
+        # Create local client to avoid concurrent query issues
+        client = self.connect_database(database=self.clickhouse_database)
+        
         tf_str = str(tf)
         temp_table = 'temp_save_bars'
         
         try:
             # Create temporary table
-            self.clickhouse_client.command(f"""
+            client.command(f"""
                 CREATE TABLE IF NOT EXISTS {temp_table}
                 (
                     source String,
@@ -484,7 +489,7 @@ class QuotesServer:
                 ENGINE = Memory
             """)
             
-            self.clickhouse_client.command(f"TRUNCATE TABLE {temp_table}")
+            client.command(f"TRUNCATE TABLE {temp_table}")
             
             # Prepare data for insertion
             data = [
@@ -492,7 +497,7 @@ class QuotesServer:
                 for bar in bars
             ]
             
-            self.clickhouse_client.insert(
+            client.insert(
                 temp_table,
                 data,
                 column_names=['source', 'symbol', 'timeframe', 'time', 'open', 'high', 'low', 'close', 'volume']
@@ -513,7 +518,7 @@ class QuotesServer:
                            AND symbol = '{symbol.replace("'", "''")}' 
                            AND timeframe = '{tf_str.replace("'", "''")}') as last_time
                 """
-                result = self.clickhouse_client.query(query)
+                result = client.query(query)
                 
                 if result.result_rows:
                     duplicate_count = result.result_rows[0][0] or 0
@@ -527,13 +532,13 @@ class QuotesServer:
             
             # Insert from temp table to main table
             # Convert timestamp (milliseconds) to DateTime64 with UTC timezone
-            self.clickhouse_client.command(f"""
+            client.command(f"""
                 INSERT INTO quotes
                 SELECT source, symbol, timeframe, time, open, high, low, close, volume
                 FROM {temp_table}
             """)
             
-            self.clickhouse_client.command(f"TRUNCATE TABLE {temp_table}")
+            client.command(f"TRUNCATE TABLE {temp_table}")
             logger.info(f"Saved {len(bars)} bars to database ({exchange_name}/{symbol}/{tf_str})")
             
         except Exception as e:
