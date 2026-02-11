@@ -44,18 +44,14 @@ class TaskResults:
         self._broker_ref: Optional[weakref.ReferenceType['Broker']] = None
         self._trades_start_index: int = 0
         self._last_orders_save_time: Optional[np.datetime64] = None
-        self.ta_proxies: Optional[Dict[str, Any]] = ta_proxies  # Store TA proxies for access to indicator cache
-        self._sent_indicator_keys: set = set()  # Track which indicator keys have been sent to Redis
+        self.ta_proxies: Optional[Dict[str, Any]] = ta_proxies
+        self._sent_indicator_keys: set = set()
         
         try:
             if broker is not None:
-                # Store weak reference to broker
                 self._broker_ref = weakref.ref(broker)
-                
-                # Remember initial trades list size (should be 0)
                 self._trades_start_index = len(broker.trades)
                 
-                # Clear existing results
                 client = self._get_redis_client()
                 result_key_prefix = self.task.get_result_key()
                 pattern = f"{result_key_prefix}:*"
@@ -93,16 +89,14 @@ class TaskResults:
         Raises:
             RuntimeError: If task is not associated with a list or cannot get Redis client
         """
-        # Get Redis params from task
         redis_params = self.task.get_redis_params()
         
-        # Create new client with decode_responses=False for binary data
         return redis.Redis(
             host=redis_params['host'],
             port=redis_params['port'],
             db=redis_params['db'],
             password=redis_params.get('password'),
-            decode_responses=False  # Keep binary for msgpack data
+            decode_responses=False
         )
     
     def _format_value(self, value) -> str:
@@ -126,7 +120,6 @@ class TaskResults:
         Returns:
             str: ISO format string (YYYY-MM-DDTHH:MM:SS)
         """
-        # Convert to datetime and format
         dt = dt64.astype('datetime64[s]').astype(int)
         from datetime import datetime, timezone
         return datetime.fromtimestamp(dt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
@@ -141,8 +134,6 @@ class TaskResults:
         Returns:
             str: JSON-serialized string representation of the cache key
         """
-        # cache_key is (name, tuple(sorted(kwargs.items())))
-        # Convert to JSON-serializable format: [name, dict(kwargs)]
         name, kwargs_tuple = cache_key
         kwargs_dict = dict(kwargs_tuple)
         return json.dumps([name, kwargs_dict], sort_keys=True)
@@ -204,7 +195,6 @@ class TaskResults:
         series_info = indicator_desc.series_info
         
         if isinstance(values, tuple):
-            # Multiple arrays
             arrays_metadata = []
             arrays_binary = []
             for arr in values:
@@ -225,7 +215,6 @@ class TaskResults:
                 }
             }
         else:
-            # Single array - build response with series_info
             response_data = {
                 'metadata': {
                     'is_tuple': False,
@@ -254,29 +243,23 @@ class TaskResults:
             tuple: (trades_key, trades_to_save, new_trades, deal_ids, current_trades_size)
                   Returns None if no new trades
         """
-        # Get new trades (from remembered index to current size)
         current_trades_size = len(broker.trades)
         new_trades = broker.trades[self._trades_start_index:current_trades_size]
         
         if not new_trades:
             return None
         
-        # Collect unique deal_id from new trades
         deal_ids = set(trade.deal_id for trade in new_trades)
         
-        # Prepare trades data for Redis
         trades_key = f"{result_key_prefix}:{result_id}:trades"
         trades_to_save = {}
         
         for trade in new_trades:
             time_iso = datetime64_to_iso(trade.time)
-            side_str = trade.side.value  # "buy" or "sell"
+            side_str = trade.side.value
             
-            # Format member: trade_id|deal_id|order_id|time_iso|side|price|quantity|fee|sum
             member = f"{trade.trade_id}|{trade.deal_id}|{trade.order_id}|{time_iso}|{side_str}|{trade.price}|{trade.quantity}|{trade.fee}|{trade.sum}"
             
-            # Use time as score (numeric representation in milliseconds)
-            # Convert numpy int64 to Python int for Redis compatibility
             score = int(trade.time.astype('datetime64[ms]').astype(int))
             trades_to_save[member] = score
         
@@ -301,7 +284,6 @@ class TaskResults:
         if deal_ids:
             for deal in broker.deals:
                 if deal.deal_id in deal_ids:
-                    # Format member: deal_id|type|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed|close_type
                     member = (
                         f"{deal.deal_id}|"
                         f"{deal.type.value if deal.type else ''}|"
@@ -314,7 +296,6 @@ class TaskResults:
                         f"{deal.close_type.value if deal.close_type else 0}"
                     )
                     
-                    # Use deal_id as score (convert to int if needed)
                     score = int(deal.deal_id)
                     deals_to_save[member] = score
         
@@ -334,19 +315,14 @@ class TaskResults:
             tuple: (orders_hash_key, orders_index_key, orders_hash_data, orders_index_data)
                   Returns None if no orders to save
         """
-        # Check if broker has orders attribute (BrokerBacktesting)
         if not hasattr(broker, 'orders'):
             return None
         
-        # Get all orders
         all_orders = broker.orders
         
-        # Filter orders by modify_time
         if self._last_orders_save_time is None:
-            # First save: include all orders
             orders_to_save = all_orders
         else:
-            # Subsequent saves: only orders modified since last save
             orders_to_save = [
                 order for order in all_orders
                 if order.modify_time >= self._last_orders_save_time
@@ -355,7 +331,6 @@ class TaskResults:
         if not orders_to_save:
             return None
         
-        # Prepare orders data for Redis
         orders_hash_key = f"{result_key_prefix}:{result_id}:orders"
         orders_index_key = f"{result_key_prefix}:{result_id}:orders_index"
         orders_hash_data = {}
@@ -365,20 +340,14 @@ class TaskResults:
             order_id_str = str(order.order_id)
             create_time_iso = datetime64_to_iso(order.create_time)
             modify_time_iso = datetime64_to_iso(order.modify_time)
-            side_str = order.side.value  # "buy" or "sell"
-            order_type_str = order.order_type.value  # "market", "limit", or "stop"
+            side_str = order.side.value
+            order_type_str = order.order_type.value
             trigger_price_str = self._format_value(order.trigger_price)
             
-            # Format order_group as numeric value (0, 1, 2)
             order_group_value = order.order_group.value if order.order_group else 0
-            
-            # Format fraction (None becomes empty string)
             fraction_str = self._format_value(order.fraction)
-            
-            # Format exchange_order_id (None becomes empty string)
             exchange_order_id_str = self._format_value(order.exchange_order_id)
             
-            # Format member: order_id|deal_id|create_time_iso|modify_time_iso|side|order_type|price|volume|filled_volume|status|trigger_price|order_group|fraction|exchange_order_id
             member = (
                 f"{order.order_id}|"
                 f"{self._format_value(order.deal_id)}|"
@@ -398,7 +367,6 @@ class TaskResults:
             
             orders_hash_data[order_id_str] = member
             
-            # Use modify_time as score (numeric representation in milliseconds)
             score = int(order.modify_time.astype('datetime64[ms]').astype(int))
             orders_index_data[order_id_str] = score
         
@@ -421,10 +389,8 @@ class TaskResults:
         stats_json = None
         
         if broker.stats:
-            # Calculate additional statistics before saving
             broker.stats.calc_stat()
             
-            # Create stats dict excluding internal fields
             stats_dict = {
                 'initial_equity_usd': broker.stats.initial_equity_usd,
                 'total_trades': broker.stats.total_trades,
@@ -475,25 +441,19 @@ class TaskResults:
         if not self.ta_proxies:
             return False
         
-        # Get first proxy to access quotes_data
         first_proxy = next(iter(self.ta_proxies.values()))
-        if not hasattr(first_proxy, 'quotes_data') or 'time' not in first_proxy.quotes_data:
+        if not hasattr(first_proxy, 'quotes_data') or first_proxy.quotes_data is None:
             return False
         
-        time_array = first_proxy.quotes_data['time']
+        time_array = first_proxy.quotes_data.time
         
-        # Serialize time array using msgpack (same format as indicators)
         client_binary = self._get_redis_client_binary()
         time_key = f"{result_key_prefix}:{result_id}:time"
         
-        # Check if already saved (using binary client for consistency)
         if client_binary.exists(time_key.encode('utf-8')):
-            return False  # Already saved
+            return False
         
-        # Serialize time array
         time_bytes = self._serialize_array(time_array)
-        
-        # Save to Redis
         client_binary.set(time_key.encode('utf-8'), time_bytes)
         
         logger.debug(f"Saved quotes time series to {time_key}")
@@ -515,56 +475,39 @@ class TaskResults:
         if not self.ta_proxies:
             return saved_indicator_keys
         
-        # Use binary client for saving indicator data (msgpack)
         client = self._get_redis_client_binary()
         indicators_key_prefix = f"{result_key_prefix}:{result_id}:indicators"
         
-        # Collect all current cache keys from all proxies
         current_cache_keys = set()
         for proxy_name, proxy in self.ta_proxies.items():
             if hasattr(proxy, 'cache') and proxy.cache:
                 for cache_key in proxy.cache.keys():
-                    # Create composite key: (proxy_name, cache_key)
                     composite_key = (proxy_name, cache_key)
                     current_cache_keys.add(composite_key)
         
-        # Find new keys using set difference
         new_indicator_keys = current_cache_keys - self._sent_indicator_keys
         
         if not new_indicator_keys:
             return saved_indicator_keys
         
-        # Create separate pipeline for indicators
         indicators_pipeline = client.pipeline()
         
-        # Process and save new indicators
         for composite_key in new_indicator_keys:
             proxy_name, cache_key = composite_key
             proxy = self.ta_proxies[proxy_name]
             
-            # Get indicator description from cache
             indicator_desc = proxy.cache[cache_key]
             
-            # Skip if not visible
             if not indicator_desc.visible:
                 continue
             
-            # Serialize cache key for Redis key
             serialized_cache_key = self._serialize_cache_key(cache_key)
-            
-            # Serialize indicator values
             indicator_bytes = self._serialize_indicator_values(indicator_desc)
-            
-            # Create Redis key: {prefix}:{result_id}:indicators:{proxy_name}:{serialized_cache_key}
             indicator_redis_key = f"{indicators_key_prefix}:{proxy_name}:{serialized_cache_key}"
             
-            # Add to pipeline
             indicators_pipeline.set(indicator_redis_key, indicator_bytes)
-            
-            # Mark as saved
             saved_indicator_keys.add(composite_key)
         
-        # Execute indicators pipeline if there are any indicators to save
         if saved_indicator_keys:
             indicators_pipeline.execute()
         
@@ -585,7 +528,6 @@ class TaskResults:
             raise RuntimeError("Cannot save results: broker was not provided during initialization")
         
         try:
-            # Get broker from weak reference
             broker = self._broker_ref()
             if broker is None:
                 raise RuntimeError("Broker reference is no longer valid")
@@ -594,7 +536,6 @@ class TaskResults:
             result_key_prefix = self.task.get_result_key()
             result_id = broker.result_id
             
-            # Prepare trades data
             trades_data = self._prepare_trades_data(broker, result_key_prefix, result_id)
             trades_key = None
             trades_to_save = {}
@@ -605,10 +546,8 @@ class TaskResults:
             if trades_data is not None:
                 trades_key, trades_to_save, new_trades, deal_ids, current_trades_size = trades_data
             
-            # Prepare deals data
             deals_key, deals_to_save = self._prepare_deals_data(broker, result_key_prefix, result_id, deal_ids)
             
-            # Prepare orders data
             orders_data = self._prepare_orders_data(broker, result_key_prefix, result_id)
             orders_hash_key = None
             orders_index_key = None
@@ -618,52 +557,39 @@ class TaskResults:
             if orders_data is not None:
                 orders_hash_key, orders_index_key, orders_hash_data, orders_index_data = orders_data
             
-            # Prepare statistics data
             stats_key, stats_json = self._prepare_stats_data(broker, result_key_prefix, result_id, is_finish)
             
-            # Use pipeline to execute all write operations in one batch
             pipeline = client.pipeline()
             
-            # Add trades to pipeline
             if trades_to_save:
                 pipeline.zadd(trades_key, trades_to_save)
             
-            # Add deals to pipeline
             if deals_to_save:
                 pipeline.zadd(deals_key, deals_to_save)
             
-            # Add orders to pipeline
             if orders_hash_data:
                 pipeline.hset(orders_hash_key, mapping=orders_hash_data)
             if orders_index_data:
                 pipeline.zadd(orders_index_key, orders_index_data)
             
-            # Add statistics to pipeline
             if stats_json:
                 pipeline.set(stats_key, stats_json)
             
-            # Execute main pipeline (trades, deals, orders, stats)
             pipeline.execute()
             
-            # Update indices only after successful save
             if trades_data is not None:
                 self._trades_start_index = current_trades_size
             
-            # Update last orders save time if orders were saved
             if orders_data is not None and hasattr(broker, 'current_time') and broker.current_time is not None:
                 self._last_orders_save_time = broker.current_time
             
-            # Save quotes time series (only on first call)
             self._save_quotes_time(result_key_prefix, result_id)
             
-            # Save indicators in separate pipeline
             saved_indicator_keys = self._save_indicators(result_key_prefix, result_id)
             
-            # Update sent indicator keys only after successful save (only visible ones)
             if saved_indicator_keys:
                 self._sent_indicator_keys.update(saved_indicator_keys)
             
-            # Log operations
             if trades_to_save:
                 logger.debug(f"Saved {len(new_trades)} new trades")
             if deals_to_save:
@@ -737,21 +663,17 @@ class TaskResults:
         deals_key = f"{result_key_prefix}:{result_id}:deals"
         pipeline = client.pipeline()
         
-        # Add ZRANGEBYSCORE commands for each deal_id
         for deal_id in deal_ids:
             deal_id_int = int(deal_id)
             pipeline.zrangebyscore(deals_key, deal_id_int, deal_id_int, withscores=False)
         
-        # Execute pipeline
         deals_data_list = pipeline.execute()
         
-        # Parse deals
         for deals_data in deals_data_list:
             if deals_data:
                 member = deals_data[0]
                 parts = member.split('|')
                 
-                # Format: deal_id|type|avg_buy_price|avg_sell_price|quantity|fee|profit|is_closed|close_type
                 assert len(parts) == 9, f"Expected 9 parts in deal data, got {len(parts)}: {member[:100]}"
                 
                 deal_dict = {
@@ -787,28 +709,19 @@ class TaskResults:
         orders_hash_key = f"{result_key_prefix}:{result_id}:orders"
         
         try:
-            # Get order_ids from index with modify_time >= time_begin
             order_ids = client.zrangebyscore(orders_index_key, time_begin_score, '+inf', withscores=False)
             
             if order_ids:
-                # Get full order data from hash
                 orders_data = client.hmget(orders_hash_key, order_ids)
                 
-                # Parse orders
                 for order_member in orders_data:
                     if order_member:
                         parts = order_member.split('|')
                         
-                        # Format: order_id|deal_id|create_time_iso|modify_time_iso|side|order_type|price|volume|filled_volume|status|trigger_price|order_group|fraction|exchange_order_id
                         assert len(parts) == 14, f"Expected 14 parts in order data, got {len(parts)}: {order_member[:100]}"
                         
-                        # Parse order_group (numeric: 0, 1, 2)
                         order_group = int(parts[11]) if parts[11] else 0
-                        
-                        # Parse fraction (can be None/empty)
                         fraction = float(parts[12]) if parts[12] else None
-                        
-                        # Parse exchange_order_id (can be None/empty, string or int)
                         exchange_order_id = parts[13] if parts[13] else None
                         
                         order_dict = {
@@ -878,22 +791,13 @@ class TaskResults:
             client = self._get_redis_client()
             result_key_prefix = self.task.get_result_key()
             
-            # Convert time_begin to numeric score (milliseconds)
             time_begin_score = int(time_begin.astype('datetime64[ms]').astype(int))
             
-            # Load trades and collect deal_ids
             trades, deal_ids = self._load_trades(client, result_key_prefix, result_id, time_begin_score)
-            
-            # Load deals by deal_ids
             deals = self._load_deals(client, result_key_prefix, result_id, deal_ids)
-            
-            # Load orders
             orders = self._load_orders(client, result_key_prefix, result_id, time_begin_score)
-            
-            # Load statistics
             stats = self._load_stats(client, result_key_prefix, result_id)
             
-            # Build result dictionary
             result = {
                 'trades': trades,
                 'deals': deals,
@@ -920,7 +824,6 @@ class TaskResults:
         Returns:
             Dictionary with 'metadata' and 'values' (numpy arrays)
         """
-        # Deserialize MessagePack response
         response_data = msgpack.unpackb(indicator_bytes, raw=False)
         
         metadata = response_data.get('metadata', {})
@@ -937,7 +840,6 @@ class TaskResults:
             if len(arrays_metadata) != len(arrays_binary):
                 raise ValueError(f"Mismatch between arrays metadata ({len(arrays_metadata)}) and binary data ({len(arrays_binary)})")
             
-            # Reconstruct numpy arrays
             reconstructed_arrays = []
             for arr_meta, arr_bytes in zip(arrays_metadata, arrays_binary):
                 dtype = np.dtype(arr_meta['dtype'])
@@ -949,14 +851,11 @@ class TaskResults:
             if series_info and len(series_info) == len(reconstructed_arrays):
                 values = {info['name']: arr.tolist() for info, arr in zip(series_info, reconstructed_arrays)}
             else:
-                # Fallback: use generic names
                 names = [info.get('name', f'series{i}') for i, info in enumerate(series_info)] if series_info else [f'series{i}' for i in range(len(reconstructed_arrays))]
-                # Ensure we have enough names
                 while len(names) < len(reconstructed_arrays):
                     names.append(f'series{len(names)}')
                 values = {name: arr.tolist() for name, arr in zip(names, reconstructed_arrays)}
         else:
-            # Single array
             dtype = np.dtype(metadata['dtype'])
             shape = tuple(metadata['shape'])
             arr_bytes = binary_data.get('array')
@@ -991,7 +890,6 @@ class TaskResults:
             if time_bytes is None:
                 return None
             
-            # Deserialize array
             deserialized = self._deserialize_array(time_bytes)
             
             return deserialized
@@ -1011,12 +909,9 @@ class TaskResults:
         Returns:
             Tuple of (start_idx, end_idx) for slicing
         """
-        # Find first index where time >= date_start
         start_idx = np.searchsorted(time_array, date_start, side='left')
-        # Find last index where time <= date_end (inclusive)
         end_idx = np.searchsorted(time_array, date_end, side='right')
         
-        # Clamp indices to array bounds
         start_idx = max(0, min(start_idx, len(time_array) - 1))
         end_idx = max(start_idx, min(end_idx, len(time_array)))
         
@@ -1045,17 +940,15 @@ class TaskResults:
         if not all_redis_keys:
             return [], []
         
-        # Extract indicator keys (remove prefix to get {proxy_name}:{serialized_cache_key})
         indicator_keys = []
         redis_keys_to_fetch = []
         
         for redis_key in all_redis_keys:
-            # Extract indicator key: remove prefix "{prefix}:{result_id}:indicators:"
             prefix_to_remove = f"{indicators_key_prefix}:"
             if not redis_key.startswith(prefix_to_remove):
                 continue
             
-            indicator_key = redis_key[len(prefix_to_remove):]  # {proxy_name}:{serialized_cache_key}
+            indicator_key = redis_key[len(prefix_to_remove):]
             indicator_keys.append(indicator_key)
             redis_keys_to_fetch.append(redis_key)
         
@@ -1090,7 +983,6 @@ class TaskResults:
         Raises:
             ValueError: If key format is invalid
         """
-        # Parse indicator key to extract proxy_name and cache_key
         parts = indicator_key.split(':', 1)
         if len(parts) != 2:
             raise ValueError(f"Invalid indicator key format: {indicator_key}")
@@ -1098,7 +990,6 @@ class TaskResults:
         proxy_name = parts[0]
         serialized_cache_key = parts[1]
         
-        # Parse cache_key JSON to get indicator_name and parameters
         cache_key_data = json.loads(serialized_cache_key)
         if not isinstance(cache_key_data, list) or len(cache_key_data) != 2:
             raise ValueError(f"Invalid cache key format: {serialized_cache_key}")
@@ -1159,22 +1050,18 @@ class TaskResults:
             """
             if val is None:
                 return None
-            # Check for numpy types first
             if isinstance(val, np.integer):
                 return int(val)
             elif isinstance(val, np.floating):
                 val_float = float(val)
-                # Convert NaN to None for JSON compatibility
                 if np.isnan(val_float):
                     return None
                 return val_float
             elif isinstance(val, (int, float)):
-                # Check if float is NaN
                 if isinstance(val, float) and (val != val):
                     return None
                 return val
             else:
-                # Fallback: try to convert numpy scalar
                 try:
                     if hasattr(val, 'item'):
                         val_item = val.item()
@@ -1186,17 +1073,13 @@ class TaskResults:
                     return val
         
         if is_tuple:
-            # Multiple series (dict with series names as keys, values are lists)
             filtered_values = {}
             for series_name, values_list in values.items():
                 if len(values_list) > 0:
-                    # Clamp indices to array bounds
                     arr_start = min(start_idx, len(values_list))
                     arr_end = min(end_idx, len(values_list))
                     if arr_start < arr_end:
-                        # Slice list (inclusive end: end_idx+1)
                         sliced = values_list[arr_start:arr_end+1]
-                        # Convert each value explicitly, like in get_quotes: float(open_array[i])
                         filtered_values[series_name] = [convert_value(val) for val in sliced]
                     else:
                         filtered_values[series_name] = []
@@ -1204,15 +1087,11 @@ class TaskResults:
                     filtered_values[series_name] = []
             return filtered_values
         else:
-            # Single series (list)
             if len(values) > 0:
-                # Clamp indices to array bounds
                 arr_start = min(start_idx, len(values))
                 arr_end = min(end_idx, len(values))
                 if arr_start < arr_end:
-                    # Slice list (inclusive end: end_idx+1)
                     sliced = values[arr_start:arr_end+1]
-                    # Convert each value explicitly, like in get_quotes: float(open_array[i])
                     return [convert_value(val) for val in sliced]
                 else:
                     return []
@@ -1291,7 +1170,6 @@ class TaskResults:
             RuntimeError: If operation fails
         """
         try:
-            # Load quotes time series to determine indices
             result_key_prefix = self.task.get_result_key()
             time_array = self._load_quotes_time(result_key_prefix, result_id)
             
@@ -1299,9 +1177,7 @@ class TaskResults:
                 logger.warning(f"No quotes time series found for result_id {result_id}")
                 return {}
             
-            # Calculate slice indices for date range
             start_idx, end_idx = self._get_indicator_slice_indices(time_array, date_start, date_end)
-            # Ensure indices are Python int, not numpy int
             start_idx = int(start_idx)
             end_idx = int(end_idx)
             
@@ -1309,25 +1185,19 @@ class TaskResults:
                 logger.info(f"Requested date range {date_start} - {date_end} is outside quotes time range. Returning empty indicators.")
                 return {}
             
-            # Get indicator keys from Redis
             indicator_keys, redis_keys_to_fetch = self._get_indicator_keys_from_redis(result_key_prefix, result_id)
             
             if not indicator_keys:
                 return {}
             
-            # Fetch indicator data from Redis
             indicator_data_list = self._fetch_indicator_data_from_redis(redis_keys_to_fetch)
             
-            # Convert dates to ISO strings for metadata
             date_start_iso = datetime64_to_iso(date_start)
             date_end_iso = datetime64_to_iso(date_end)
             
-            # Extract time range for indicators (matching the filtered values)
             time_range = time_array[start_idx:end_idx+1]
-            # Convert datetime64 to ISO strings (ensure Python strings, not numpy types)
             time_range_iso = [str(datetime64_to_iso(t)) for t in time_range]
             
-            # Process and deserialize indicators
             result = {}
             indicators_processed = 0
             
@@ -1337,20 +1207,15 @@ class TaskResults:
                     continue
                 
                 try:
-                    # Deserialize indicator
                     deserialized = self._deserialize_indicator_values(indicator_bytes)
                     
-                    # Parse indicator key
                     try:
                         proxy_name, indicator_name, parameters = self._parse_indicator_key(indicator_key)
-                        # Convert numpy types in parameters to Python types (like in get_quotes)
                         parameters = self._convert_dict_numpy_types(parameters)
                     except (ValueError, json.JSONDecodeError) as e:
                         logger.warning(f"Failed to parse indicator key {indicator_key}: {e}")
                         continue
                     
-                    # Filter values by date range
-                    # Ensure is_tuple is Python bool, not numpy bool
                     is_tuple = bool(deserialized['metadata']['is_tuple'])
                     
                     filtered_values = self._filter_indicator_values_by_range(
@@ -1360,10 +1225,8 @@ class TaskResults:
                         end_idx
                     )
                     
-                    # Convert series_info numpy types to Python types
                     series_info = self._convert_dict_numpy_types(deserialized['metadata']['series_info'])
                     
-                    # Build result entry
                     entry = self._build_indicator_result_entry(
                         indicator_key=indicator_key,
                         proxy_name=proxy_name,
@@ -1377,7 +1240,6 @@ class TaskResults:
                         date_end_iso=date_end_iso
                     )
                     
-                    # Convert entry to ensure all numpy types are converted
                     entry = self._convert_dict_numpy_types(entry)
                     
                     result[indicator_key] = entry
@@ -1386,8 +1248,6 @@ class TaskResults:
                     logger.error(f"Failed to deserialize indicator {indicator_key}: {e}", exc_info=True)
                     raise RuntimeError(f"Failed to deserialize indicator {indicator_key}: {str(e)}") from e
             
-            # Convert all numpy types in the entire result structure before returning
-            # This ensures JSON serialization will work (like in get_quotes)
             converted_result = self._convert_dict_numpy_types(result)
             
             return converted_result
@@ -1425,16 +1285,13 @@ class TaskResults:
         try:
             result_key_prefix = self.task.get_result_key()
             
-            # Get indicator keys from Redis
             indicator_keys, redis_keys_to_fetch = self._get_indicator_keys_from_redis(result_key_prefix, result_id)
             
             if not indicator_keys:
                 return []
             
-            # Fetch indicator data from Redis (we need metadata, but won't process values)
             indicator_data_list = self._fetch_indicator_data_from_redis(redis_keys_to_fetch)
             
-            # Process indicators to extract metadata only
             result = []
             
             for indicator_key, indicator_bytes in zip(indicator_keys, indicator_data_list):
@@ -1443,27 +1300,20 @@ class TaskResults:
                     continue
                 
                 try:
-                    # Deserialize only metadata (not values)
-                    # We unpack msgpack but only use metadata part
                     response_data = msgpack.unpackb(indicator_bytes, raw=False)
                     metadata = response_data.get('metadata', {})
                     
-                    # Parse indicator key
                     try:
                         proxy_name, indicator_name, parameters = self._parse_indicator_key(indicator_key)
-                        # Convert numpy types in parameters to Python types
                         parameters = self._convert_dict_numpy_types(parameters)
                     except (ValueError, json.JSONDecodeError) as e:
                         logger.warning(f"Failed to parse indicator key {indicator_key}: {e}")
                         continue
                     
-                    # Extract metadata fields
                     is_tuple = bool(metadata.get('is_tuple', False))
                     series_info = metadata.get('series_info', [])
-                    # Convert series_info numpy types to Python types
                     series_info = self._convert_dict_numpy_types(series_info)
                     
-                    # Build result entry
                     entry = {
                         'key': indicator_key,
                         'proxy_name': proxy_name,
@@ -1473,16 +1323,13 @@ class TaskResults:
                         'series_info': series_info
                     }
                     
-                    # Convert all numpy types in entry
                     entry = self._convert_dict_numpy_types(entry)
                     
                     result.append(entry)
                 except Exception as e:
                     logger.error(f"Failed to extract metadata from indicator {indicator_key}: {e}", exc_info=True)
-                    # Continue with other indicators instead of failing completely
                     continue
             
-            # Convert all numpy types in the entire result structure before returning
             converted_result = self._convert_dict_numpy_types(result)
             
             return converted_result

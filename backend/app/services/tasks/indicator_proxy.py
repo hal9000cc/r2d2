@@ -12,6 +12,7 @@ import pyita as ta
 from pydantic import BaseModel, ConfigDict
 from app.core.logger import get_logger
 from app.core.utils import generate_random_color
+from app.services.tasks.exceptions import R2D2IndicatorNotFoundError
 
 logger = get_logger(__name__)
 
@@ -143,7 +144,7 @@ class UsedIndicatorDescription(BaseModel):
     """
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
-    values: Union[np.ndarray, Tuple[np.ndarray, ...]]  # Cached indicator values (series or tuple of series)
+    values: ta.IndicatorResult  # Cached indicator values (IndicatorResult object)
     visible: bool = True  # Visibility flag for frontend display
     series_info: List[Dict[str, Any]]  # List of series descriptions: [{'name': str, 'is_price': bool, 'color': str, 'lineWidth': int, 'lineStyle': int}, ...]
 
@@ -162,22 +163,180 @@ class ta_proxy(ABC):
             broker: Reference to broker instance
         """
         self.broker = broker
-        self.quotes_data: Optional[dict] = None
+        self.quotes_data: Optional[ta.Quotes] = None
         self.cache = {}
+        self._indicator_metadata = self._load_indicator_metadata()
     
-    def set_quotes(self, quotes_data: dict) -> None:
+    def set_quotes(self, quotes_data: ta.Quotes) -> None:
         """
         Set or update quotes data.
         
         Args:
-            quotes_data: Dictionary with quotes data (time, open, high, low, close, volume)
+            quotes_data: Quotes object with OHLCV data
         """
         self.quotes_data = quotes_data
         # Clear cache when quotes are updated
         self.cache = {}
     
     @abstractmethod
-    def calc_indicator(self, name: str, **kwargs) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
+    def _load_indicator_metadata(self) -> Dict[str, Any]:
+        """
+        Load indicator metadata from library.
+        Must be implemented in subclasses.
+        
+        Returns:
+            Dictionary of indicator metadata
+        """
+        pass
+    
+    def _get_output_series(self, name: str) -> List[Dict[str, str]]:
+        """
+        Get list of output series information for indicator.
+        
+        Args:
+            name: Indicator name (e.g., 'SMA', 'MACD')
+            
+        Returns:
+            List of series dictionaries with 'name' and 'type' keys.
+            Type can be: 'price', 'as source', or None/empty (value-based series).
+            For backward compatibility, if series is a string, it's converted to dict with type='price'.
+            
+        Raises:
+            R2D2IndicatorNotFoundError: If indicator is not found in metadata
+        """
+        if name not in self._indicator_metadata:
+            raise R2D2IndicatorNotFoundError(f"Indicator '{name}' not found in metadata")
+        
+        indicator_info = self._indicator_metadata[name]
+        
+        # Check if 'output_series' exists in metadata (pyita format)
+        if 'output_series' in indicator_info:
+            output_series = indicator_info['output_series']
+            # Convert to list of dicts if needed (handle both old and new formats)
+            result = []
+            for series in output_series:
+                if isinstance(series, str):
+                    # Old format: just string name, default to 'price'
+                    result.append({'name': series, 'type': 'price'})
+                elif isinstance(series, dict):
+                    # New format: dict with 'name' and 'type'
+                    # Type can be 'price', 'as source', or None/empty
+                    result.append(series)
+                else:
+                    # Fallback
+                    result.append({'name': str(series), 'type': 'price'})
+            return result
+        
+        # Check if 'series' exists (talib format)
+        if 'series' in indicator_info:
+            series_list = indicator_info['series']
+            result = []
+            for s in series_list:
+                if isinstance(s, str):
+                    result.append({'name': s, 'type': 'price'})
+                elif isinstance(s, dict):
+                    # Convert 'is_price' to 'type'
+                    is_price = s.get('is_price', True)
+                    series_type = 'price' if is_price else None
+                    result.append({'name': s.get('name', str(s)), 'type': series_type})
+                else:
+                    result.append({'name': str(s), 'type': 'price'})
+            return result
+        
+        # Fallback: return indicator name as single series
+        return [{'name': name, 'type': 'price'}]
+    
+    def _determine_is_price_for_series(
+        self, 
+        series_type: Optional[str], 
+        indicator_name: str, 
+        kwargs: dict
+    ) -> bool:
+        """
+        Determine if series should be displayed on price chart.
+        Default implementation. Override in subclasses if needed.
+        
+        Args:
+            series_type: Type from metadata ('price', 'as_source', 'none', or None)
+            indicator_name: Name of the indicator
+            kwargs: Indicator parameters (may contain 'value' and other params)
+            
+        Returns:
+            True if series should be on price chart, False otherwise
+        """
+        if series_type == 'price' or series_type == 'as_source':
+            return True
+        return False
+    
+    def _build_series_info(self, name: str, lines_config: Optional[str] = None, kwargs: dict = None) -> List[Dict[str, Any]]:
+        """
+        Build series info from indicator metadata and lines configuration.
+        
+        Args:
+            name: Indicator name
+            lines_config: Optional lines configuration string from kwargs (has priority)
+            kwargs: Indicator parameters (used to determine series type for 'as_source')
+            
+        Returns:
+            List of series info dictionaries: [{'name': str, 'is_price': bool, 'color': str, 'lineWidth': int, 'lineStyle': int}, ...]
+        """
+        # Get output series information (list of dicts with 'name' and 'type')
+        try:
+            output_series = self._get_output_series(name)
+        except R2D2IndicatorNotFoundError:
+            # Indicator not found, use generic name
+            output_series = [{'name': name, 'type': 'price'}]
+        
+        # Get metadata for indicator
+        indicator_info = self._indicator_metadata.get(name, {})
+        
+        # Parse lines configuration
+        lines_settings = None
+        all_parse_errors = []
+        
+        # Priority: lines_config (from kwargs) > indicator description > defaults
+        if lines_config:
+            lines_settings, parse_errors = parse_lines_config(lines_config)
+            all_parse_errors.extend(parse_errors)
+        elif 'lines' in indicator_info:
+            lines_settings, parse_errors = parse_lines_config(indicator_info['lines'])
+            all_parse_errors.extend(parse_errors)
+        
+        # If no lines settings, use defaults
+        if not lines_settings:
+            default_line = {'color': generate_random_color(), 'lineWidth': DEFAULT_LINE_WIDTH, 'lineStyle': LINE_STYLE_MAP[DEFAULT_LINE_STYLE]}
+            lines_settings = [default_line]
+        
+        # Send parse errors to frontend if broker is available
+        if all_parse_errors and self.broker:
+            for error_msg in all_parse_errors:
+                self.broker.logging(f"Indicator '{name}': {error_msg}", 'error')
+        
+        # Build series info list
+        result = []
+        for i, series_info in enumerate(output_series):
+            # Extract name and type from series info
+            series_name = series_info.get('name', f'series{i}')
+            series_type = series_info.get('type')
+            
+            # Determine is_price using overridable method
+            series_is_price = self._determine_is_price_for_series(series_type, name, kwargs or {})
+            
+            # Get line settings cyclically
+            line_setting = lines_settings[i % len(lines_settings)]
+            
+            result.append({
+                'name': series_name,
+                'is_price': series_is_price,
+                'color': line_setting['color'],
+                'lineWidth': line_setting['lineWidth'],
+                'lineStyle': line_setting['lineStyle']
+            })
+        
+        return result
+    
+    @abstractmethod
+    def calc_indicator(self, name: str, **kwargs) -> ta.IndicatorResult:
         """
         Calculate indicator values for entire dataset.
         Must be implemented in subclasses for specific TA libraries.
@@ -187,11 +346,11 @@ class ta_proxy(ABC):
             **kwargs: Indicator parameters
             
         Returns:
-            Numpy array or tuple of numpy arrays with indicator values for entire dataset
+            IndicatorResult object with indicator values for entire dataset
         """
         pass
     
-    def get_indicator(self, name: str, **kwargs) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
+    def get_indicator(self, name: str, **kwargs) -> ta.IndicatorResult:
         """
         Get indicator values with caching and slicing to current bar.
         Common implementation for all TA libraries.
@@ -201,7 +360,7 @@ class ta_proxy(ABC):
             **kwargs: Indicator parameters (may include 'lines' for line styling)
             
         Returns:
-            Numpy array or tuple of numpy arrays with indicator values sliced to current bar
+            IndicatorResult object with indicator values sliced to current bar
         """
         # Extract lines config from kwargs (if present)
         lines_config = kwargs.pop('lines', None)
@@ -211,46 +370,27 @@ class ta_proxy(ABC):
         
         # Check cache
         if cache_key not in self.cache:
-            # Calculate indicator for entire dataset
-            indicator_values = self.calc_indicator(name, **kwargs)
+            # Calculate indicator for entire dataset (returns IndicatorResult)
+            indicator_result = self.calc_indicator(name, **kwargs)
             
-            # Determine series info (names, is_price flags, and line settings)
-            is_tuple = isinstance(indicator_values, tuple)
-            tuple_length = len(indicator_values) if is_tuple else 1
-            series_info = []
-            if isinstance(self, ta_proxy_talib):
-                series_info = self._get_series_info(name, is_tuple, tuple_length, lines_config)
-            else:
-                # For non-talib proxies, use generic logic with parsed lines or defaults
-                if lines_config:
-                    lines_settings, parse_errors = parse_lines_config(lines_config)
-                    # Send parse errors to frontend if broker is available
-                    if parse_errors and self.broker:
-                        for error_msg in parse_errors:
-                            self.broker.logging(f"Indicator '{name}': {error_msg}", 'error')
-                else:
-                    lines_settings = [{'color': generate_random_color(), 'lineWidth': DEFAULT_LINE_WIDTH, 'lineStyle': LINE_STYLE_MAP[DEFAULT_LINE_STYLE]}]
-                
-                series_info = self._create_series_info_list(lines_settings, is_tuple, tuple_length, name, is_price=True)
+            # Build series info from metadata (pass kwargs for 'as_source' type determination)
+            series_info = self._build_series_info(name, lines_config, kwargs)
             
             # Store in cache as UsedIndicatorDescription
             self.cache[cache_key] = UsedIndicatorDescription(
-                values=indicator_values,
+                values=indicator_result,
                 visible=True,
                 series_info=series_info
             )
         
         # Get cached indicator description
         indicator_desc = self.cache[cache_key]
-        full_data = indicator_desc.values
+        full_result = indicator_desc.values
         
-        # Check if result is a tuple (multiple return values)
-        if isinstance(full_data, tuple):
-            # Return tuple of slices
-            return tuple(arr[:self.broker.i_time + 1] for arr in full_data)
-        else:
-            # Return single array slice
-            return full_data[:self.broker.i_time + 1]
+        # Slice IndicatorResult to current bar
+        sliced_result = full_result[:self.broker.i_time + 1]
+        
+        return sliced_result
     
     def __getattr__(self, indicator_name: str):
         """
@@ -378,136 +518,15 @@ class ta_proxy_talib(ta_proxy):
         # Analyze talib functions
         self._analyze_talib_functions()
     
-    def _create_series_info_list(
-        self,
-        lines_settings: List[Dict[str, Any]],
-        is_tuple: bool,
-        tuple_length: int,
-        base_name: str,
-        is_price: bool = True
-    ) -> List[Dict[str, Any]]:
+    def _load_indicator_metadata(self) -> Dict[str, Any]:
         """
-        Create list of series info dictionaries from line settings.
+        Load indicator metadata from INDICATOR_SERIES_NAMES.
         
-        Args:
-            lines_settings: List of line settings (color, lineWidth, lineStyle)
-            is_tuple: Whether indicator returns tuple of arrays
-            tuple_length: Length of tuple (number of series), or 1 for single array
-            base_name: Base name for series (used as-is for single, or with index for tuple)
-            is_price: is_price flag for all series
-            
         Returns:
-            List of series info dictionaries
+            Dictionary of indicator metadata
         """
-        if is_tuple:
-            return [{
-                'name': f'series{i}',
-                'is_price': is_price,
-                'color': lines_settings[i % len(lines_settings)]['color'],
-                'lineWidth': lines_settings[i % len(lines_settings)]['lineWidth'],
-                'lineStyle': lines_settings[i % len(lines_settings)]['lineStyle']
-            } for i in range(tuple_length)]
-        else:
-            line_setting = lines_settings[0]
-            return [{
-                'name': base_name,
-                'is_price': is_price,
-                'color': line_setting['color'],
-                'lineWidth': line_setting['lineWidth'],
-                'lineStyle': line_setting['lineStyle']
-            }]
-    
-    def _get_series_info(self, indicator_name: str, is_tuple: bool, tuple_length: int, lines_config: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Get series info (names, is_price flags, and line settings) for indicator.
-        
-        Args:
-            indicator_name: Name of the indicator (e.g., 'MACD', 'BBANDS')
-            is_tuple: Whether indicator returns tuple of arrays
-            tuple_length: Length of tuple (number of series), or 1 for single array
-            lines_config: Optional lines configuration string from kwargs (has priority)
-            
-        Returns:
-            List of series info dictionaries: [{'name': str, 'is_price': bool, 'color': str, 'lineWidth': int, 'lineStyle': int}, ...]
-            Line settings are always present (from lines_config, indicator description, or defaults)
-        """
-        # Priority: lines_config (from kwargs) > indicator description > defaults
-        lines_settings = None
-        all_parse_errors = []
-        
-        if lines_config:
-            # Parse lines from kwargs
-            lines_settings, parse_errors = parse_lines_config(lines_config)
-            all_parse_errors.extend(parse_errors)
-        elif indicator_name in self.INDICATOR_SERIES_NAMES:
-            # Try to get lines from indicator description
-            indicator_desc = self.INDICATOR_SERIES_NAMES[indicator_name]
-            desc_lines = indicator_desc.get('lines')
-            if desc_lines:
-                lines_settings, parse_errors = parse_lines_config(desc_lines)
-                all_parse_errors.extend(parse_errors)
-        
-        # If no lines settings, use defaults
-        if not lines_settings:
-            default_line = {'color': generate_random_color(), 'lineWidth': DEFAULT_LINE_WIDTH, 'lineStyle': LINE_STYLE_MAP[DEFAULT_LINE_STYLE]}
-            lines_settings = [default_line]
-        
-        # Send parse errors to frontend if broker is available
-        if all_parse_errors and self.broker:
-            for error_msg in all_parse_errors:
-                self.broker.logging(f"Indicator '{indicator_name}': {error_msg}", 'error')
-        
-        # Check if indicator has description in dictionary
-        if indicator_name in self.INDICATOR_SERIES_NAMES:
-            indicator_desc = self.INDICATOR_SERIES_NAMES[indicator_name]
-            default_is_price = indicator_desc.get('is_price', True)
-            series_list = indicator_desc.get('series')
-            
-            if series_list:
-                # Use provided series names
-                result = []
-                for i, series_desc in enumerate(series_list):
-                    series_name = series_desc.get('name', f'series{i}')
-                    # Use is_price from series if provided, otherwise use default
-                    series_is_price = series_desc.get('is_price', default_is_price)
-                    # Get line settings cyclically
-                    line_setting = lines_settings[i % len(lines_settings)]
-                    result.append({
-                        'name': series_name,
-                        'is_price': series_is_price,
-                        'color': line_setting['color'],
-                        'lineWidth': line_setting['lineWidth'],
-                        'lineStyle': line_setting['lineStyle']
-                    })
-                
-                # Validate length matches
-                if len(result) != tuple_length:
-                    logger.warning(
-                        f"Indicator '{indicator_name}' description has {len(result)} series, "
-                        f"but actual result has {tuple_length} series. Using actual count."
-                    )
-                    # Adjust to actual length
-                    if len(result) > tuple_length:
-                        result = result[:tuple_length]
-                    else:
-                        # Add generic names for missing series
-                        for i in range(len(result), tuple_length):
-                            line_setting = lines_settings[i % len(lines_settings)]
-                            result.append({
-                                'name': f'series{i}',
-                                'is_price': default_is_price,
-                                'color': line_setting['color'],
-                                'lineWidth': line_setting['lineWidth'],
-                                'lineStyle': line_setting['lineStyle']
-                            })
-                
-                return result
-            else:
-                # No series list provided, generate generic names with default is_price
-                return self._create_series_info_list(lines_settings, is_tuple, tuple_length, indicator_name, is_price=default_is_price)
-        else:
-            # Indicator not in dictionary
-            return self._create_series_info_list(lines_settings, is_tuple, tuple_length, indicator_name, is_price=True)
+        # Return a copy of INDICATOR_SERIES_NAMES
+        return dict(self.INDICATOR_SERIES_NAMES)
     
     def _analyze_talib_functions(self):
         """
@@ -560,7 +579,7 @@ class ta_proxy_talib(ta_proxy):
                 logger.debug(f"Could not analyze function '{name}': {e}")
                 continue
     
-    def calc_indicator(self, name: str, **kwargs) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
+    def calc_indicator(self, name: str, **kwargs) -> ta.IndicatorResult:
         """
         Calculate indicator values using TA-Lib.
         
@@ -569,14 +588,14 @@ class ta_proxy_talib(ta_proxy):
             **kwargs: Indicator parameters (non-positional)
             
         Returns:
-            Numpy array or tuple of numpy arrays with indicator values for entire dataset
+            IndicatorResult object with indicator values for entire dataset
             
         Raises:
-            ValueError: If indicator name is not found in descriptions
+            PyTAExceptionIndicatorNotFound: If indicator name is not found in descriptions
         """
         # Get indicator description
         if name not in self._indicator_descriptions:
-            raise ValueError(f"TA-Lib indicator '{name}' is not available or has invalid parameters")
+            raise R2D2IndicatorNotFoundError(f"TA-Lib indicator '{name}' is not available or has invalid parameters")
         
         description = self._indicator_descriptions[name]
         
@@ -601,12 +620,13 @@ class ta_proxy_talib(ta_proxy):
                 # Remove 'value' from kwargs as it's not a talib parameter
                 call_kwargs.pop('value', None)
                 # Get data from quotes_data using series name
-                if series_name not in self.quotes_data:
+                try:
+                    args.append(self.quotes_data[series_name])
+                except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires series '{series_name}' "
                         f"from 'value' parameter, but it's not available in quotes_data"
                     )
-                args.append(self.quotes_data[series_name])
             elif param_name == 'real0':
                 # For 'real0' parameter, get series name from kwargs['value0']
                 if 'value0' not in kwargs:
@@ -619,12 +639,13 @@ class ta_proxy_talib(ta_proxy):
                 # Remove 'value0' from kwargs as it's not a talib parameter
                 call_kwargs.pop('value0', None)
                 # Get data from quotes_data using series name
-                if series_name not in self.quotes_data:
+                try:
+                    args.append(self.quotes_data[series_name])
+                except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires series '{series_name}' "
                         f"from 'value0' parameter, but it's not available in quotes_data"
                     )
-                args.append(self.quotes_data[series_name])
             elif param_name == 'real1':
                 # For 'real1' parameter, get series name from kwargs['value1']
                 if 'value1' not in kwargs:
@@ -637,12 +658,13 @@ class ta_proxy_talib(ta_proxy):
                 # Remove 'value1' from kwargs as it's not a talib parameter
                 call_kwargs.pop('value1', None)
                 # Get data from quotes_data using series name
-                if series_name not in self.quotes_data:
+                try:
+                    args.append(self.quotes_data[series_name])
+                except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires series '{series_name}' "
                         f"from 'value1' parameter, but it's not available in quotes_data"
                     )
-                args.append(self.quotes_data[series_name])
             elif param_name == 'periods':
                 # For 'periods' parameter, get value from kwargs['periods']
                 if 'periods' not in kwargs:
@@ -658,15 +680,46 @@ class ta_proxy_talib(ta_proxy):
                 args.append(periods_value)
             else:
                 # Regular parameter - get directly from quotes_data
-                args.append(self.quotes_data[param_name])
+                try:
+                    args.append(self.quotes_data[param_name])
+                except (KeyError, AttributeError):
+                    raise ValueError(
+                        f"TA-Lib indicator '{name}' requires parameter '{param_name}', "
+                        f"but it's not available in quotes_data"
+                    )
         
         try:
             # Call talib function with *args and **kwargs (without 'value')
-            result = talib_function(*args, **call_kwargs)
-            return result
+            talib_result = talib_function(*args, **call_kwargs)
         except Exception as e:
             # Re-raise with more context
             raise RuntimeError(f"Error calling talib.{name}(*args, **kwargs): {e}") from e
+        
+        # Get output series information
+        try:
+            output_series_info = self._get_output_series(name)
+        except R2D2IndicatorNotFoundError:
+            # Fallback to generic names
+            if isinstance(talib_result, tuple):
+                output_series_info = [{'name': f'series{i}', 'type': 'price'} for i in range(len(talib_result))]
+            else:
+                output_series_info = [{'name': name, 'type': 'price'}]
+        
+        # Extract series names from output_series_info
+        output_series_names = [s['name'] for s in output_series_info]
+        
+        # Wrap result in IndicatorResult
+        result_dict = {}
+        if isinstance(talib_result, tuple):
+            # Multiple series
+            for i, (series_name, series_data) in enumerate(zip(output_series_names, talib_result)):
+                result_dict[series_name] = series_data
+        else:
+            # Single series
+            result_dict[output_series_names[0]] = talib_result
+        
+        # Create and return IndicatorResult
+        return ta.IndicatorResult(result_dict)
 
 
 class ta_proxy_pyita(ta_proxy):
@@ -674,111 +727,54 @@ class ta_proxy_pyita(ta_proxy):
     Technical analysis proxy for pyita library.
     """
     
-    # Dictionary of indicator descriptions with series names, price chart displayability, and line settings
-    # Format: {'is_price': bool, 'lines': Optional[str], 'series': Optional[List[Dict]]}
-    # If 'series' is provided, uses those names. If not, generates generic names (series0, series1, ...)
-    # Each series can override 'is_price' by including it in its dict
+    def _determine_is_price_for_series(
+        self, 
+        series_type: Optional[str], 
+        indicator_name: str, 
+        kwargs: dict
+    ) -> bool:
+        """
+        Determine if series should be displayed on price chart for pyita indicators.
+        For 'as_source' type, analyzes the 'value' parameter.
+        """
+        if series_type == 'price':
+            return True
+        elif series_type == 'as_source':
+            # Check value parameter to determine if it's price-based
+            value = kwargs.get('value', 'close')
+            if isinstance(value, str):
+                return value.lower() in ['open', 'high', 'low', 'close']
+            return True  # Default to price if value is not a string
+        return False
+    
+    def _load_indicator_metadata(self) -> Dict[str, Any]:
+        """
+        Load indicator metadata from pyita library.
+        
+        Returns:
+            Dictionary of indicator metadata from pyita.metadata()
+        """
+        metadata = ta.metadata()
+        
+        # Merge with our custom metadata (for backwards compatibility)
+        for indicator_name, custom_info in self.INDICATOR_SERIES_NAMES.items():
+            if indicator_name in metadata:
+                # Merge custom info into metadata
+                metadata[indicator_name].update(custom_info)
+            else:
+                # Add custom info as-is
+                metadata[indicator_name] = custom_info
+        
+        return metadata
+    
+    # Dictionary with custom visualization settings for pyita indicators
+    # Only contains indicators that need custom line styling (colors, widths, styles)
+    # All other metadata (names, types) is retrieved from pyita.metadata()
     # Lines priority: kwargs.lines > indicator.lines > defaults
     INDICATOR_SERIES_NAMES = {
-        # Single-series Moving Averages (price overlay)
-        'sma': {'is_price': True},
-        'ema': {'is_price': True},
-        'tema': {'is_price': True},
-        'vwma': {'is_price': True},
-        'ma': {'is_price': True},
-        
-        # Single-series Oscillators (separate chart)
-        'rsi': {'is_price': False},
-        'williams_r': {'is_price': False},
-        'cci': {'is_price': False},
-        'mfi': {'is_price': False},
-        'roc': {'is_price': False},
-        'awesome': {'is_price': False},
-        'trix': {'is_price': False},
-        
-        # Single-series Volume indicators
-        'obv': {'is_price': False},
-        'vwap': {'is_price': True},
-        'volume_osc': {'is_price': False},
-        
-        # Multi-series Trend indicators
-        'adx': {
-            'is_price': False,
-            'series': [{'name': 'adx'}, {'name': 'p_di'}, {'name': 'm_di'}]
-        },
-        'aroon': {
-            'is_price': False,
-            'series': [{'name': 'up'}, {'name': 'down'}, {'name': 'oscillator'}]
-        },
-        'parabolic_sar': {
-            'is_price': True,
-            'series': [{'name': 'sar'}, {'name': 'signal'}]
-        },
-        'supertrend': {
-            'is_price': True,
-            'series': [{'name': 'supertrend'}, {'name': 'signal'}]
-        },
-        'macd': {
-            'is_price': False,
-            'series': [{'name': 'macd'}, {'name': 'signal'}, {'name': 'histogram'}]
-        },
-        'ichimoku': {
-            'is_price': True,
-            'series': [
-                {'name': 'tenkan'}, 
-                {'name': 'kijun'}, 
-                {'name': 'senkou_a'}, 
-                {'name': 'senkou_b'}, 
-                {'name': 'chikou'}
-            ]
-        },
-        
-        # Multi-series Oscillators
-        'stochastic': {
-            'is_price': False,
-            'series': [{'name': 'value_k'}, {'name': 'value_d'}, {'name': 'oscillator'}]
-        },
-        
-        # Multi-series Volatility indicators
+        # Bollinger Bands - custom colors for upper/middle/lower bands
         'bollinger_bands': {
-            'is_price': True,
-            'lines': '#006666;2;solid|#B0B0B0;2;solid|#006666;2;solid',
-            'series': [
-                {'name': 'mid_line'}, 
-                {'name': 'up_line'}, 
-                {'name': 'down_line'}, 
-                {'name': 'width', 'is_price': False}, 
-                {'name': 'z_score', 'is_price': False}
-            ]
-        },
-        'atr': {
-            'is_price': False,
-            'series': [{'name': 'atr'}, {'name': 'atrp'}, {'name': 'tr'}]
-        },
-        'keltner': {
-            'is_price': True,
-            'series': [
-                {'name': 'mid_line'}, 
-                {'name': 'up_line'}, 
-                {'name': 'down_line'}, 
-                {'name': 'width', 'is_price': False}
-            ]
-        },
-        'chandelier': {
-            'is_price': True,
-            'series': [{'name': 'exit_long'}, {'name': 'exit_short'}]
-        },
-        
-        # Multi-series Volume indicators
-        'adl': {
-            'is_price': False,
-            'series': [{'name': 'adl'}, {'name': 'adl_ema'}]
-        },
-        
-        # Other indicators
-        'zigzag': {
-            'is_price': True,
-            'series': [{'name': 'pivots'}, {'name': 'pivot_types', 'is_price': False}]
+            'lines': '#006666;2;solid|#B0B0B0;2;solid|#006666;2;solid'
         },
     }
     
@@ -791,7 +787,7 @@ class ta_proxy_pyita(ta_proxy):
         """
         super().__init__(broker)
     
-    def calc_indicator(self, name: str, **kwargs) -> Union[np.ndarray, Tuple[np.ndarray, ...]]:
+    def calc_indicator(self, name: str, **kwargs) -> ta.IndicatorResult:
         """
         Calculate indicator values using pyita.
         
@@ -800,43 +796,27 @@ class ta_proxy_pyita(ta_proxy):
             **kwargs: Indicator parameters
             
         Returns:
-            Numpy array or tuple of numpy arrays with indicator values for entire dataset
+            IndicatorResult object with indicator values for entire dataset
             
         Raises:
-            ValueError: If indicator name is not found
-            AttributeError: If indicator function doesn't exist in pyita
+            PyTAExceptionIndicatorNotFound: If indicator name is not found
         """
-        # Create Quotes object from quotes_data
-        quotes = ta.Quotes(self.quotes_data)
+        # Check if indicator exists in metadata
+        if name.lower() not in self._indicator_metadata:
+            raise R2D2IndicatorNotFoundError(f"pyita indicator '{name}' is not available")
         
         # Get indicator function via getattr
         try:
             indicator_func = getattr(ta, name.lower())
         except AttributeError:
-            raise ValueError(f"pyita indicator '{name}' is not available")
+            raise R2D2IndicatorNotFoundError(f"pyita indicator '{name}' is not available")
         
-        # Call indicator
+        # Call indicator (quotes_data is already a Quotes object)
         try:
-            result = indicator_func(quotes, **kwargs)
+            result = indicator_func(self.quotes_data, **kwargs)
         except Exception as e:
             raise RuntimeError(f"Error calling pyita.{name}(**kwargs): {e}") from e
         
-        # Extract arrays from IndicatorResult
-        # Determine which attributes are available in result
-        result_attrs = [attr for attr in dir(result) if not attr.startswith('_')]
-        
-        # Filter only numpy arrays
-        arrays = []
-        for attr_name in result_attrs:
-            attr_value = getattr(result, attr_name)
-            if isinstance(attr_value, np.ndarray):
-                arrays.append(attr_value)
-        
-        # Return single array or tuple of arrays
-        if len(arrays) == 1:
-            return arrays[0]
-        elif len(arrays) > 1:
-            return tuple(arrays)
-        else:
-            raise ValueError(f"pyita indicator '{name}' returned no arrays")
+        # Return IndicatorResult as is
+        return result
 

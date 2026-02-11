@@ -3,8 +3,9 @@ import numpy as np
 import time
 from datetime import datetime, UTC, timedelta
 from multiprocessing import get_context
+from typing import Dict
 
-from app.services.quotes.client import PriceSeries, QuotesBackTest, Client
+from app.services.quotes.client import QuotesClient
 from app.services.quotes.constants import PRICE_TYPE, TIME_TYPE, TIME_TYPE_UNIT
 from app.services.quotes.exceptions import R2D2QuotesExceptionDataNotReceived
 from app.core.config import redis_params
@@ -13,62 +14,64 @@ from app.services.quotes.timeframe import Timeframe
 
 def test_quotes_usage_scenario(quotes_service):
     """
-    Test Quotes usage scenario:
-    quotes = Quotes('btc/usdt', '1d', 'binance')
-    high = quotes.close
-    close10 = high[-2: -12]
-    
-    high - is PriceSeries
-    close10 - is numpy array with PRICE_TYPE
+    Test QuotesClient usage scenario with various date ranges and error handling.
     """
     
-    timeout = 10
+    client = QuotesClient()
+    timeframe = Timeframe.cast('1d')
+    timeout = 30
     
-    # QuotesBackTest should raise an exception with invalid parameters
+    # QuotesClient should raise an exception with invalid parameters
     with pytest.raises(R2D2QuotesExceptionDataNotReceived) as e:
-        quotes = QuotesBackTest('badsymbol/usdt', '1d', '2024-01-01', '2025-01-31', 'binance', 100, timeout=timeout)
+        quotes_data = client.get_quotes(
+            source='binance',
+            symbol='badsymbol/usdt',
+            timeframe=timeframe,
+            history_start=datetime(2024, 1, 1, tzinfo=UTC),
+            history_end=datetime(2025, 1, 31, tzinfo=UTC),
+            timeout=timeout
+        )
     assert e.value.error == 'binance does not have market symbol badsymbol/usdt'
 
-    quotes = QuotesBackTest('BTC/USDT', '1d', '2023-01-01', '2023-12-31', 'binance', 100, timeout=timeout)
-    assert len(quotes.close) == 365
+    quotes_data = client.get_quotes(
+        source='binance',
+        symbol='BTC/USDT',
+        timeframe=timeframe,
+        history_start=datetime(2023, 1, 1, tzinfo=UTC),
+        history_end=datetime(2023, 12, 31, tzinfo=UTC),
+        timeout=timeout
+    )
+    assert len(quotes_data['close']) == 365
 
-    quotes = QuotesBackTest('BTC/USDT', '1d', '2024-01-01', '2024-12-31', 'binance', 100, timeout=timeout)
-    assert len(quotes.close) == 366
-    
-    # Test slices work correctly
-    close_series = quotes.close
-    assert isinstance(close_series, PriceSeries), "quotes.close should return PriceSeries"
-    
-    # Test slice [1:10]
-    slice_data = close_series[1:10]
-    assert isinstance(slice_data, np.ndarray), "Slice should return numpy array"
-    assert len(slice_data) == 9, f"Slice [1:10] should return 9 elements, got {len(slice_data)}"
-    assert slice_data.dtype == PRICE_TYPE, f"Slice should have PRICE_TYPE dtype, got {slice_data.dtype}"
-    
-    # Test slice [-10:]
-    slice_data_end = close_series[-10:]
-    assert isinstance(slice_data_end, np.ndarray), "Slice [-10:] should return numpy array"
-    assert len(slice_data_end) == 10, f"Slice [-10:] should return 10 elements, got {len(slice_data_end)}"
+    quotes_data = client.get_quotes(
+        source='binance',
+        symbol='BTC/USDT',
+        timeframe=timeframe,
+        history_start=datetime(2024, 1, 1, tzinfo=UTC),
+        history_end=datetime(2024, 12, 31, tzinfo=UTC),
+        timeout=timeout
+    )
+    assert len(quotes_data['close']) == 366
     
     # Test that there are no zero values in prices
-    assert np.all(quotes.open.values > 0), "Open prices should not contain zero values"
-    assert np.all(quotes.high.values > 0), "High prices should not contain zero values"
-    assert np.all(quotes.low.values > 0), "Low prices should not contain zero values"
-    assert np.all(quotes.close.values > 0), "Close prices should not contain zero values"
-    assert np.all(quotes.volume.values >= 0), "Volume should not contain negative values"
+    assert np.all(quotes_data['open'] > 0), "Open prices should not contain zero values"
+    assert np.all(quotes_data['high'] > 0), "High prices should not contain zero values"
+    assert np.all(quotes_data['low'] > 0), "Low prices should not contain zero values"
+    assert np.all(quotes_data['close'] > 0), "Close prices should not contain zero values"
+    assert np.all(quotes_data['volume'] >= 0), "Volume should not contain negative values"
 
 
-def check_data_completeness(quotes: QuotesBackTest, expected_start: datetime, expected_end: datetime, timeframe: Timeframe):
+def check_data_completeness(quotes_data: Dict[str, np.ndarray], expected_start: datetime, expected_end: datetime, timeframe: Timeframe):
     """
     Check that quotes data is complete - no gaps from expected_start to expected_end.
     
     Args:
-        quotes: QuotesBackTest object
+        quotes_data: Dictionary with numpy arrays (time, open, high, low, close, volume)
         expected_start: Expected start datetime
         expected_end: Expected end datetime
         timeframe: Timeframe object
     """
-    time_array = quotes.time.values
+    time_array = quotes_data['time']
     
     # Convert expected times to numpy datetime64
     expected_start_dt64 = np.datetime64(expected_start.replace(tzinfo=None), TIME_TYPE_UNIT)
@@ -108,11 +111,11 @@ def check_data_completeness(quotes: QuotesBackTest, expected_start: datetime, ex
             pytest.fail(f"Found {len(gaps)} gaps in data: {', '.join(gap_info)}")
     
     # Check that all arrays have the same length
-    assert len(quotes.open.values) == len(time_array), "Open array length mismatch"
-    assert len(quotes.high.values) == len(time_array), "High array length mismatch"
-    assert len(quotes.low.values) == len(time_array), "Low array length mismatch"
-    assert len(quotes.close.values) == len(time_array), "Close array length mismatch"
-    assert len(quotes.volume.values) == len(time_array), "Volume array length mismatch"
+    assert len(quotes_data['open']) == len(time_array), "Open array length mismatch"
+    assert len(quotes_data['high']) == len(time_array), "High array length mismatch"
+    assert len(quotes_data['low']) == len(time_array), "Low array length mismatch"
+    assert len(quotes_data['close']) == len(time_array), "Close array length mismatch"
+    assert len(quotes_data['volume']) == len(time_array), "Volume array length mismatch"
 
 
 def test_gaps_handling(quotes_service):
@@ -120,6 +123,8 @@ def test_gaps_handling(quotes_service):
     Test gap handling with multiple sequential requests.
     Hourly timeframe, multiple date ranges.
     """
+    
+    client = QuotesClient()
     
     # Base date for testing
     base_date = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
@@ -129,206 +134,207 @@ def test_gaps_handling(quotes_service):
     day1 = base_date
     
     # Request 1: 0:00 to 0:00 (single hour)
-    quotes1 = QuotesBackTest('BTC/USDT', '1h', day1, day1, 'binance', 100, timeout=1200)
+    quotes1 = client.get_quotes('binance', 'BTC/USDT', timeframe, day1, day1, timeout=30)
     check_data_completeness(quotes1, day1, day1, timeframe)
     
     # Request 2: 2:00 to 4:00
-    quotes2 = QuotesBackTest('BTC/USDT', '1h', day1 + timedelta(hours=2), day1 + timedelta(hours=4), 'binance', 100, timeout=1200)
+    quotes2 = client.get_quotes('binance', 'BTC/USDT', timeframe, day1 + timedelta(hours=2), day1 + timedelta(hours=4), timeout=30)
     check_data_completeness(quotes2, day1 + timedelta(hours=2), day1 + timedelta(hours=4), timeframe)
     
     # Request 3: 8:00 to 10:00
-    quotes3 = QuotesBackTest('BTC/USDT', '1h', day1 + timedelta(hours=8), day1 + timedelta(hours=10), 'binance', 100, timeout=1200)
+    quotes3 = client.get_quotes('binance', 'BTC/USDT', timeframe, day1 + timedelta(hours=8), day1 + timedelta(hours=10), timeout=30)
     check_data_completeness(quotes3, day1 + timedelta(hours=8), day1 + timedelta(hours=10), timeframe)
     
     # Request 4: 0:00 to 22:00 (should fill all gaps)
-    quotes4 = QuotesBackTest('BTC/USDT', '1h', day1, day1 + timedelta(hours=22), 'binance', 100, timeout=1200)
+    quotes4 = client.get_quotes('binance', 'BTC/USDT', timeframe, day1, day1 + timedelta(hours=22), timeout=30)
     check_data_completeness(quotes4, day1, day1 + timedelta(hours=22), timeframe)
     
     # Day 2 scenarios
     day2 = base_date + timedelta(days=1)
     
     # Request 5: 2:00 to 4:00
-    quotes5 = QuotesBackTest('BTC/USDT', '1h', day2 + timedelta(hours=2), day2 + timedelta(hours=4), 'binance', 100, timeout=1200)
+    quotes5 = client.get_quotes('binance', 'BTC/USDT', timeframe, day2 + timedelta(hours=2), day2 + timedelta(hours=4), timeout=30)
     check_data_completeness(quotes5, day2 + timedelta(hours=2), day2 + timedelta(hours=4), timeframe)
     
     # Request 6: 6:00 to 12:00
-    quotes6 = QuotesBackTest('BTC/USDT', '1h', day2 + timedelta(hours=6), day2 + timedelta(hours=12), 'binance', 100, timeout=1200)
+    quotes6 = client.get_quotes('binance', 'BTC/USDT', timeframe, day2 + timedelta(hours=6), day2 + timedelta(hours=12), timeout=30)
     check_data_completeness(quotes6, day2 + timedelta(hours=6), day2 + timedelta(hours=12), timeframe)
     
     # Request 7: 0:00 to 12:00 (should fill gaps)
-    quotes7 = QuotesBackTest('BTC/USDT', '1h', day2, day2 + timedelta(hours=12), 'binance', 100, timeout=1200)
+    quotes7 = client.get_quotes('binance', 'BTC/USDT', timeframe, day2, day2 + timedelta(hours=12), timeout=30)
     check_data_completeness(quotes7, day2, day2 + timedelta(hours=12), timeframe)
     
     # Day 3 scenarios
     day3 = base_date + timedelta(days=2)
     
     # Request 8: 2:00 to 4:00
-    quotes8 = QuotesBackTest('BTC/USDT', '1h', day3 + timedelta(hours=2), day3 + timedelta(hours=4), 'binance', 100, timeout=1200)
+    quotes8 = client.get_quotes('binance', 'BTC/USDT', timeframe, day3 + timedelta(hours=2), day3 + timedelta(hours=4), timeout=30)
     check_data_completeness(quotes8, day3 + timedelta(hours=2), day3 + timedelta(hours=4), timeframe)
     
     # Request 9: 6:00 to 12:00
-    quotes9 = QuotesBackTest('BTC/USDT', '1h', day3 + timedelta(hours=6), day3 + timedelta(hours=12), 'binance', 100, timeout=1200)
+    quotes9 = client.get_quotes('binance', 'BTC/USDT', timeframe, day3 + timedelta(hours=6), day3 + timedelta(hours=12), timeout=30)
     check_data_completeness(quotes9, day3 + timedelta(hours=6), day3 + timedelta(hours=12), timeframe)
     
     # Request 10: 2:00 to 12:00 (should fill gaps)
-    quotes10 = QuotesBackTest('BTC/USDT', '1h', day3 + timedelta(hours=2), day3 + timedelta(hours=12), 'binance', 100, timeout=1200)
+    quotes10 = client.get_quotes('binance', 'BTC/USDT', timeframe, day3 + timedelta(hours=2), day3 + timedelta(hours=12), timeout=30)
     check_data_completeness(quotes10, day3 + timedelta(hours=2), day3 + timedelta(hours=12), timeframe)
     
     # Day 4 scenarios
     day4 = base_date + timedelta(days=3)
     
     # Request 11: 2:00 to 4:00
-    quotes11 = QuotesBackTest('BTC/USDT', '1h', day4 + timedelta(hours=2), day4 + timedelta(hours=4), 'binance', 100, timeout=1200)
+    quotes11 = client.get_quotes('binance', 'BTC/USDT', timeframe, day4 + timedelta(hours=2), day4 + timedelta(hours=4), timeout=30)
     check_data_completeness(quotes11, day4 + timedelta(hours=2), day4 + timedelta(hours=4), timeframe)
     
     # Request 12: 6:00 to 12:00
-    quotes12 = QuotesBackTest('BTC/USDT', '1h', day4 + timedelta(hours=6), day4 + timedelta(hours=12), 'binance', 100, timeout=1200)
+    quotes12 = client.get_quotes('binance', 'BTC/USDT', timeframe, day4 + timedelta(hours=6), day4 + timedelta(hours=12), timeout=30)
     check_data_completeness(quotes12, day4 + timedelta(hours=6), day4 + timedelta(hours=12), timeframe)
     
     # Request 13: 3:00 to 12:00 (should fill gaps)
-    quotes13 = QuotesBackTest('BTC/USDT', '1h', day4 + timedelta(hours=3), day4 + timedelta(hours=12), 'binance', 100, timeout=1200)
+    quotes13 = client.get_quotes('binance', 'BTC/USDT', timeframe, day4 + timedelta(hours=3), day4 + timedelta(hours=12), timeout=30)
     check_data_completeness(quotes13, day4 + timedelta(hours=3), day4 + timedelta(hours=12), timeframe)
     
     # Request 14: 0:00 to 15:00 (should fill all gaps)
-    quotes14 = QuotesBackTest('BTC/USDT', '1h', day4, day4 + timedelta(hours=15), 'binance', 100, timeout=1200)
+    quotes14 = client.get_quotes('binance', 'BTC/USDT', timeframe, day4, day4 + timedelta(hours=15), timeout=30)
     check_data_completeness(quotes14, day4, day4 + timedelta(hours=15), timeframe)
     
     # Day 11 scenarios
     day11 = base_date + timedelta(days=10)
     
     # Request 15: 12:00 to 15:00
-    quotes15 = QuotesBackTest('BTC/USDT', '1h', day11 + timedelta(hours=12), day11 + timedelta(hours=15), 'binance', 100, timeout=1200)
+    quotes15 = client.get_quotes('binance', 'BTC/USDT', timeframe, day11 + timedelta(hours=12), day11 + timedelta(hours=15), timeout=30)
     check_data_completeness(quotes15, day11 + timedelta(hours=12), day11 + timedelta(hours=15), timeframe)
     
     # Request 16: 18:00 to 19:00
-    quotes16 = QuotesBackTest('BTC/USDT', '1h', day11 + timedelta(hours=18), day11 + timedelta(hours=19), 'binance', 100, timeout=1200)
+    quotes16 = client.get_quotes('binance', 'BTC/USDT', timeframe, day11 + timedelta(hours=18), day11 + timedelta(hours=19), timeout=30)
     check_data_completeness(quotes16, day11 + timedelta(hours=18), day11 + timedelta(hours=19), timeframe)
     
     # Request 17: 17:00 to 18:00
-    quotes17 = QuotesBackTest('BTC/USDT', '1h', day11 + timedelta(hours=17), day11 + timedelta(hours=18), 'binance', 100, timeout=1200)
+    quotes17 = client.get_quotes('binance', 'BTC/USDT', timeframe, day11 + timedelta(hours=17), day11 + timedelta(hours=18), timeout=30)
     check_data_completeness(quotes17, day11 + timedelta(hours=17), day11 + timedelta(hours=18), timeframe)
     
     # Request 18: 13:00 to 18:00
-    quotes18 = QuotesBackTest('BTC/USDT', '1h', day11 + timedelta(hours=13), day11 + timedelta(hours=18), 'binance', 100, timeout=1200)
+    quotes18 = client.get_quotes('binance', 'BTC/USDT', timeframe, day11 + timedelta(hours=13), day11 + timedelta(hours=18), timeout=30)
     check_data_completeness(quotes18, day11 + timedelta(hours=13), day11 + timedelta(hours=18), timeframe)
     
     # Request 19: 11:00 to 19:00 (should fill gaps)
-    quotes19 = QuotesBackTest('BTC/USDT', '1h', day11 + timedelta(hours=11), day11 + timedelta(hours=19), 'binance', 100, timeout=1200)
+    quotes19 = client.get_quotes('binance', 'BTC/USDT', timeframe, day11 + timedelta(hours=11), day11 + timedelta(hours=19), timeout=30)
     check_data_completeness(quotes19, day11 + timedelta(hours=11), day11 + timedelta(hours=19), timeframe)
     
     # Day 12 scenarios
     day12 = base_date + timedelta(days=11)
     
     # Request 20: 12:00 to 15:00
-    quotes20 = QuotesBackTest('BTC/USDT', '1h', day12 + timedelta(hours=12), day12 + timedelta(hours=15), 'binance', 100, timeout=1200)
+    quotes20 = client.get_quotes('binance', 'BTC/USDT', timeframe, day12 + timedelta(hours=12), day12 + timedelta(hours=15), timeout=30)
     check_data_completeness(quotes20, day12 + timedelta(hours=12), day12 + timedelta(hours=15), timeframe)
     
     # Request 21: 18:00 to 19:00
-    quotes21 = QuotesBackTest('BTC/USDT', '1h', day12 + timedelta(hours=18), day12 + timedelta(hours=19), 'binance', 100, timeout=1200)
+    quotes21 = client.get_quotes('binance', 'BTC/USDT', timeframe, day12 + timedelta(hours=18), day12 + timedelta(hours=19), timeout=30)
     check_data_completeness(quotes21, day12 + timedelta(hours=18), day12 + timedelta(hours=19), timeframe)
     
     # Request 22: 17:00 to 18:00
-    quotes22 = QuotesBackTest('BTC/USDT', '1h', day12 + timedelta(hours=17), day12 + timedelta(hours=18), 'binance', 100, timeout=1200)
+    quotes22 = client.get_quotes('binance', 'BTC/USDT', timeframe, day12 + timedelta(hours=17), day12 + timedelta(hours=18), timeout=30)
     check_data_completeness(quotes22, day12 + timedelta(hours=17), day12 + timedelta(hours=18), timeframe)
     
     # Request 23: 13:00 to 18:00
-    quotes23 = QuotesBackTest('BTC/USDT', '1h', day12 + timedelta(hours=13), day12 + timedelta(hours=18), 'binance', 100, timeout=1200)
+    quotes23 = client.get_quotes('binance', 'BTC/USDT', timeframe, day12 + timedelta(hours=13), day12 + timedelta(hours=18), timeout=30)
     check_data_completeness(quotes23, day12 + timedelta(hours=13), day12 + timedelta(hours=18), timeframe)
     
     # Request 24: 11:00 to 18:00 (should fill gaps)
-    quotes24 = QuotesBackTest('BTC/USDT', '1h', day12 + timedelta(hours=11), day12 + timedelta(hours=18), 'binance', 100, timeout=1200)
+    quotes24 = client.get_quotes('binance', 'BTC/USDT', timeframe, day12 + timedelta(hours=11), day12 + timedelta(hours=18), timeout=30)
     check_data_completeness(quotes24, day12 + timedelta(hours=11), day12 + timedelta(hours=18), timeframe)
     
     # Day 13 scenarios
     day13 = base_date + timedelta(days=12)
     
     # Request 25: 12:00 to 15:00
-    quotes25 = QuotesBackTest('BTC/USDT', '1h', day13 + timedelta(hours=12), day13 + timedelta(hours=15), 'binance', 100, timeout=1200)
+    quotes25 = client.get_quotes('binance', 'BTC/USDT', timeframe, day13 + timedelta(hours=12), day13 + timedelta(hours=15), timeout=30)
     check_data_completeness(quotes25, day13 + timedelta(hours=12), day13 + timedelta(hours=15), timeframe)
     
     # Request 26: 18:00 to 19:00
-    quotes26 = QuotesBackTest('BTC/USDT', '1h', day13 + timedelta(hours=18), day13 + timedelta(hours=19), 'binance', 100, timeout=1200)
+    quotes26 = client.get_quotes('binance', 'BTC/USDT', timeframe, day13 + timedelta(hours=18), day13 + timedelta(hours=19), timeout=30)
     check_data_completeness(quotes26, day13 + timedelta(hours=18), day13 + timedelta(hours=19), timeframe)
     
     # Request 27: 17:00 to 18:00
-    quotes27 = QuotesBackTest('BTC/USDT', '1h', day13 + timedelta(hours=17), day13 + timedelta(hours=18), 'binance', 100, timeout=1200)
+    quotes27 = client.get_quotes('binance', 'BTC/USDT', timeframe, day13 + timedelta(hours=17), day13 + timedelta(hours=18), timeout=30)
     check_data_completeness(quotes27, day13 + timedelta(hours=17), day13 + timedelta(hours=18), timeframe)
     
     # Request 28: 13:00 to 18:00
-    quotes28 = QuotesBackTest('BTC/USDT', '1h', day13 + timedelta(hours=13), day13 + timedelta(hours=18), 'binance', 100, timeout=1200)
+    quotes28 = client.get_quotes('binance', 'BTC/USDT', timeframe, day13 + timedelta(hours=13), day13 + timedelta(hours=18), timeout=30)
     check_data_completeness(quotes28, day13 + timedelta(hours=13), day13 + timedelta(hours=18), timeframe)
     
     # Day 14 scenarios
     day14 = base_date + timedelta(days=13)
     
     # Request 29: All day 14 (0:00 to 23:00)
-    quotes29 = QuotesBackTest('BTC/USDT', '1h', day14, day14 + timedelta(hours=23), 'binance', 100, timeout=1200)
+    quotes29 = client.get_quotes('binance', 'BTC/USDT', timeframe, day14, day14 + timedelta(hours=23), timeout=30)
     check_data_completeness(quotes29, day14, day14 + timedelta(hours=23), timeframe)
     
     # Request 30: 0:00 to 8:00 - odd hours first (1, 3, 5, 7)
-    quotes30_1 = QuotesBackTest('BTC/USDT', '1h', day14 + timedelta(hours=1), day14 + timedelta(hours=1), 'binance', 100, timeout=1200)
+    quotes30_1 = client.get_quotes('binance', 'BTC/USDT', timeframe, day14 + timedelta(hours=1), day14 + timedelta(hours=1), timeout=30)
     check_data_completeness(quotes30_1, day14 + timedelta(hours=1), day14 + timedelta(hours=1), timeframe)
-    quotes30_3 = QuotesBackTest('BTC/USDT', '1h', day14 + timedelta(hours=3), day14 + timedelta(hours=3), 'binance', 100, timeout=1200)
+    quotes30_3 = client.get_quotes('binance', 'BTC/USDT', timeframe, day14 + timedelta(hours=3), day14 + timedelta(hours=3), timeout=30)
     check_data_completeness(quotes30_3, day14 + timedelta(hours=3), day14 + timedelta(hours=3), timeframe)
-    quotes30_5 = QuotesBackTest('BTC/USDT', '1h', day14 + timedelta(hours=5), day14 + timedelta(hours=5), 'binance', 100, timeout=1200)
+    quotes30_5 = client.get_quotes('binance', 'BTC/USDT', timeframe, day14 + timedelta(hours=5), day14 + timedelta(hours=5), timeout=30)
     check_data_completeness(quotes30_5, day14 + timedelta(hours=5), day14 + timedelta(hours=5), timeframe)
-    quotes30_7 = QuotesBackTest('BTC/USDT', '1h', day14 + timedelta(hours=7), day14 + timedelta(hours=7), 'binance', 100, timeout=1200)
+    quotes30_7 = client.get_quotes('binance', 'BTC/USDT', timeframe, day14 + timedelta(hours=7), day14 + timedelta(hours=7), timeout=30)
     check_data_completeness(quotes30_7, day14 + timedelta(hours=7), day14 + timedelta(hours=7), timeframe)
     
     # Request 31: 0:00 to 8:00 - even hours after (0, 2, 4, 6, 8)
-    quotes31_0 = QuotesBackTest('BTC/USDT', '1h', day14 + timedelta(hours=0), day14 + timedelta(hours=0), 'binance', 100, timeout=1200)
+    quotes31_0 = client.get_quotes('binance', 'BTC/USDT', timeframe, day14 + timedelta(hours=0), day14 + timedelta(hours=0), timeout=30)
     check_data_completeness(quotes31_0, day14 + timedelta(hours=0), day14 + timedelta(hours=0), timeframe)
-    quotes31_2 = QuotesBackTest('BTC/USDT', '1h', day14 + timedelta(hours=2), day14 + timedelta(hours=2), 'binance', 100, timeout=1200)
+    quotes31_2 = client.get_quotes('binance', 'BTC/USDT', timeframe, day14 + timedelta(hours=2), day14 + timedelta(hours=2), timeout=30)
     check_data_completeness(quotes31_2, day14 + timedelta(hours=2), day14 + timedelta(hours=2), timeframe)
-    quotes31_4 = QuotesBackTest('BTC/USDT', '1h', day14 + timedelta(hours=4), day14 + timedelta(hours=4), 'binance', 100, timeout=1200)
+    quotes31_4 = client.get_quotes('binance', 'BTC/USDT', timeframe, day14 + timedelta(hours=4), day14 + timedelta(hours=4), timeout=30)
     check_data_completeness(quotes31_4, day14 + timedelta(hours=4), day14 + timedelta(hours=4), timeframe)
-    quotes31_6 = QuotesBackTest('BTC/USDT', '1h', day14 + timedelta(hours=6), day14 + timedelta(hours=6), 'binance', 100, timeout=1200)
+    quotes31_6 = client.get_quotes('binance', 'BTC/USDT', timeframe, day14 + timedelta(hours=6), day14 + timedelta(hours=6), timeout=30)
     check_data_completeness(quotes31_6, day14 + timedelta(hours=6), day14 + timedelta(hours=6), timeframe)
-    quotes31_8 = QuotesBackTest('BTC/USDT', '1h', day14 + timedelta(hours=8), day14 + timedelta(hours=8), 'binance', 100, timeout=1200)
+    quotes31_8 = client.get_quotes('binance', 'BTC/USDT', timeframe, day14 + timedelta(hours=8), day14 + timedelta(hours=8), timeout=30)
     check_data_completeness(quotes31_8, day14 + timedelta(hours=8), day14 + timedelta(hours=8), timeframe)
     
     # Day 15 scenarios
     day15 = base_date + timedelta(days=14)
     
     # Request 32: All day 15 (0:00 to 23:00)
-    quotes32 = QuotesBackTest('BTC/USDT', '1h', day15, day15 + timedelta(hours=23), 'binance', 100, timeout=1200)
+    quotes32 = client.get_quotes('binance', 'BTC/USDT', timeframe, day15, day15 + timedelta(hours=23), timeout=30)
     check_data_completeness(quotes32, day15, day15 + timedelta(hours=23), timeframe)
     
     # Request 33: 0:00 to 8:00 - even hours first (0, 2, 4, 6, 8)
-    quotes33_0 = QuotesBackTest('BTC/USDT', '1h', day15 + timedelta(hours=0), day15 + timedelta(hours=0), 'binance', 100, timeout=1200)
+    quotes33_0 = client.get_quotes('binance', 'BTC/USDT', timeframe, day15 + timedelta(hours=0), day15 + timedelta(hours=0), timeout=30)
     check_data_completeness(quotes33_0, day15 + timedelta(hours=0), day15 + timedelta(hours=0), timeframe)
-    quotes33_2 = QuotesBackTest('BTC/USDT', '1h', day15 + timedelta(hours=2), day15 + timedelta(hours=2), 'binance', 100, timeout=1200)
+    quotes33_2 = client.get_quotes('binance', 'BTC/USDT', timeframe, day15 + timedelta(hours=2), day15 + timedelta(hours=2), timeout=30)
     check_data_completeness(quotes33_2, day15 + timedelta(hours=2), day15 + timedelta(hours=2), timeframe)
-    quotes33_4 = QuotesBackTest('BTC/USDT', '1h', day15 + timedelta(hours=4), day15 + timedelta(hours=4), 'binance', 100, timeout=1200)
+    quotes33_4 = client.get_quotes('binance', 'BTC/USDT', timeframe, day15 + timedelta(hours=4), day15 + timedelta(hours=4), timeout=30)
     check_data_completeness(quotes33_4, day15 + timedelta(hours=4), day15 + timedelta(hours=4), timeframe)
-    quotes33_6 = QuotesBackTest('BTC/USDT', '1h', day15 + timedelta(hours=6), day15 + timedelta(hours=6), 'binance', 100, timeout=1200)
+    quotes33_6 = client.get_quotes('binance', 'BTC/USDT', timeframe, day15 + timedelta(hours=6), day15 + timedelta(hours=6), timeout=30)
     check_data_completeness(quotes33_6, day15 + timedelta(hours=6), day15 + timedelta(hours=6), timeframe)
-    quotes33_8 = QuotesBackTest('BTC/USDT', '1h', day15 + timedelta(hours=8), day15 + timedelta(hours=8), 'binance', 100, timeout=1200)
+    quotes33_8 = client.get_quotes('binance', 'BTC/USDT', timeframe, day15 + timedelta(hours=8), day15 + timedelta(hours=8), timeout=30)
     check_data_completeness(quotes33_8, day15 + timedelta(hours=8), day15 + timedelta(hours=8), timeframe)
     
     # Request 34: 0:00 to 8:00 - odd hours after (1, 3, 5, 7)
-    quotes34_1 = QuotesBackTest('BTC/USDT', '1h', day15 + timedelta(hours=1), day15 + timedelta(hours=1), 'binance', 100, timeout=1200)
+    quotes34_1 = client.get_quotes('binance', 'BTC/USDT', timeframe, day15 + timedelta(hours=1), day15 + timedelta(hours=1), timeout=30)
     check_data_completeness(quotes34_1, day15 + timedelta(hours=1), day15 + timedelta(hours=1), timeframe)
-    quotes34_3 = QuotesBackTest('BTC/USDT', '1h', day15 + timedelta(hours=3), day15 + timedelta(hours=3), 'binance', 100, timeout=1200)
+    quotes34_3 = client.get_quotes('binance', 'BTC/USDT', timeframe, day15 + timedelta(hours=3), day15 + timedelta(hours=3), timeout=30)
     check_data_completeness(quotes34_3, day15 + timedelta(hours=3), day15 + timedelta(hours=3), timeframe)
-    quotes34_5 = QuotesBackTest('BTC/USDT', '1h', day15 + timedelta(hours=5), day15 + timedelta(hours=5), 'binance', 100, timeout=1200)
+    quotes34_5 = client.get_quotes('binance', 'BTC/USDT', timeframe, day15 + timedelta(hours=5), day15 + timedelta(hours=5), timeout=30)
     check_data_completeness(quotes34_5, day15 + timedelta(hours=5), day15 + timedelta(hours=5), timeframe)
-    quotes34_7 = QuotesBackTest('BTC/USDT', '1h', day15 + timedelta(hours=7), day15 + timedelta(hours=7), 'binance', 100, timeout=1200)
+    quotes34_7 = client.get_quotes('binance', 'BTC/USDT', timeframe, day15 + timedelta(hours=7), day15 + timedelta(hours=7), timeout=30)
     check_data_completeness(quotes34_7, day15 + timedelta(hours=7), day15 + timedelta(hours=7), timeframe)
     
     # Cross-day requests
     # Request 35: From day 1 to day 14 (0:00 day1 to 23:00 day14)
-    quotes35 = QuotesBackTest('BTC/USDT', '1h', day1, day14 + timedelta(hours=23), 'binance', 100, timeout=1200)
+    quotes35 = client.get_quotes('binance', 'BTC/USDT', timeframe, day1, day14 + timedelta(hours=23), timeout=30)
     check_data_completeness(quotes35, day1, day14 + timedelta(hours=23), timeframe)
     
     # Request 36: From day 2 to day 16 (0:00 day2 to 23:00 day16)
     day16 = base_date + timedelta(days=15)
-    quotes36 = QuotesBackTest('BTC/USDT', '1h', day2, day16 + timedelta(hours=23), 'binance', 100, timeout=1200)
+    quotes36 = client.get_quotes('binance', 'BTC/USDT', timeframe, day2, day16 + timedelta(hours=23), timeout=30)
     check_data_completeness(quotes36, day2, day16 + timedelta(hours=23), timeframe)
 
 
 def test_5m_small(quotes_service):
-    timeframe = '5m'
+    client = QuotesClient()
+    timeframe = Timeframe.cast('5m')
     start_date = datetime(2025, 10, 10, 0, 0, 0, tzinfo=UTC)
     date_end = start_date + timedelta(hours=23, minutes=59)
     
@@ -336,25 +342,25 @@ def test_5m_small(quotes_service):
         """Run a single test call"""
         start_time = time.time()
         
-        quotes = QuotesBackTest('BTC/USDT', '5m', start_date, date_end, 'binance', timeout=1200)
+        quotes_data = client.get_quotes('binance', 'BTC/USDT', timeframe, start_date, date_end, timeout=30)
         
         # Check data completeness
-        check_data_completeness(quotes, start_date, date_end, timeframe)
+        check_data_completeness(quotes_data, start_date, date_end, timeframe)
         
         # Calculate expected number of bars
-        timeframe_delta = Timeframe.cast(timeframe).timedelta()
+        timeframe_delta = timeframe.timedelta()
         total_seconds = (date_end - start_date).total_seconds()
         expected_bars = int(total_seconds / timeframe_delta.total_seconds()) + 1
         
         # Verify we got the expected number of bars
-        assert len(quotes.time.values) == expected_bars, \
-            f"Expected {expected_bars} bars for {timeframe} timeframe, got {len(quotes.time.values)}"
+        assert len(quotes_data['time']) == expected_bars, \
+            f"Expected {expected_bars} bars for {timeframe} timeframe, got {len(quotes_data['time'])}"
         
         # Verify no zero values in prices
-        assert np.all(quotes.open.values > 0), "Open prices should not contain zero values"
-        assert np.all(quotes.high.values > 0), "High prices should not contain zero values"
-        assert np.all(quotes.low.values > 0), "Low prices should not contain zero values"
-        assert np.all(quotes.close.values > 0), "Close prices should not contain zero values"
+        assert np.all(quotes_data['open'] > 0), "Open prices should not contain zero values"
+        assert np.all(quotes_data['high'] > 0), "High prices should not contain zero values"
+        assert np.all(quotes_data['low'] > 0), "Low prices should not contain zero values"
+        assert np.all(quotes_data['close'] > 0), "Close prices should not contain zero values"
         
         elapsed_time = time.time() - start_time
         print(f"Call {call_num}: completed in {elapsed_time:.2f} seconds")
@@ -367,7 +373,8 @@ def test_5m_small(quotes_service):
 
 
 def test_5m_big(quotes_service):
-    timeframe = '5m'
+    client = QuotesClient()
+    timeframe = Timeframe.cast('5m')
     start_date = datetime(2025, 10, 10, 0, 0, 0, tzinfo=UTC)
     date_end = start_date + timedelta(hours=24*29+23, minutes=59)
     
@@ -375,25 +382,25 @@ def test_5m_big(quotes_service):
         """Run a single test call"""
         start_time = time.time()
         
-        quotes = QuotesBackTest('BTC/USDT', '5m', start_date, date_end, 'binance', timeout=1200)
+        quotes_data = client.get_quotes('binance', 'BTC/USDT', timeframe, start_date, date_end, timeout=30)
         
         # Check data completeness
-        check_data_completeness(quotes, start_date, date_end, timeframe)
+        check_data_completeness(quotes_data, start_date, date_end, timeframe)
         
         # Calculate expected number of bars
-        timeframe_delta = Timeframe.cast(timeframe).timedelta()
+        timeframe_delta = timeframe.timedelta()
         total_seconds = (date_end - start_date).total_seconds()
         expected_bars = int(total_seconds / timeframe_delta.total_seconds()) + 1
         
         # Verify we got the expected number of bars
-        assert len(quotes.time.values) == expected_bars, \
-            f"Expected {expected_bars} bars for {timeframe} timeframe, got {len(quotes.time.values)}"
+        assert len(quotes_data['time']) == expected_bars, \
+            f"Expected {expected_bars} bars for {timeframe} timeframe, got {len(quotes_data['time'])}"
         
         # Verify no zero values in prices
-        assert np.all(quotes.open.values > 0), "Open prices should not contain zero values"
-        assert np.all(quotes.high.values > 0), "High prices should not contain zero values"
-        assert np.all(quotes.low.values > 0), "Low prices should not contain zero values"
-        assert np.all(quotes.close.values > 0), "Close prices should not contain zero values"
+        assert np.all(quotes_data['open'] > 0), "Open prices should not contain zero values"
+        assert np.all(quotes_data['high'] > 0), "High prices should not contain zero values"
+        assert np.all(quotes_data['low'] > 0), "Low prices should not contain zero values"
+        assert np.all(quotes_data['close'] > 0), "Close prices should not contain zero values"
         
         elapsed_time = time.time() - start_time
         print(f"Call {call_num}: completed in {elapsed_time:.2f} seconds")
@@ -406,22 +413,23 @@ def test_5m_big(quotes_service):
 
 
 def _parallel_worker(symbol: str, timeframe_str: str, date_start: datetime, date_end: datetime, 
-                     source: str, history_size: int, timeout: int, worker_id: int,
+                     source: str, timeout: int, worker_id: int,
                      redis_params: dict):
     """
     Worker function for parallel requests.
     Loads quotes data in a separate process and checks data integrity.
     """
     # Initialize quotes client with Redis parameters in this process
-    Client(redis_params=redis_params)
+    client = QuotesClient(redis_params=redis_params)
     
     # Create Timeframe object from string
     timeframe = Timeframe.cast(timeframe_str)
     
-    quotes = QuotesBackTest(symbol, timeframe_str, date_start, date_end, source, history_size, timeout=timeout)
+    # Get quotes data
+    quotes_data = client.get_quotes(source, symbol, timeframe, date_start, date_end, timeout=timeout)
     
     # Check data completeness
-    check_data_completeness(quotes, date_start, date_end, timeframe)
+    check_data_completeness(quotes_data, date_start, date_end, timeframe)
     
     # Calculate expected number of bars
     timeframe_delta = timeframe.timedelta()
@@ -429,14 +437,14 @@ def _parallel_worker(symbol: str, timeframe_str: str, date_start: datetime, date
     expected_bars = int(total_seconds / timeframe_delta.total_seconds()) + 1
     
     # Verify we got the expected number of bars
-    assert len(quotes.time.values) == expected_bars, \
-        f"Expected {expected_bars} bars for {timeframe_str} timeframe, got {len(quotes.time.values)}"
+    assert len(quotes_data['time']) == expected_bars, \
+        f"Expected {expected_bars} bars for {timeframe_str} timeframe, got {len(quotes_data['time'])}"
     
     # Verify no zero values in prices
-    assert np.all(quotes.open.values > 0), "Open prices should not contain zero values"
-    assert np.all(quotes.high.values > 0), "High prices should not contain zero values"
-    assert np.all(quotes.low.values > 0), "Low prices should not contain zero values"
-    assert np.all(quotes.close.values > 0), "Close prices should not contain zero values"
+    assert np.all(quotes_data['open'] > 0), "Open prices should not contain zero values"
+    assert np.all(quotes_data['high'] > 0), "High prices should not contain zero values"
+    assert np.all(quotes_data['low'] > 0), "Low prices should not contain zero values"
+    assert np.all(quotes_data['close'] > 0), "Close prices should not contain zero values"
 
 
 def test_parallel_requests(quotes_service):
@@ -459,14 +467,14 @@ def test_parallel_requests(quotes_service):
         for i in range(2):
             p = ctx.Process(
                 target=_parallel_worker,
-                args=('BTC/USDT', '5m', test_date, date_end, 'binance', 100, 120, i + 1, params)
+                args=('BTC/USDT', '5m', test_date, date_end, 'binance', 30, i + 1, params)
             )
             processes.append(p)
         
         # Third process for ETH/USDT (different symbol, will run in parallel)
         p = ctx.Process(
             target=_parallel_worker,
-            args=('ETH/USDT', '5m', test_date, date_end, 'binance', 100, 120, 3, params)
+            args=('ETH/USDT', '5m', test_date, date_end, 'binance', 30, 3, params)
         )
         processes.append(p)
         

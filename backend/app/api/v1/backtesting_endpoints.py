@@ -14,7 +14,7 @@ from app.services.tasks.broker_backtesting import BrokerBacktesting
 from app.services.tasks.task_results import TaskResults
 from app.core.datetime_utils import parse_utc_datetime64
 from app.services.strategies import validate_relative_path, load_strategy
-from app.services.strategies.exceptions import StrategyFileError, StrategyNotFoundError
+from app.services.strategies.exceptions import R2D2StrategyFileError, R2D2StrategyNotFoundError
 from app.services.quotes.client import QuotesClient
 from app.core.config import redis_params
 from app.core.logger import get_logger, setup_logging
@@ -93,7 +93,7 @@ async def create_backtesting_task(task_data: Dict[str, Any]):
     if relative_file_name:
         try:
             validate_relative_path(relative_file_name)
-        except StrategyFileError as e:
+        except R2D2StrategyFileError as e:
             raise HTTPException(status_code=400, detail=str(e))
         
         # Check if task with same file_name already exists
@@ -143,7 +143,7 @@ async def update_backtesting_task(task_id: int, task_data: Dict[str, Any]):
     if relative_file_name:
         try:
             validate_relative_path(relative_file_name)
-        except StrategyFileError as e:
+        except R2D2StrategyFileError as e:
             raise HTTPException(status_code=400, detail=str(e))
     
     # Convert dict to Task object using Pydantic
@@ -187,15 +187,15 @@ def load_strategy_class(file_path: str):
         Strategy class that inherits from Strategy
         
     Raises:
-        StrategyNotFoundError: If strategy file not found
-        StrategyFileError: If strategy file is invalid
+        R2D2StrategyNotFoundError: If strategy file not found
+        R2D2StrategyFileError: If strategy file is invalid
         ValueError: If strategy class cannot be loaded (syntax error, class not found, etc.)
         RuntimeError: If module loading fails
     """
     # Load strategy file
     try:
         strategy_name, _, strategy_text = load_strategy(file_path)
-    except (StrategyNotFoundError, StrategyFileError):
+    except (R2D2StrategyNotFoundError, R2D2StrategyFileError):
         # Re-raise as-is (these are already proper exceptions)
         raise
     
@@ -657,7 +657,7 @@ def process_backtesting_task(task: Task, result_id: str) -> None:
                   to worker_backtesting_task for handling.
     """
     # Load strategy class
-    # Note: load_strategy_class may raise StrategyNotFoundError, StrategyFileError, ValueError, or RuntimeError
+    # Note: load_strategy_class may raise R2D2StrategyNotFoundError, R2D2StrategyFileError, ValueError, or RuntimeError
     # All exceptions will be caught in worker_backtesting_task and handled appropriately
     strategy_class = load_strategy_class(task.file_name)
     

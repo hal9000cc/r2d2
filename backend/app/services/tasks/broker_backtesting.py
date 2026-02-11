@@ -1,7 +1,8 @@
 from typing import List, Optional, Dict, Any, Tuple, Callable
 import numpy as np
+import pyita as ta
 
-from app.services.tasks.broker import Broker, Order, OrderStatus, OrderType, OrderSide, BarStatus
+from app.services.tasks.broker import Broker, OrderType, OrderSide, BarStatus
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
@@ -529,7 +530,7 @@ class BrokerBacktesting(Broker):
         # self.equity_usd = 0.0
         # self.equity_symbol = 0.0
 
-    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
+    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> ta.Quotes:
         """
         Initialize quotes data for strategy execution (backtesting implementation).
         
@@ -539,7 +540,7 @@ class BrokerBacktesting(Broker):
                        Should call set_quotes() on each proxy with initial quotes data
         
         Returns:
-            Dictionary with quotes data (structure is implementation-specific)
+            Quotes object with OHLCV data
         """
         # Get history_size from task
         history_size = self.task.history_size
@@ -563,67 +564,58 @@ class BrokerBacktesting(Broker):
         # Get quotes data from QuotesClient
         client = QuotesClient()
         logger.debug(f"Getting quotes for {self.task.source}:{self.task.symbol}:{self.task.timeframe} from {history_start} to {date_end}")
-        quotes_data = client.get_quotes(self.task.source, self.task.symbol, timeframe, history_start, date_end)
-        logger.debug(f"Quotes received: {len(quotes_data['time'])} bars")
+        quotes_dict = client.get_quotes(self.task.source, self.task.symbol, timeframe, history_start, date_end)
+        logger.debug(f"Quotes received: {len(quotes_dict['time'])} bars")
         
         # Validate that we have quotes data
-        if len(quotes_data['time']) == 0:
+        if len(quotes_dict['time']) == 0:
             raise RuntimeError("No quotes data available for backtesting")
+        
+        # Create Quotes object from dictionary
+        quotes = ta.Quotes(**quotes_dict)
         
         # Call set_quotes() on each TA proxy
         for proxy_name, proxy in ta_proxies.items():
             if hasattr(proxy, 'set_quotes'):
-                proxy.set_quotes(quotes_data)
+                proxy.set_quotes(quotes)
         
-        return quotes_data
+        return quotes
     
     def fetch_next_bar(
         self, 
-        quotes_data: Dict[str, Any], 
+        quotes_data: ta.Quotes, 
         ta_proxies: Dict[str, Any]
-    ) -> Tuple[BarStatus, Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]]:
+    ) -> Tuple[BarStatus, Optional[Tuple[ta.Quotes, np.datetime64, PRICE_TYPE]]]:
         """
         Get next bar data for strategy execution (backtesting implementation).
         
         Args:
-            quotes_data: Quotes data dictionary (from initialize_quotes)
+            quotes_data: Quotes object (from initialize_quotes)
             ta_proxies: Dictionary of TA proxies (for backtesting, set_quotes() is not called)
         
         Returns:
             Tuple of (status, data_tuple):
             - status: BarStatus (RECEIVED, WAITING, FINISHED)
-            - data_tuple: Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price) if status is RECEIVED, else None
+            - data_tuple: Tuple of (sliced_quotes, current_time, current_price) if status is RECEIVED, else None
         """
         
-        # Extract arrays from quotes_data
-        all_time = quotes_data['time']
-        all_close = quotes_data['close']
-        
         # Check if we've reached the end of data
-        if self.i_time >= len(all_close):
+        if self.i_time >= len(quotes_data.close):
             return (BarStatus.FINISHED, None)
         
         # Get current time and price
-        current_time = all_time[self.i_time]
-        current_price = all_close[self.i_time]
+        current_time = quotes_data.time[self.i_time]
+        current_price = quotes_data.close[self.i_time]
         
         # Update current bar high and low for stop order processing
-        self.bar_high = quotes_data['high'][self.i_time]
-        self.bar_low = quotes_data['low'][self.i_time]
+        self.bar_high = quotes_data.high[self.i_time]
+        self.bar_low = quotes_data.low[self.i_time]
         
-        # Return slices up to current index (inclusive) and current time/price
-        data_tuple = (
-            all_time[:self.i_time+1],
-            quotes_data['open'][:self.i_time+1],
-            quotes_data['high'][:self.i_time+1],
-            quotes_data['low'][:self.i_time+1],
-            all_close[:self.i_time+1],
-            quotes_data['volume'][:self.i_time+1],
-            current_time,
-            current_price
-        )
-
+        # Create slice up to current index (inclusive)
+        sliced_quotes = quotes_data[:self.i_time+1]
+        sliced_quotes.writeable = False
+        
         self.i_time += 1
         
-        return (BarStatus.RECEIVED, data_tuple)
+        return (BarStatus.RECEIVED, (sliced_quotes, current_time, current_price))
     

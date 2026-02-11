@@ -10,10 +10,10 @@ import sys
 from pydantic import BaseModel
 from app.core.config import STRATEGIES_DIR
 from app.services.strategies.exceptions import (
-    StrategyNameError,
-    StrategyNotFoundError,
-    StrategySyntaxError,
-    StrategyFileError
+    R2D2StrategyNameError,
+    R2D2StrategyNotFoundError,
+    R2D2StrategySyntaxError,
+    R2D2StrategyFileError
 )
 
 
@@ -56,10 +56,10 @@ def validate_relative_path(relative_path: str) -> None:
         relative_path: Relative file path from STRATEGIES_DIR
         
     Raises:
-        StrategyFileError: If path is invalid or would escape STRATEGIES_DIR
+        R2D2StrategyFileError: If path is invalid or would escape STRATEGIES_DIR
     """
     if not relative_path:
-        raise StrategyFileError("File path cannot be empty")
+        raise R2D2StrategyFileError("File path cannot be empty")
     
     # Normalize path separators to forward slashes for processing
     normalized_path = relative_path.replace('\\', '/')
@@ -69,33 +69,33 @@ def validate_relative_path(relative_path: str) -> None:
     
     # Check that path ends with .py extension
     if not normalized_path.endswith('.py'):
-        raise StrategyFileError(
+        raise R2D2StrategyFileError(
             f"File path must end with .py extension. Received: '{relative_path}'"
         )
     
     # Check for path traversal attempts (..)
     if '..' in normalized_path:
-        raise StrategyFileError(
+        raise R2D2StrategyFileError(
             "File path cannot contain '..'. Path traversal is not allowed for security reasons."
         )
     
     # Check for absolute path (should not start with / on Unix or drive letter on Windows)
     if normalized_path.startswith('/') or (len(normalized_path) > 1 and normalized_path[1] == ':'):
-        raise StrategyFileError(
+        raise R2D2StrategyFileError(
             f"File path must be relative to strategies directory. Received: '{relative_path}'"
         )
     
     # Split into segments (path with .py extension)
     segments = [s for s in normalized_path.split('/') if s]
     if not segments:
-        raise StrategyFileError("File path must contain at least one non-empty segment")
+        raise R2D2StrategyFileError("File path must contain at least one non-empty segment")
     
     # Validate each segment (directory and filename)
     for segment in segments:
         # Check for invalid characters in segment
         invalid_chars = r'[<>:"|?*\x00-\x1f]'
         if re.search(invalid_chars, segment):
-            raise StrategyFileError(
+            raise R2D2StrategyFileError(
                 f"File path segment '{segment}' contains invalid characters. "
                 "Allowed: letters, numbers, spaces, hyphens, underscores, dots, forward slashes"
             )
@@ -105,20 +105,20 @@ def validate_relative_path(relative_path: str) -> None:
                           'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 
                           'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'}
         if segment.upper() in reserved_names:
-            raise StrategyFileError(f"File path segment '{segment}' is a reserved name")
+            raise R2D2StrategyFileError(f"File path segment '{segment}' is a reserved name")
         
         # Check for dots/spaces at the end (Windows issue) - but allow .py at the end of filename
         if segment != segments[-1]:  # Not the last segment (filename)
             if segment.endswith('.') or segment.endswith(' '):
-                raise StrategyFileError(f"File path segment '{segment}' cannot end with a dot or space")
+                raise R2D2StrategyFileError(f"File path segment '{segment}' cannot end with a dot or space")
     
     # Validate filename (last segment must end with .py)
     filename = segments[-1]
     if not filename:
-        raise StrategyFileError("File path must end with a valid filename")
+        raise R2D2StrategyFileError("File path must end with a valid filename")
     
     if not filename.endswith('.py'):
-        raise StrategyFileError("File path must end with .py extension")
+        raise R2D2StrategyFileError("File path must end with .py extension")
     
     # Security check: verify that the resolved path stays within STRATEGIES_DIR
     try:
@@ -131,12 +131,12 @@ def validate_relative_path(relative_path: str) -> None:
         try:
             absolute_path.relative_to(strategies_dir_resolved)
         except ValueError:
-            raise StrategyFileError(
+            raise R2D2StrategyFileError(
                 f"File path would escape strategies directory. "
                 f"Resolved path: '{absolute_path}' is not within '{strategies_dir_resolved}'"
             )
     except (OSError, ValueError) as e:
-        raise StrategyFileError(f"Invalid file path: {str(e)}")
+        raise R2D2StrategyFileError(f"Invalid file path: {str(e)}")
 
 
 def validate_strategy_file_path(file_path: str) -> None:
@@ -148,7 +148,7 @@ def validate_strategy_file_path(file_path: str) -> None:
         file_path: Relative file path from STRATEGIES_DIR (with .py extension)
         
     Raises:
-        StrategyFileError: If path is invalid
+        R2D2StrategyFileError: If path is invalid
     """
     validate_relative_path(file_path)
 
@@ -196,16 +196,16 @@ def create_strategy(name: str, file_path: Optional[str] = None) -> Tuple[str, st
         Tuple of (relative_path, text) - relative path (with .py extension) and empty text
         
     Raises:
-        StrategyFileError: If file_path is not provided, file already exists or creation fails
+        R2D2StrategyFileError: If file_path is not provided, file already exists or creation fails
     """
     # Check that name is not empty
     if not name or not name.strip():
-        raise StrategyFileError("Strategy name cannot be empty")
+        raise R2D2StrategyFileError("Strategy name cannot be empty")
     
     # file_path is required - name cannot be used for file operations
     # name can contain any characters (e.g., "Вася пупкин: дурак!"), so it cannot be used as path
     if not file_path:
-        raise StrategyFileError(
+        raise R2D2StrategyFileError(
             "file_path is required. Strategy name cannot be used as file path."
         )
     
@@ -222,7 +222,7 @@ def create_strategy(name: str, file_path: Optional[str] = None) -> Tuple[str, st
     strategy_identifier = relative_path
     
     if strategy_file_path.exists():
-        raise StrategyFileError(f"Strategy file already exists: {strategy_file_path}")
+        raise R2D2StrategyFileError(f"Strategy file already exists: {strategy_file_path}")
     
     # Ensure parent directories exist
     strategy_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -243,7 +243,7 @@ def create_strategy(name: str, file_path: Optional[str] = None) -> Tuple[str, st
     try:
         strategy_file_path.write_text(template_text, encoding='utf-8')
     except Exception as e:
-        raise StrategyFileError(f"Failed to create strategy file: {str(e)}")
+        raise R2D2StrategyFileError(f"Failed to create strategy file: {str(e)}")
     
     # Return relative path (with .py extension) and text
     return (strategy_identifier, template_text)
@@ -261,7 +261,7 @@ def save_strategy(file_path: str, text: str) -> List[str]:
         List of syntax errors (empty if no errors)
         
     Raises:
-        StrategyFileError: If path is invalid or save fails
+        R2D2StrategyFileError: If path is invalid or save fails
     """
     validate_relative_path(file_path)
     
@@ -273,7 +273,7 @@ def save_strategy(file_path: str, text: str) -> List[str]:
     try:
         absolute_file_path.write_text(text, encoding='utf-8')
     except Exception as e:
-        raise StrategyFileError(f"Failed to save strategy file: {str(e)}")
+        raise R2D2StrategyFileError(f"Failed to save strategy file: {str(e)}")
     
     return syntax_errors
 
@@ -289,8 +289,8 @@ def load_strategy(file_path: str) -> Tuple[str, str, str]:
         Tuple of (name, file_path, text) - strategy name (extracted from path without .py), relative path (with .py), and code
 
     Raises:
-        StrategyFileError: If path is invalid
-        StrategyNotFoundError: If strategy file not found
+        R2D2StrategyFileError: If path is invalid
+        R2D2StrategyNotFoundError: If strategy file not found
     """
     # Validate relative path (must end with .py)
     validate_relative_path(file_path)
@@ -303,17 +303,17 @@ def load_strategy(file_path: str) -> Tuple[str, str, str]:
         file_path_resolved = absolute_file_path.resolve()
         strategies_dir_resolved = STRATEGIES_DIR.resolve()
         if not str(file_path_resolved).startswith(str(strategies_dir_resolved)):
-            raise StrategyNotFoundError(f"Strategy '{file_path}' not found")
+            raise R2D2StrategyNotFoundError(f"Strategy '{file_path}' not found")
     except (OSError, ValueError):
-        raise StrategyNotFoundError(f"Strategy '{file_path}' not found")
+        raise R2D2StrategyNotFoundError(f"Strategy '{file_path}' not found")
     
     if not absolute_file_path.exists():
-        raise StrategyNotFoundError(f"Strategy '{file_path}' not found")
+        raise R2D2StrategyNotFoundError(f"Strategy '{file_path}' not found")
 
     try:
         text = absolute_file_path.read_text(encoding='utf-8')
     except Exception as e:
-        raise StrategyFileError(f"Failed to read strategy file: {str(e)}")
+        raise R2D2StrategyFileError(f"Failed to read strategy file: {str(e)}")
 
     # Extract strategy name from file path (filename without .py extension)
     path_segments = file_path.replace('\\', '/').split('/')

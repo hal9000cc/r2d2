@@ -5,6 +5,7 @@ import sys
 import time
 
 import numpy as np
+import pyita as ta
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
@@ -1679,20 +1680,20 @@ class Broker(ABC):
 
     def get_next_bar(
         self,
-        quotes_data: Dict[str, Any],
+        quotes_data: ta.Quotes,
         ta_proxies: Dict[str, Any]
-    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]:
+    ) -> Optional[Tuple[ta.Quotes, np.datetime64, PRICE_TYPE]]:
         """
         Get next bar data, waiting if necessary.
         
         Calls fetch_next_bar() in a loop until data is received or finished.
         
         Args:
-            quotes_data: Quotes data dictionary
+            quotes_data: Quotes object
             ta_proxies: Dictionary of TA proxies
             
         Returns:
-            Tuple of bar data or None if finished
+            Tuple of (sliced_quotes, current_time, current_price) or None if finished
         """
         while True:
             self.order_processing()
@@ -1773,8 +1774,7 @@ class Broker(ABC):
             if bar_data is None:
                 break
             
-            (time_array, open_array, high_array, low_array, close_array, 
-             volume_array, current_time, current_price) = bar_data
+            sliced_quotes, current_time, current_price = bar_data
             
             self.current_time = current_time
             if hasattr(self, 'price'):
@@ -1786,12 +1786,12 @@ class Broker(ABC):
                 self.callbacks['on_bar'](
                     current_price,
                     current_time,
-                    time_array,
-                    open_array,
-                    high_array,
-                    low_array,
-                    close_array,
-                    volume_array,
+                    sliced_quotes.time,
+                    sliced_quotes.open,
+                    sliced_quotes.high,
+                    sliced_quotes.low,
+                    sliced_quotes.close,
+                    sliced_quotes.volume,
                     equity_usd,
                     equity_symbol
                 )
@@ -1896,7 +1896,7 @@ class Broker(ABC):
         raise NotImplementedError("initialize_run must be implemented by subclass")
     
     @abstractmethod
-    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> Dict[str, Any]:
+    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> ta.Quotes:
         """
         Initialize quotes data for strategy execution.
         
@@ -1906,27 +1906,27 @@ class Broker(ABC):
                        Should call set_quotes() on each proxy with initial quotes data
         
         Returns:
-            Dictionary with quotes data (structure is implementation-specific)
+            Quotes object with OHLCV data
         """
         raise NotImplementedError("initialize_quotes must be implemented by subclass")
     
     @abstractmethod
     def fetch_next_bar(
         self, 
-        quotes_data: Dict[str, Any], 
+        quotes_data: ta.Quotes, 
         ta_proxies: Dict[str, Any]
-    ) -> Tuple[BarStatus, Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.datetime64, PRICE_TYPE]]]:
+    ) -> Tuple[BarStatus, Optional[Tuple[ta.Quotes, np.datetime64, PRICE_TYPE]]]:
         """
         Get next bar data for strategy execution.
         
         Args:
-            quotes_data: Quotes data dictionary (from initialize_quotes)
+            quotes_data: Quotes object (from initialize_quotes)
             ta_proxies: Dictionary of TA proxies (for real trading, should call set_quotes() on each proxy)
         
         Returns:
             Tuple of (status, data_tuple):
             - status: BarStatus (RECEIVED, WAITING, FINISHED)
-            - data_tuple: Tuple of (time_array, open_array, high_array, low_array, close_array, volume_array, current_time, current_price) if status is RECEIVED, else None
+            - data_tuple: Tuple of (sliced_quotes, current_time, current_price) if status is RECEIVED, else None
         """
         raise NotImplementedError("fetch_next_bar must be implemented by subclass")
     

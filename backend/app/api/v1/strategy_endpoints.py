@@ -15,8 +15,8 @@ from app.services.strategies import (
     StrategySaveResponse
 )
 from app.services.strategies.exceptions import (
-    StrategyNotFoundError,
-    StrategyFileError
+    R2D2StrategyNotFoundError,
+    R2D2StrategyFileError
 )
 
 router = APIRouter(prefix="/api/v1/strategies", tags=["strategies"])
@@ -198,7 +198,7 @@ async def new_strategy(name: str, file_path: Optional[str] = Query(None, descrip
             parameters_description=parameters_description,
             loading_errors=errors
         )
-    except StrategyFileError as e:
+    except R2D2StrategyFileError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -229,7 +229,7 @@ async def save_strategy(strategy: StrategySaveRequest):
             message="Strategy saved successfully",
             syntax_errors=syntax_errors
         )
-    except StrategyFileError as e:
+    except R2D2StrategyFileError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -258,8 +258,8 @@ async def load_strategy(name: str):
             parameters_description=parameters_description,
             loading_errors=errors
         )
-    except StrategyNotFoundError as e:
+    except R2D2StrategyNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except StrategyFileError as e:
+    except R2D2StrategyFileError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
