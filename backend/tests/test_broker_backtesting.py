@@ -125,6 +125,7 @@ def test_task():
         slippage_in_steps=1.0,
         precision_amount=0.1,  # Volume precision
         precision_price=0.01,  # Price precision
+        history_size=10,  # Number of bars for strategy initialization
         parameters={}
     )
 
@@ -142,13 +143,13 @@ def mock_callbacks():
 @pytest.fixture
 def simple_quotes_data():
     """Simple upward trend quotes data."""
-    return create_test_quotes_data(n_bars=10, start_price=100.0, trend='up')
+    return create_test_quotes_data(n_bars=20, start_price=100.0, trend='up')
 
 
 @pytest.fixture
 def volatile_quotes_data():
     """Volatile quotes data."""
-    return create_test_quotes_data(n_bars=10, start_price=100.0, trend='volatile')
+    return create_test_quotes_data(n_bars=20, start_price=100.0, trend='volatile')
 
 
 @pytest.fixture

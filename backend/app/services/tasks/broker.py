@@ -95,7 +95,7 @@ class Order(BaseModel):
     
     # Immutable fields (set at creation, cannot be changed)
     order_id: int = Field(gt=0, description="Order ID, must be greater than 0")
-    deal_id: int = Field(gt=0, description="Deal ID, must be greater than 0")
+    deal_id: int = Field(ge=0, description="Deal ID, must be >= 0 (0 for auto-deal orders)")
     order_type: OrderType
     create_time: np.datetime64
     side: OrderSide
@@ -120,16 +120,22 @@ class Order(BaseModel):
     def validate_order(self):
         """Validate order fields.
         
-        - order_id and deal_id must be greater than 0
+        - order_id must be greater than 0
+        - deal_id must be >= 0 (0 is allowed for auto-deal orders with order_group=AUTO)
         - Either price or trigger_price must be set (not both None)
         - If status is ACTIVE, volume must be greater than 0
         - fraction must be set for orders with order_group != NONE
         """
-        # Validate order_id and deal_id (already checked by Field(gt=0), but double-check)
+        # Validate order_id (already checked by Field(gt=0), but double-check)
         if self.order_id <= 0:
             raise ValueError(f"order_id must be greater than 0, got {self.order_id}")
-        if self.deal_id <= 0:
-            raise ValueError(f"deal_id must be greater than 0, got {self.deal_id}")
+        
+        # Validate deal_id: 0 is allowed only for auto-deal orders
+        if self.deal_id < 0:
+            raise ValueError(f"deal_id must be >= 0, got {self.deal_id}")
+        if self.deal_id == 0:
+            if self.order_group != OrderGroup.AUTO:
+                raise ValueError(f"deal_id=0 is only allowed for auto-deal orders (order_group=AUTO), got order_group={self.order_group}")
         
         # Validate that either price or trigger_price is set (except for MARKET orders)
         if self.order_type != OrderType.MARKET and self.price is None and self.trigger_price is None:
@@ -139,8 +145,8 @@ class Order(BaseModel):
         if self.status == OrderStatus.ACTIVE and self.volume <= 0:
             raise ValueError(f"volume must be greater than 0 for orders with status ACTIVE, got {self.volume}")
         
-        # Validate fraction for exit orders
-        if self.order_group != OrderGroup.NONE and self.fraction is None:
+        # Validate fraction for exit orders (STOP_LOSS and TAKE_PROFIT, but not AUTO)
+        if self.order_group != OrderGroup.NONE and self.order_group != OrderGroup.AUTO and self.fraction is None:
             raise ValueError(f"fraction must be set for orders with order_group={self.order_group}")
         
         # Validate volume is non-negative
@@ -253,6 +259,9 @@ class Deal(BaseModel):
     # Type of deal closure (copied from last exit order's order_group, or NONE if closed via regular buy/sell)
     close_type: Optional[OrderGroup] = None
     
+    # Automatic deal flag (for buy/sell methods)
+    auto: bool = False
+    
     # Internal accumulators for efficient incremental updates
     buy_quantity: VOLUME_TYPE = 0.0
     buy_cost: PRICE_TYPE = 0.0
@@ -303,11 +312,15 @@ class Deal(BaseModel):
         
         # Close the deal if quantity == 0 and no active entry orders
         if self.quantity == 0:
-            has_active_entry_orders = any(
-                order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
-                and order.order_group == OrderGroup.NONE
-                for order in self.orders
-            )
+            # Auto-deals don't have traditional entry orders
+            if self.auto:
+                has_active_entry_orders = False
+            else:
+                has_active_entry_orders = any(
+                    order.status in (OrderStatus.ACTIVE, OrderStatus.NEW)
+                    and order.order_group == OrderGroup.NONE
+                    for order in self.orders
+                )
             
             if not has_active_entry_orders:
                 # Close the deal: cancel all active/new orders
@@ -368,12 +381,21 @@ class Deal(BaseModel):
         """
         Add order to deal's orders list.
         
-        Adds order to self.orders and sets order.deal_id to this deal_id.
+        For regular orders: verifies that order.deal_id matches this deal.
+        For auto-deal orders: keeps deal_id=0 to allow adding to multiple deals during reversal.
         
         Args:
             order: Order to add
         """
-        order.deal_id = self.deal_id
+        if order.deal_id == 0:
+            # Auto-deal order (deal_id=0) - can only be added to auto-deals
+            assert self.auto, \
+                f"Order {order.order_id} with deal_id=0 can only be added to auto-deal, but deal {self.deal_id} is not auto"
+        else:
+            # Regular order - should already have correct deal_id from _create_order()
+            assert order.deal_id == self.deal_id, \
+                f"Order {order.order_id} has deal_id={order.deal_id}, expected {self.deal_id}"
+        
         self.orders.append(order)
     
     def calc_fraction_remain(self, broker: 'Broker', order_group: OrderGroup) -> None:
@@ -438,6 +460,8 @@ class Deal(BaseModel):
         Args:
             broker: Broker instance for format_volume
         """
+        assert not self.auto, f"update_order_volumes() should never be called for auto-deal (deal_id={self.deal_id})"
+        
         self.update_stop_loss_volumes(broker)
         self.update_take_profit_volumes(broker)
     
@@ -448,9 +472,13 @@ class Deal(BaseModel):
         First calls update_orders() to calculate volumes, then activates all entry orders,
         then all stop loss orders by changing their status to ACTIVE.
         
+        Auto-deals should never call this method - they manage orders directly.
+        
         Returns:
             List of orders that need to be sent to exchange (orders with actual=False)
         """
+        assert not self.auto, f"start() should never be called for auto-deal (deal_id={self.deal_id})"
+        
         # 1. Update orders
         self.update_order_volumes(broker)
         
@@ -497,6 +525,8 @@ class Deal(BaseModel):
         4. Each stop loss order volume = fraction * target_volume (rounded)
         5. Last stop loss order (extreme) closes remaining volume
         """
+        assert not self.auto, f"update_stop_loss_volumes() should never be called for auto-deal (deal_id={self.deal_id})"
+        
         # 1. Get current position volume in market
         quantity = abs(self.quantity)
         
@@ -573,6 +603,8 @@ class Deal(BaseModel):
         3. Each take profit order volume = fraction * target_volume (rounded)
         4. Last take profit order (extreme) closes remaining volume
         """
+        assert not self.auto, f"update_take_profit_volumes() should never be called for auto-deal (deal_id={self.deal_id})"
+        
         if self.quantity == 0:
             return
 
@@ -676,7 +708,7 @@ class Broker(ABC):
         self.orders: List['Order'] = []
         self.trades: List['Trade'] = []
         self.result_id = result_id
-        self.last_auto_deal_id: Optional[int] = None
+        self._current_auto_deal_id: Optional[int] = None  # ID of current open auto-deal
         self.active_deals: Set[int] = set()  # Set of deal_id for active (open) deals
         self.current_time: Optional[np.datetime64] = None
         self.i_time: int = task.history_size  # Current bar index, initialized with history_size
@@ -978,9 +1010,17 @@ class Broker(ABC):
         
         Returns:
             Tuple of (deal, canceled_order_ids)
+        
+        Raises:
+            ValueError: If existing_deal_id refers to an auto-deal
         """
         if existing_deal_id is not None:
             deal = self.get_deal(existing_deal_id)
+            if deal.auto:
+                raise ValueError(
+                    f"Cannot modify auto-deal (deal_id={existing_deal_id}). "
+                    f"Auto-deals are managed automatically via buy()/sell() methods."
+                )
             canceled_order_ids = self._clear_deal_orders(deal, clear_enter, clear_stop_loss, clear_take_profit)
         else:
             new_deal_id = len(self.deals) + 1
@@ -1177,6 +1217,165 @@ class Broker(ABC):
         deal.add_order(order)
         
         return order
+    
+    def _create_auto_deal(self, deal_type: DealType) -> 'Deal':
+        """
+        Create automatic deal for buy/sell methods.
+        
+        Args:
+            deal_type: Deal type (LONG or SHORT)
+        
+        Returns:
+            Created deal
+        """
+        deal_id = len(self.deals) + 1
+        deal = Deal(deal_id=deal_id, auto=True, type=deal_type)
+        self.deals.append(deal)
+        self.active_deals.add(deal_id)
+        return deal
+    
+    def _process_auto_deal_trade(
+        self,
+        order: Order,
+        quantity: VOLUME_TYPE,
+        price: PRICE_TYPE,
+        fee: PRICE_TYPE,
+        exchange_trade_id: str
+    ) -> None:
+        """
+        Process trade for auto-deal order (order.deal_id=0).
+        
+        This method handles automatic deal creation and trade allocation:
+        - Creates first auto-deal if needed
+        - Continues current auto-deal or closes it
+        - Handles position reversal (e.g., +10 -> sell 12 -> -2)
+        
+        Args:
+            order: Order with deal_id=0
+            quantity: Trade quantity
+            price: Trade price
+            fee: Trade fee
+            exchange_trade_id: Exchange trade ID
+        """
+        assert order.deal_id == 0, f"_process_auto_deal_trade requires order with deal_id=0, got {order.deal_id}"
+        
+        # Case 1: No current auto-deal - create new one
+        if self._current_auto_deal_id is None:
+            deal_type = DealType.LONG if order.side == OrderSide.BUY else DealType.SHORT
+            deal = self._create_auto_deal(deal_type)
+            self._current_auto_deal_id = deal.deal_id
+            
+            # Add order to deal
+            if order not in deal.orders:
+                deal.add_order(order)
+            
+            # Create trade
+            self.create_trade(
+                order=order,
+                quantity=quantity,
+                price=price,
+                fee=fee,
+                exchange_trade_id=exchange_trade_id,
+                auto_deal_id=deal.deal_id
+            )
+            return
+        
+        # Case 2: Current auto-deal exists
+        current_deal = self.get_deal(self._current_auto_deal_id)
+        
+        # Determine if trade increases or decreases position
+        increases_position = (
+            (current_deal.type == DealType.LONG and order.side == OrderSide.BUY) or
+            (current_deal.type == DealType.SHORT and order.side == OrderSide.SELL)
+        )
+        
+        if increases_position:
+            # Continue current deal
+            if order not in current_deal.orders:
+                current_deal.add_order(order)
+            
+            self.create_trade(
+                order=order,
+                quantity=quantity,
+                price=price,
+                fee=fee,
+                exchange_trade_id=exchange_trade_id,
+                auto_deal_id=current_deal.deal_id
+            )
+            return
+        
+        # Decreases position
+        # For LONG: quantity is positive, current_deal.quantity is positive
+        # For SHORT: quantity is positive, current_deal.quantity is negative
+        # Compare absolute values to handle both cases
+        if quantity <= abs(current_deal.quantity):
+            # Partially or fully close current deal
+            if order not in current_deal.orders:
+                current_deal.add_order(order)
+            
+            self.create_trade(
+                order=order,
+                quantity=quantity,
+                price=price,
+                fee=fee,
+                exchange_trade_id=exchange_trade_id,
+                auto_deal_id=current_deal.deal_id
+            )
+            
+            # Check if deal closed
+            if current_deal.quantity == 0:
+                assert current_deal.is_closed, f"Auto-deal {current_deal.deal_id} should be closed when quantity is 0"
+                self._current_auto_deal_id = None
+            
+            return
+        
+        # Position reversal: quantity > abs(current_deal.quantity)
+        # close_qty is the absolute value of current position (always positive)
+        # open_qty is the remainder that will open new position in opposite direction
+        close_qty = abs(current_deal.quantity)
+        open_qty = quantity - close_qty
+        
+        # Add order to old deal
+        if order not in current_deal.orders:
+            current_deal.add_order(order)
+        
+        # Trade 1: Close old deal
+        # close_qty is always positive (absolute value), trade side determines direction
+        close_fee = fee * (close_qty / quantity)
+        self.create_trade(
+            order=order,
+            quantity=close_qty,
+            price=price,
+            fee=close_fee,
+            exchange_trade_id=exchange_trade_id,
+            auto_deal_id=current_deal.deal_id
+        )
+        
+        # Verify old deal is closed after reversal trade
+        assert current_deal.quantity == 0, f"Auto-deal {current_deal.deal_id} should have quantity=0 after closing, got {current_deal.quantity}"
+        assert current_deal.is_closed, f"Auto-deal {current_deal.deal_id} should be closed after closing trade"
+        
+        self._current_auto_deal_id = None
+        
+        # Create new deal (opposite type)
+        new_deal_type = DealType.SHORT if order.side == OrderSide.SELL else DealType.LONG
+        new_deal = self._create_auto_deal(new_deal_type)
+        self._current_auto_deal_id = new_deal.deal_id
+        
+        # Add order to new deal
+        new_deal.add_order(order)
+        
+        # Trade 2: Open new deal
+        # open_qty is always positive (absolute value), trade side determines direction
+        open_fee = fee * (open_qty / quantity)
+        self.create_trade(
+            order=order,
+            quantity=open_qty,
+            price=price,
+            fee=open_fee,
+            exchange_trade_id=exchange_trade_id,
+            auto_deal_id=new_deal.deal_id
+        )
     
     def close_deals(self) -> None:
         """
@@ -1476,7 +1675,7 @@ class Broker(ABC):
         
         return errors
     
-    def create_trade(self, order: Order, quantity: VOLUME_TYPE, price: PRICE_TYPE, fee: PRICE_TYPE, exchange_trade_id: str) -> None:
+    def create_trade(self, order: Order, quantity: VOLUME_TYPE, price: PRICE_TYPE, fee: PRICE_TYPE, exchange_trade_id: str, auto_deal_id: Optional[int] = None) -> None:
         """
         Create a trade from an executed order.
         
@@ -1489,10 +1688,12 @@ class Broker(ABC):
             price: Execution price
             fee: Fee for this trade
             exchange_trade_id: Exchange trade ID from exchange API
+            auto_deal_id: Optional deal_id for auto-deal orders (order.deal_id must be 0)
         
         Raises:
             AssertionError: If quantity <= 0, price <= 0, fee < 0, or current_time is not set
             IndexError: If deal with order.deal_id does not exist
+            ValueError: If auto_deal_id is provided but order.deal_id != 0
         """
         # Validate inputs
         assert quantity > 0, f"quantity must be > 0, got {quantity}"
@@ -1500,6 +1701,17 @@ class Broker(ABC):
         assert fee >= 0, f"fee must be >= 0, got {fee}"
         assert self.current_time is not None, "current_time must be set before creating trade"
         assert exchange_trade_id, "exchange_trade_id must be provided"
+        
+        if auto_deal_id is not None and order.deal_id != 0:
+            raise ValueError(f"auto_deal_id can only be used with auto-deal orders (order.deal_id=0), got order.deal_id={order.deal_id}")
+        
+        # Determine effective deal_id
+        if auto_deal_id is not None:
+            effective_deal_id = auto_deal_id
+        else:
+            effective_deal_id = order.deal_id
+            if effective_deal_id == 0:
+                raise ValueError("order.deal_id is 0 but auto_deal_id was not provided")
         
         # Generate trade_id (size of trades list + 1)
         trade_id = len(self.trades) + 1
@@ -1511,7 +1723,7 @@ class Broker(ABC):
         trade = Trade(
             trade_id=trade_id,
             exchange_trade_id=exchange_trade_id,
-            deal_id=order.deal_id,
+            deal_id=effective_deal_id,
             order_id=order.order_id,
             time=self.current_time,
             side=order.side,
@@ -1532,7 +1744,7 @@ class Broker(ABC):
         order.update_modify_time(self)
         
         # Get deal and add trade to it
-        deal = self.get_deal(order.deal_id)
+        deal = self.get_deal(effective_deal_id)
         
         # Check if deal was closed before adding trade
         was_closed = deal.is_closed
@@ -1584,17 +1796,32 @@ class Broker(ABC):
             
             if order:
                 try:
-                    self.create_trade(
-                        order=order,
-                        quantity=float(trade_data['amount']),
-                        price=float(trade_data['price']),
-                        fee=float(trade_data['fee']),
-                        exchange_trade_id=trade_id
-                    )
-                    # Add deal_id to set of updated deals
-                    updated_deal_ids.add(order.deal_id)
+                    if order.deal_id == 0:
+                        # Auto-deal order: special processing
+                        self._process_auto_deal_trade(
+                            order=order,
+                            quantity=float(trade_data['amount']),
+                            price=float(trade_data['price']),
+                            fee=float(trade_data['fee']),
+                            exchange_trade_id=trade_id
+                        )
+                        # Add current auto-deal to updated deals if exists
+                        if self._current_auto_deal_id is not None:
+                            updated_deal_ids.add(self._current_auto_deal_id)
+                    else:
+                        # Regular deal: existing logic
+                        self.create_trade(
+                            order=order,
+                            quantity=float(trade_data['amount']),
+                            price=float(trade_data['price']),
+                            fee=float(trade_data['fee']),
+                            exchange_trade_id=trade_id
+                        )
+                        # Add deal_id to set of updated deals
+                        updated_deal_ids.add(order.deal_id)
                 except Exception as e:
-                    self.logging(f"Error creating trade for order {order.order_id}: {str(e)}", level="critical", deal_id=order.deal_id)
+                    deal_id_for_log = order.deal_id if order.deal_id > 0 else self._current_auto_deal_id
+                    self.logging(f"Error creating trade for order {order.order_id}: {str(e)}", level="critical", deal_id=deal_id_for_log)
             else:
                 self.logging(f"Received trade {trade_id} for unknown order {exchange_order_id}", level="critical")
         
@@ -1725,7 +1952,7 @@ class Broker(ABC):
             # Update order volumes for deals that had trades added
             for deal_id in updated_deal_ids:
                 deal = self.get_deal(deal_id)
-                if not deal.is_closed:
+                if not deal.is_closed and not deal.auto:
                     deal.update_order_volumes(self)
             
             placed_count = self.place_orders()
@@ -1942,18 +2169,56 @@ class Broker(ABC):
         If trigger_price is specified, creates a stop order.
         Otherwise creates a market order.
         
+        This method creates orders for automatic deals (deal_id=0).
+        Orders will be sent to exchange through place_orders().
+        
         Args:
             quantity: Quantity to buy
             price: Optional limit price. If None and trigger_price is None, creates market order.
             trigger_price: Optional trigger price for stop order.
         
         Returns:
-            List of copies of executed/placed orders
-        
-        Raises:
-            NotImplementedError: Must be implemented by subclasses
+            List with single order
         """
-        raise NotImplementedError("buy must be implemented by subclass")
+        assert self.current_time is not None, "current_time must be set before calling buy()"
+        assert quantity > 0, f"quantity must be > 0, got {quantity}"
+        
+        # Determine order type
+        if price is not None and trigger_price is not None:
+            raise ValueError("Cannot specify both price and trigger_price")
+        
+        if trigger_price is not None:
+            order_type = OrderType.STOP
+            order_price = None
+        elif price is not None:
+            order_type = OrderType.LIMIT
+            order_price = self.format_price(price)
+        else:
+            order_type = OrderType.MARKET
+            order_price = None
+        
+        # Create order with deal_id=0 (auto-deal)
+        order_id = len(self.orders) + 1
+        order = Order(
+            order_id=order_id,
+            deal_id=0,  # Auto-deal marker
+            order_type=order_type,
+            create_time=self.current_time,
+            modify_time=self.current_time,
+            side=OrderSide.BUY,
+            price=order_price,
+            trigger_price=self.format_price(trigger_price) if trigger_price is not None else None,
+            volume=quantity,
+            filled_volume=0.0,
+            status=OrderStatus.ACTIVE,  # Auto-orders are immediately active
+            order_group=OrderGroup.AUTO,
+            fraction=None,
+            errors=[]
+        )
+        
+        self.orders.append(order)
+        
+        return [order]
     
     def sell(
         self,
@@ -1967,17 +2232,55 @@ class Broker(ABC):
         If trigger_price is specified, creates a stop order.
         Otherwise creates a market order.
         
+        This method creates orders for automatic deals (deal_id=0).
+        Orders will be sent to exchange through place_orders().
+        
         Args:
             quantity: Quantity to sell
             price: Optional limit price. If None and trigger_price is None, creates market order.
             trigger_price: Optional trigger price for stop order.
         
         Returns:
-            List of copies of executed/placed orders
-        
-        Raises:
-            NotImplementedError: Must be implemented by subclasses
+            List with single order
         """
-        raise NotImplementedError("sell must be implemented by subclass")
+        assert self.current_time is not None, "current_time must be set before calling sell()"
+        assert quantity > 0, f"quantity must be > 0, got {quantity}"
+        
+        # Determine order type
+        if price is not None and trigger_price is not None:
+            raise ValueError("Cannot specify both price and trigger_price")
+        
+        if trigger_price is not None:
+            order_type = OrderType.STOP
+            order_price = None
+        elif price is not None:
+            order_type = OrderType.LIMIT
+            order_price = self.format_price(price)
+        else:
+            order_type = OrderType.MARKET
+            order_price = None
+        
+        # Create order with deal_id=0 (auto-deal)
+        order_id = len(self.orders) + 1
+        order = Order(
+            order_id=order_id,
+            deal_id=0,  # Auto-deal marker
+            order_type=order_type,
+            create_time=self.current_time,
+            modify_time=self.current_time,
+            side=OrderSide.SELL,
+            price=order_price,
+            trigger_price=self.format_price(trigger_price) if trigger_price is not None else None,
+            volume=quantity,
+            filled_volume=0.0,
+            status=OrderStatus.ACTIVE,  # Auto-orders are immediately active
+            order_group=OrderGroup.AUTO,
+            fraction=None,
+            errors=[]
+        )
+        
+        self.orders.append(order)
+        
+        return [order]
         
 

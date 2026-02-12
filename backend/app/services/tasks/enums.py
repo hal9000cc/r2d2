@@ -27,6 +27,7 @@ class OrderGroup(IntEnum):
     NONE = 0  # Outside of group (default)
     STOP_LOSS = 1  # Stop loss order
     TAKE_PROFIT = 2  # Take profit order
+    AUTO = 3  # Automatic deal (buy/sell methods)
 
 
 class DealType(Enum):

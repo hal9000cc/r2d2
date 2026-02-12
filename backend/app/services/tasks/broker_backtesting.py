@@ -526,10 +526,6 @@ class BrokerBacktesting(Broker):
         # Market orders waiting for execution
         self.market_orders: List[OrderExchange] = []
         
-        # Reset equity
-        # self.equity_usd = 0.0
-        # self.equity_symbol = 0.0
-
     def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> ta.Quotes:
         """
         Initialize quotes data for strategy execution (backtesting implementation).
