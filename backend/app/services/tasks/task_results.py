@@ -182,50 +182,60 @@ class TaskResults:
     
     def _serialize_indicator_values(self, indicator_desc: 'UsedIndicatorDescription') -> bytes:
         """
-        Serialize indicator values (numpy array or tuple of arrays) to bytes with metadata.
+        Serialize indicator values from IndicatorResult to bytes with metadata.
         Similar to how quotes are serialized in quotes/server.py.
         
         Args:
-            indicator_desc: UsedIndicatorDescription object with values and series_info
+            indicator_desc: UsedIndicatorDescription object with IndicatorResult values and series_info
             
         Returns:
             bytes: msgpack-serialized data with metadata and binary arrays
+            
+        Raises:
+            ValueError: If series_info is empty or number of arrays doesn't match series_info length
         """
         values = indicator_desc.values
         series_info = indicator_desc.series_info
         
-        if isinstance(values, tuple):
-            arrays_metadata = []
-            arrays_binary = []
-            for arr in values:
-                arrays_metadata.append({
-                    'dtype': str(arr.dtype),
-                    'shape': list(arr.shape)
-                })
-                arrays_binary.append(arr.tobytes())
+        # Check that series_info is not empty
+        if not series_info:
+            raise ValueError("series_info cannot be empty")
+        
+        # Extract arrays from IndicatorResult using series_info
+        arrays_metadata = []
+        arrays_binary = []
+        
+        for info in series_info:
+            series_name = info['name']
+            # Extract array from IndicatorResult (KeyError will propagate if not found)
+            arr = values[series_name]
+            # Assert that extracted value is a numpy array
+            assert isinstance(arr, np.ndarray), f"Expected numpy array for series '{series_name}', got {type(arr)}"
             
-            response_data = {
-                'metadata': {
-                    'is_tuple': True,
-                    'arrays': arrays_metadata,
-                    'series_info': series_info
-                },
-                'binary_data': {
-                    'arrays': arrays_binary
-                }
+            arrays_metadata.append({
+                'dtype': str(arr.dtype),
+                'shape': list(arr.shape)
+            })
+            arrays_binary.append(arr.tobytes())
+        
+        # Verify that number of arrays matches series_info length
+        if len(arrays_metadata) != len(series_info):
+            raise ValueError(
+                f"Number of extracted arrays ({len(arrays_metadata)}) "
+                f"does not match series_info length ({len(series_info)})"
+            )
+        
+        # Always serialize as tuple (is_tuple=True)
+        response_data = {
+            'metadata': {
+                'is_tuple': True,
+                'arrays': arrays_metadata,
+                'series_info': series_info
+            },
+            'binary_data': {
+                'arrays': arrays_binary
             }
-        else:
-            response_data = {
-                'metadata': {
-                    'is_tuple': False,
-                    'dtype': str(values.dtype),
-                    'shape': list(values.shape),
-                    'series_info': series_info
-                },
-                'binary_data': {
-                    'array': values.tobytes()
-                }
-            }
+        }
             
         return msgpack.packb(response_data, use_bin_type=True)
     
