@@ -11,6 +11,7 @@ from app.services.quotes.exceptions import R2D2QuotesExceptionDataNotReceived
 from app.core.config import redis_params
 from app.services.quotes.timeframe import Timeframe
 
+#pytestmark = pytest.mark.skip(reason="Temporarily disabled")
 
 def test_quotes_usage_scenario(quotes_service):
     """

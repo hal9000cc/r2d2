@@ -147,6 +147,10 @@ def _setup_quotes_service(
     QuotesServer._instance = None
     QuotesServer._initialized = False
     
+    # Reset QuotesClient singleton if needed
+    QuotesClient._instance = None
+    QuotesClient._initialized = False
+    
     # Start quotes service
     service_started = start_quotes_service(
         redis_params=redis_params_dict,

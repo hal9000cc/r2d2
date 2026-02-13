@@ -915,6 +915,23 @@ class Broker(ABC):
         
         return self.deals[index]
     
+    def get_order(self, order_id: int) -> Optional['Order']:
+        """
+        Get order by order_id (order_id = index + 1).
+        
+        Args:
+            order_id: Order ID (1-based)
+        
+        Returns:
+            Order instance if found, None otherwise
+        """
+        # Convert order_id to index (order_id = index + 1, so index = order_id - 1)
+        index = order_id - 1
+        if index < 0 or index >= len(self.orders):
+            return None
+        
+        return self.orders[index]
+    
     def execute_deal(
         self,
         deal_type: DealType,
@@ -1210,7 +1227,6 @@ class Broker(ABC):
             status=OrderStatus.NEW,
             order_group=order_group,
             fraction=fraction,
-            errors=[]
         )
         
         self.orders.append(order)
@@ -1429,19 +1445,51 @@ class Broker(ABC):
         assert deal.quantity == 0
         deal.is_closed = True
     
-    def cancel_orders(self, order_ids: List[int]) -> List['Order']:
+    def cancel_orders(self, order_ids: List[int]) -> Tuple[List[int], List[int], List[str]]:
         """
         Cancel orders by their IDs.
+        
+        Only cancels orders for automatic deals (deal_id == 0).
+        Only cancels orders with status ACTIVE or NEW.
         
         Args:
             order_ids: List of order IDs to cancel
         
         Returns:
-            List of canceled orders
-        
-        Default implementation (stub). Should be overridden in subclasses if needed.
+            Tuple of (canceled_order_ids, not_canceled_order_ids, error_messages):
+            - canceled_order_ids: List of successfully canceled order IDs
+            - not_canceled_order_ids: List of order IDs that could not be canceled
+            - error_messages: List of error messages explaining why orders were not canceled
         """
-        raise NotImplementedError("cancel_orders must be implemented by subclass")
+        canceled_order_ids = []
+        not_canceled_order_ids = []
+        error_messages = []
+        
+        for order_id in order_ids:
+            # Get order by ID
+            order = self.get_order(order_id)
+            if order is None:
+                not_canceled_order_ids.append(order_id)
+                error_messages.append(f"Order {order_id} not found")
+                continue
+            
+            # Check if order is for automatic deal
+            if order.deal_id != 0:
+                not_canceled_order_ids.append(order_id)
+                error_messages.append(f"Order {order_id} is not an auto-deal order (deal_id={order.deal_id}, expected 0)")
+                continue
+            
+            # Check if order can be canceled (status must be ACTIVE or NEW)
+            if order.status not in (OrderStatus.ACTIVE, OrderStatus.NEW):
+                not_canceled_order_ids.append(order_id)
+                error_messages.append(f"Order {order_id} cannot be canceled (status is {order.status.name}, must be ACTIVE or NEW)")
+                continue
+            
+            # Cancel the order
+            order.cancel(self)
+            canceled_order_ids.append(order_id)
+        
+        return canceled_order_ids, not_canceled_order_ids, error_messages
     
     def logging(self, message: str, level: str = "info", deal_id: Optional[int] = None) -> None:
         """
@@ -1946,6 +1994,9 @@ class Broker(ABC):
         Args:
             markets_only: If True, only process market orders (skip stop and limit order checks)
         """
+        
+        placed_count = self.place_orders()
+
         while True:
             updated_deal_ids = self.fetch_new_trades(markets_only=markets_only)
             
@@ -2212,8 +2263,7 @@ class Broker(ABC):
             filled_volume=0.0,
             status=OrderStatus.ACTIVE,  # Auto-orders are immediately active
             order_group=OrderGroup.AUTO,
-            fraction=None,
-            errors=[]
+            fraction=None
         )
         
         self.orders.append(order)
@@ -2275,8 +2325,7 @@ class Broker(ABC):
             filled_volume=0.0,
             status=OrderStatus.ACTIVE,  # Auto-orders are immediately active
             order_group=OrderGroup.AUTO,
-            fraction=None,
-            errors=[]
+            fraction=None
         )
         
         self.orders.append(order)

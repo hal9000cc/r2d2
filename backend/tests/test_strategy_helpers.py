@@ -98,7 +98,6 @@ class TestStrategy(Strategy):
                             orders=[],
                             error_messages=[f"Exception calling {method_name}: {str(e)}"],
                             active=[],
-                            executed=[],
                             canceled=[],
                             error=[],
                             deal_id=0,

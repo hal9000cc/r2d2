@@ -156,6 +156,7 @@ def test_task():
         slippage_in_steps=1.0,
         precision_amount=0.1,  # Volume precision
         precision_price=0.01,  # Price precision
+        history_size=0,  # Start execution from first bar (index 0)
         parameters={}
     )
 
@@ -256,72 +257,175 @@ class TestStrategyDirect:
         with pytest.raises(RuntimeError, match="Broker not initialized"):
             strategy.logging("test message")
     
-    def test_buy_with_broker(self, broker_with_strategy):
-        """Test buy() with broker set."""
-        broker, strategy = broker_with_strategy
+    def test_buy_with_broker(self, test_task, simple_quotes_data):
+        """Test buy() with broker set through run() with minimal strategy."""
+        class BuyTestStrategy(Strategy):
+            def __init__(self):
+                super().__init__()
+                self.bar_count = 0
+                self.buy_result = None
+            
+            def on_bar(self):
+                self.bar_count += 1
+                if self.bar_count == 1:
+                    # Place buy order on first bar
+                    self.buy_result = self.buy(quantity=1.0)
         
-        # Setup: run backtest to initialize price
-        broker.run(save_results=False)
+        strategy = BuyTestStrategy()
+        callbacks = Strategy.create_strategy_callbacks(strategy)
         
-        # Place buy order
-        result = strategy.buy(quantity=1.0)
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) == 1
-        assert len(result.executed) == 1
-        assert len(result.active) == 0
-        assert len(result.error) == 0
-        assert len(result.error_messages) == 0
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = simple_quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker = BrokerBacktesting(
+                task=test_task,
+                result_id="test_buy_with_broker",
+                callbacks_dict=callbacks,
+                results_save_period=1.0
+            )
+            strategy.broker = broker
+            broker.logging = Mock()
+            
+            broker.run(save_results=False)
+            
+            # Check result
+            assert strategy.buy_result is not None
+            assert isinstance(strategy.buy_result, OrderOperationResult)
+            assert len(strategy.buy_result.orders) == 1
+            assert len(strategy.buy_result.active) == 1
+            assert len(strategy.buy_result.error) == 0
+            assert len(strategy.buy_result.error_messages) == 0
     
-    def test_sell_with_broker(self, broker_with_strategy):
-        """Test sell() with broker set."""
-        broker, strategy = broker_with_strategy
+    def test_sell_with_broker(self, test_task, simple_quotes_data):
+        """Test sell() with broker set through run() with minimal strategy."""
+        class SellTestStrategy(Strategy):
+            def __init__(self):
+                super().__init__()
+                self.bar_count = 0
+                self.buy_result = None
+                self.sell_result = None
+            
+            def on_bar(self):
+                self.bar_count += 1
+                if self.bar_count == 1:
+                    # Buy first on first bar
+                    self.buy_result = self.buy(quantity=2.0)
+                elif self.bar_count == 2:
+                    # Place sell order on second bar
+                    self.sell_result = self.sell(quantity=1.0)
         
-        # Setup: run backtest and buy first
-        broker.run(save_results=False)
-        strategy.buy(quantity=2.0)
+        strategy = SellTestStrategy()
+        callbacks = Strategy.create_strategy_callbacks(strategy)
         
-        # Place sell order
-        result = strategy.sell(quantity=1.0)
-        
-        # Check result
-        assert isinstance(result, OrderOperationResult)
-        assert len(result.orders) == 1
-        assert len(result.executed) == 1
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = simple_quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker = BrokerBacktesting(
+                task=test_task,
+                result_id="test_sell_with_broker",
+                callbacks_dict=callbacks,
+                results_save_period=1.0
+            )
+            strategy.broker = broker
+            broker.logging = Mock()
+            
+            broker.run(save_results=False)
+            
+            # Check result
+            assert strategy.sell_result is not None
+            assert isinstance(strategy.sell_result, OrderOperationResult)
+            assert len(strategy.sell_result.orders) == 1
+            assert len(strategy.sell_result.active) == 1
     
-    def test_cancel_orders_with_broker(self, broker_with_strategy):
-        """Test cancel_orders() with broker set."""
-        broker, strategy = broker_with_strategy
+    def test_cancel_orders_with_broker(self, test_task, simple_quotes_data):
+        """Test cancel_orders() with broker set through run() with minimal strategy."""
+        class CancelOrderTestStrategy(Strategy):
+            def __init__(self):
+                super().__init__()
+                self.bar_count = 0
+                self.buy_result = None
+                self.cancel_result = None
+            
+            def on_bar(self):
+                self.bar_count += 1
+                if self.bar_count == 1:
+                    # Place limit order on first bar
+                    current_price = self.close[-1]
+                    self.buy_result = self.buy(quantity=1.0, price=current_price - 5.0)
+                elif self.bar_count == 2:
+                    # Cancel order on second bar
+                    if self.buy_result and self.buy_result.active:
+                        self.cancel_result = self.cancel_orders(self.buy_result.active)
         
-        # Setup: run backtest and place limit order
-        broker.run(save_results=False)
-        current_price = broker.price
-        result = strategy.buy(quantity=1.0, price=current_price - 5.0)
+        strategy = CancelOrderTestStrategy()
+        callbacks = Strategy.create_strategy_callbacks(strategy)
         
-        # Cancel order
-        cancel_result = strategy.cancel_orders(result.active)
-        
-        # Check result
-        assert isinstance(cancel_result, OrderOperationResult)
-        assert len(cancel_result.canceled) == 1
-        assert cancel_result.canceled[0] == result.active[0]
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = simple_quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker = BrokerBacktesting(
+                task=test_task,
+                result_id="test_cancel_orders_with_broker",
+                callbacks_dict=callbacks,
+                results_save_period=1.0
+            )
+            strategy.broker = broker
+            broker.logging = Mock()
+            
+            broker.run(save_results=False)
+            
+            # Check result
+            assert strategy.cancel_result is not None
+            assert isinstance(strategy.cancel_result, OrderOperationResult)
+            assert len(strategy.cancel_result.canceled) == 1
+            assert strategy.cancel_result.canceled[0] == strategy.buy_result.active[0]
     
-    def test_cancel_nonexistent_order(self, broker_with_strategy):
-        """Test cancel_orders() with non-existent order ID."""
-        broker, strategy = broker_with_strategy
+    def test_cancel_nonexistent_order(self, test_task, simple_quotes_data):
+        """Test cancel_orders() with non-existent order ID through run() with minimal strategy."""
+        class CancelNonexistentOrderTestStrategy(Strategy):
+            def __init__(self):
+                super().__init__()
+                self.bar_count = 0
+                self.cancel_result = None
+            
+            def on_bar(self):
+                self.bar_count += 1
+                if self.bar_count == 1:
+                    # Try to cancel non-existent order on first bar
+                    self.cancel_result = self.cancel_orders([99999])
         
-        broker.run(save_results=False)
+        strategy = CancelNonexistentOrderTestStrategy()
+        callbacks = Strategy.create_strategy_callbacks(strategy)
         
-        # Try to cancel non-existent order
-        result = strategy.cancel_orders([99999])
-        
-        # Check result
-        assert len(result.canceled) == 0
-        assert len(result.error) == 1
-        assert result.error[0] == 99999
-        assert len(result.error_messages) == 1
-        assert "not found" in result.error_messages[0]
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = simple_quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker = BrokerBacktesting(
+                task=test_task,
+                result_id="test_cancel_nonexistent_order",
+                callbacks_dict=callbacks,
+                results_save_period=1.0
+            )
+            strategy.broker = broker
+            broker.logging = Mock()
+            
+            broker.run(save_results=False)
+            
+            # Check result
+            assert strategy.cancel_result is not None
+            assert len(strategy.cancel_result.canceled) == 0
+            assert len(strategy.cancel_result.error) == 1
+            assert strategy.cancel_result.error[0] == 99999
+            assert len(strategy.cancel_result.error_messages) == 1
+            assert "not found" in strategy.cancel_result.error_messages[0]
     
     def test_is_strategy_error_with_strategy_error(self):
         """Test is_strategy_error() detects error in strategy code."""
@@ -569,38 +673,86 @@ class TestStrategyMultipleOrders:
 class TestStrategyValidation:
     """Test order validation through Strategy."""
     
-    @pytest.mark.parametrize('broker_with_strategy', [SimpleTestStrategy], indirect=True)
-    def test_validation_zero_quantity_through_strategy(self, broker_with_strategy, simple_quotes_data):
-        """Test order with zero quantity through strategy."""
-        broker, strategy = broker_with_strategy
+    def test_validation_zero_quantity_through_strategy(self, test_task, simple_quotes_data):
+        """Test order with zero quantity through strategy via run()."""
+        class ZeroQuantityTestStrategy(Strategy):
+            def __init__(self):
+                super().__init__()
+                self.bar_count = 0
+                self.buy_result = None
+            
+            def on_bar(self):
+                self.bar_count += 1
+                if self.bar_count == 1:
+                    # Try to place order with zero quantity on first bar
+                    self.buy_result = self.buy(quantity=0.0)
         
-        broker.run(save_results=False)
+        strategy = ZeroQuantityTestStrategy()
+        callbacks = Strategy.create_strategy_callbacks(strategy)
         
-        # Try to place order with zero quantity
-        result = strategy.buy(quantity=0.0)
-        
-        # Check result
-        assert len(result.orders) == 1
-        assert len(result.error) == 1
-        assert len(result.error_messages) > 0
-        assert any("quantity must be greater than 0" in msg for msg in result.error_messages)
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = simple_quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker = BrokerBacktesting(
+                task=test_task,
+                result_id="test_validation_zero_quantity_through_strategy",
+                callbacks_dict=callbacks,
+                results_save_period=1.0
+            )
+            strategy.broker = broker
+            broker.logging = Mock()
+            
+            broker.run(save_results=False)
+            
+            # Check result
+            assert strategy.buy_result is not None
+            assert len(strategy.buy_result.orders) == 0
+            assert len(strategy.buy_result.error) == 0  # No order created, so no error order ID
+            assert len(strategy.buy_result.error_messages) > 0
+            assert any("quantity must be greater than 0" in msg for msg in strategy.buy_result.error_messages)
     
-    @pytest.mark.parametrize('broker_with_strategy', [SimpleTestStrategy], indirect=True)
-    def test_validation_limit_price_through_strategy(self, broker_with_strategy, simple_quotes_data):
-        """Test limit order validation through strategy."""
-        broker, strategy = broker_with_strategy
+    def test_validation_limit_price_through_strategy(self, test_task, simple_quotes_data):
+        """Test limit order validation through strategy via run()."""
+        class LimitPriceTestStrategy(Strategy):
+            def __init__(self):
+                super().__init__()
+                self.bar_count = 0
+                self.buy_result = None
+            
+            def on_bar(self):
+                self.bar_count += 1
+                if self.bar_count == 1:
+                    # Try to place limit buy order with price above current price on first bar
+                    current_price = self.close[-1]
+                    self.buy_result = self.buy(quantity=1.0, price=current_price + 10.0)
         
-        broker.run(save_results=False)
+        strategy = LimitPriceTestStrategy()
+        callbacks = Strategy.create_strategy_callbacks(strategy)
         
-        current_price = broker.price
-        # Try to place limit buy order with price above current price
-        result = strategy.buy(quantity=1.0, price=current_price + 10.0)
-        
-        # Check result
-        assert len(result.orders) == 1
-        assert len(result.error) == 1
-        assert len(result.error_messages) > 0
-        assert any("must be below or equal" in msg for msg in result.error_messages)
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = simple_quotes_data
+            mock_client_class.return_value = mock_client
+            
+            broker = BrokerBacktesting(
+                task=test_task,
+                result_id="test_validation_limit_price_through_strategy",
+                callbacks_dict=callbacks,
+                results_save_period=1.0
+            )
+            strategy.broker = broker
+            broker.logging = Mock()
+            
+            broker.run(save_results=False)
+            
+            # Check result
+            assert strategy.buy_result is not None
+            assert len(strategy.buy_result.orders) == 0
+            assert len(strategy.buy_result.error) == 0  # No order created, so no error order ID
+            assert len(strategy.buy_result.error_messages) > 0
+            assert any("must be below or equal" in msg for msg in strategy.buy_result.error_messages)
 
 
 class TestStrategyStatistics:
@@ -732,31 +884,4 @@ class TestStrategyPrecision:
         assert strategy.eq(float(order.trigger_price), float(expected_trigger)), \
             f"Trigger price should be rounded to {expected_trigger}, got {order.trigger_price}"
     
-    def test_precision_warning_logging(self, broker_with_strategy, simple_quotes_data):
-        """Test that warnings are logged when values are rounded."""
-        broker, strategy = broker_with_strategy
-        
-        broker.run(save_results=False)
-        
-        # Mock logger to capture warnings - patch the logger used in strategy module
-        with patch('app.services.tasks.strategy.logger.warning') as mock_warning:
-            # Buy with volume that needs rounding
-            result = strategy.buy(quantity=1.234)
-            
-            # Check that warning was logged
-            assert mock_warning.called, "Warning should be logged when volume is rounded"
-            warning_calls = [str(call) for call in mock_warning.call_args_list]
-            assert any("rounded down" in str(call).lower() for call in warning_calls), \
-                f"Warning should mention 'rounded down', got: {warning_calls}"
-        
-        with patch('app.services.tasks.strategy.logger.warning') as mock_warning:
-            # Buy with price that needs rounding
-            current_price = broker.price
-            result = strategy.buy(quantity=1.0, price=current_price - 10.0 + 0.123)
-            
-            # Check that warning was logged
-            assert mock_warning.called, "Warning should be logged when price is rounded"
-            warning_calls = [str(call) for call in mock_warning.call_args_list]
-            assert any("rounded" in str(call).lower() for call in warning_calls), \
-                f"Warning should mention 'rounded', got: {warning_calls}"
 

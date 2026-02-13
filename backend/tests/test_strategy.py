@@ -95,7 +95,6 @@ class TestStrategy(Strategy):
                         orders=[],
                         error_messages=[f"Exception calling {method_name}: {str(e)}"],
                         active=[],
-                        executed=[],
                         canceled=[],
                         error=[],
                         deal_id=0,
@@ -358,6 +357,7 @@ def test_task():
         slippage_in_steps=1.0,
         precision_amount=0.1,  # Volume precision
         precision_price=0.01,  # Price precision
+        history_size=0,  # Start execution from first bar (index 0)
         parameters={}
     )
     # Set isRunning to True so broker doesn't think task was stopped

@@ -27,7 +27,6 @@ class OrderOperationResult(BaseModel):
     orders: List[Order] = Field(default_factory=list, description="List of orders created by this operation")
     error_messages: List[str] = Field(default_factory=list, description="List of error messages (if any)")
     active: List[int] = Field(default_factory=list, description="List of active order IDs")
-    executed: List[int] = Field(default_factory=list, description="List of executed order IDs")
     canceled: List[int] = Field(default_factory=list, description="List of canceled order IDs")
     error: List[int] = Field(default_factory=list, description="List of error order IDs")
     deal_id: int = Field(default=0, description="Deal ID that groups all orders in this operation. 0 means automatic deal creation (for buy/sell methods).")
@@ -58,6 +57,26 @@ class Strategy(ABC):
 
         # TA proxy will be set when callbacks are created
         self.talib: Optional[ta_proxy] = None
+    
+    def _create_error_result(self, errors: List[str], operation: str) -> OrderOperationResult:
+        """Create OrderOperationResult with validation errors.
+        
+        Args:
+            errors: List of error messages
+            operation: Operation name for logging (e.g., "buy", "sell")
+        
+        Returns:
+            OrderOperationResult with empty orders and error messages
+        """
+        self._log_result_errors(errors, operation)
+        return OrderOperationResult(
+            orders=[],
+            error_messages=errors,
+            active=[],
+            error=[],
+            deal_id=0,
+            volume=0.0
+        )
     
     @property
     def precision_amount(self) -> float:
@@ -160,27 +179,50 @@ class Strategy(ABC):
         Returns:
             OrderOperationResult with orders, error_messages, and categorized order IDs
         """
+        # Validate quantity before formatting (format_volume may fail on negative values)
+        all_errors = []
+        if quantity <= 0:
+            all_errors.append("quantity must be greater than 0")
+            return self._create_error_result(all_errors, "buy")
+        
         # Round quantity down to precision_amount
         if self.broker is not None:
             quantity = self.broker.format_volume(quantity)
+        
+        # Validate quantity after formatting (positive value may become 0 after rounding)
+        if quantity <= 0:
+            all_errors.append("quantity must be greater than 0")
+            return self._create_error_result(all_errors, "buy")
         
         # Round price to precision_price if specified
         if price is not None and self.broker is not None:
             price = self.broker.format_price(price)
         
+        # Validate limit order price (for BUY: price must be <= current price)
+        if price is not None:
+            assert self.close is not None and len(self.close) > 0, "Current price is not available"
+            current_price = self.close[-1]
+            if not self.lteq(price, current_price):
+                all_errors.append(f"must be below or equal to current price")
+                return self._create_error_result(all_errors, "buy")
+        
         # Round trigger_price to precision_price if specified
         if trigger_price is not None and self.broker is not None:
             trigger_price = self.broker.format_price(trigger_price)
         
+        # Validate stop order trigger_price (for BUY: trigger_price must be > current price)
+        if trigger_price is not None:
+            assert self.close is not None and len(self.close) > 0, "Current price is not available"
+            current_price = self.close[-1]
+            if not self.gt(trigger_price, current_price):
+                all_errors.append(f"must be above current price")
+                return self._create_error_result(all_errors, "buy")
+        
         # Execute through broker (returns List[Order])
         orders = self.broker.buy(quantity, price=price, trigger_price=trigger_price)
         
-        # No errors to extract from orders (errors are now in deal.errors)
-        all_errors = []
-        
         # Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
-        executed_ids = [order.order_id for order in orders if order.status == OrderStatus.EXECUTED]
         error_ids = [order.order_id for order in orders if order.status == OrderStatus.ERROR]
         
         # Log errors if any
@@ -197,7 +239,6 @@ class Strategy(ABC):
             orders=orders,
             error_messages=all_errors,
             active=active_ids,
-            executed=executed_ids,
             error=error_ids,
             deal_id=deal_id,  # Deal ID from orders
             volume=0.0  # Volume will be filled differently
@@ -220,27 +261,50 @@ class Strategy(ABC):
         Returns:
             OrderOperationResult with orders, error_messages, and categorized order IDs
         """
+        # Validate quantity before formatting (format_volume may fail on negative values)
+        all_errors = []
+        if quantity <= 0:
+            all_errors.append("quantity must be greater than 0")
+            return self._create_error_result(all_errors, "sell")
+        
         # Round quantity down to precision_amount
         if self.broker is not None:
             quantity = self.broker.format_volume(quantity)
+        
+        # Validate quantity after formatting (positive value may become 0 after rounding)
+        if quantity <= 0:
+            all_errors.append("quantity must be greater than 0")
+            return self._create_error_result(all_errors, "sell")
         
         # Round price to precision_price if specified
         if price is not None and self.broker is not None:
             price = self.broker.format_price(price)
         
+        # Validate limit order price (for SELL: price must be >= current price)
+        if price is not None:
+            assert self.close is not None and len(self.close) > 0, "Current price is not available"
+            current_price = self.close[-1]
+            if not self.gteq(price, current_price):
+                all_errors.append(f"must be above or equal to current price")
+                return self._create_error_result(all_errors, "sell")
+        
         # Round trigger_price to precision_price if specified
         if trigger_price is not None and self.broker is not None:
             trigger_price = self.broker.format_price(trigger_price)
         
+        # Validate stop order trigger_price (for SELL: trigger_price must be < current price)
+        if trigger_price is not None:
+            assert self.close is not None and len(self.close) > 0, "Current price is not available"
+            current_price = self.close[-1]
+            if not self.lt(trigger_price, current_price):
+                all_errors.append(f"must be below current price")
+                return self._create_error_result(all_errors, "sell")
+        
         # Execute through broker (returns List[Order])
         orders = self.broker.sell(quantity, price=price, trigger_price=trigger_price)
         
-        # No errors to extract from orders (errors are now in deal.errors)
-        all_errors = []
-        
         # Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
-        executed_ids = [order.order_id for order in orders if order.status == OrderStatus.EXECUTED]
         error_ids = [order.order_id for order in orders if order.status == OrderStatus.ERROR]
         
         # Log errors if any
@@ -257,7 +321,6 @@ class Strategy(ABC):
             orders=orders,
             error_messages=all_errors,
             active=active_ids,
-            executed=executed_ids,
             error=error_ids,
             deal_id=deal_id,  # Deal ID from orders
             volume=0.0  # Volume will be filled differently
@@ -605,10 +668,7 @@ class Strategy(ABC):
         """
         errors = []
         
-        if self.close is None or len(self.close) == 0:
-            errors.append("Cannot validate prices: current price is not available")
-            return errors
-        
+        assert self.close is not None and len(self.close) > 0, "Current price is not available"
         current_price = self.close[-1]
         
         # Validate entry limit orders relative to current price
@@ -768,7 +828,6 @@ class Strategy(ABC):
                 orders=[],
                 error_messages=all_errors,
                 active=[],
-                executed=[],
                 canceled=[],
                 error=[],
                 deal_id=0,
@@ -788,7 +847,6 @@ class Strategy(ABC):
         
         # Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
-        executed_ids = [order.order_id for order in orders if order.status == OrderStatus.EXECUTED]
         canceled_ids = canceled_order_ids
         error_ids = [order.order_id for order in orders if order.status == OrderStatus.ERROR]
         
@@ -804,7 +862,6 @@ class Strategy(ABC):
             orders=orders,
             error_messages=all_errors,
             active=active_ids,
-            executed=executed_ids,
             canceled=canceled_ids,
             error=error_ids,
             deal_id=deal_id,
@@ -868,7 +925,6 @@ class Strategy(ABC):
                 orders=[],
                 error_messages=all_errors,
                 active=[],
-                executed=[],
                 canceled=[],
                 error=[],
                 deal_id=0,
@@ -888,7 +944,6 @@ class Strategy(ABC):
         
         # Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
-        executed_ids = [order.order_id for order in orders if order.status == OrderStatus.EXECUTED]
         canceled_ids = canceled_order_ids
         error_ids = [order.order_id for order in orders if order.status == OrderStatus.ERROR]
         
@@ -904,7 +959,6 @@ class Strategy(ABC):
             orders=orders,
             error_messages=all_errors,
             active=active_ids,
-            executed=executed_ids,
             canceled=canceled_ids,
             error=error_ids,
             deal_id=deal_id,
@@ -948,35 +1002,22 @@ class Strategy(ABC):
         Returns:
             OrderOperationResult with canceled order IDs and any errors
         """
-        canceled_orders = self.broker.cancel_orders(order_ids)
+        canceled_order_ids, not_canceled_order_ids, error_messages = self.broker.cancel_orders(order_ids)
         
-        # Extract canceled order IDs
-        canceled_ids = [order.order_id for order in canceled_orders]
-        
-        # Find orders that were not found (not in canceled list)
-        error_ids = []
-        error_messages = []
-        for order_id in order_ids:
-            if order_id not in canceled_ids:
-                error_ids.append(order_id)
-                error_messages.append(f"cancel_orders(): Order {order_id} not found")
+        # Error order IDs are all orders that could not be canceled
+        error_ids = not_canceled_order_ids
         
         # Log errors if any
         if error_messages:
             self._log_result_errors(error_messages, "cancel_orders")
         
-        # Get deal_id from canceled orders (use first order's deal_id if available)
-        deal_id = 0
-        if canceled_orders:
-            deal_id = canceled_orders[0].deal_id if canceled_orders[0].deal_id is not None else 0
-        
         return OrderOperationResult(
-            orders=[order.model_copy(deep=True) for order in canceled_orders],
+            orders=[],  # Not filled for cancel_orders
             error_messages=error_messages,
-            canceled=canceled_ids,
+            canceled=canceled_order_ids,
             error=error_ids,
-            deal_id=deal_id,  # Deal ID from canceled orders
-            volume=0.0  # Volume will be filled differently
+            deal_id=0,  # Not filled for cancel_orders
+            volume=0.0
         )
     
     def close_deal(self, deal_id: int) -> Deal:
@@ -1071,7 +1112,6 @@ class Strategy(ABC):
                 orders=[],
                 error_messages=[f"modify_deal(): Deal {deal_id} not found"],
                 active=[],
-                executed=[],
                 canceled=[],
                 error=[],
                 deal_id=deal_id,
@@ -1084,7 +1124,6 @@ class Strategy(ABC):
                 orders=[],
                 error_messages=[f"modify_deal(): Deal {deal_id} is already closed"],
                 active=[],
-                executed=[],
                 canceled=[],
                 error=[],
                 deal_id=deal_id,
@@ -1097,7 +1136,6 @@ class Strategy(ABC):
                 orders=[],
                 error_messages=[f"modify_deal(): Deal {deal_id} has no type set"],
                 active=[],
-                executed=[],
                 canceled=[],
                 error=[],
                 deal_id=deal_id,
@@ -1117,7 +1155,6 @@ class Strategy(ABC):
                 orders=[],
                 error_messages=[f"modify_deal(): Cannot clear entry orders when deal position volume is zero"],
                 active=[],
-                executed=[],
                 canceled=[],
                 error=[],
                 deal_id=deal_id,
@@ -1148,7 +1185,6 @@ class Strategy(ABC):
                     orders=[],
                     error_messages=[f"modify_deal(): {str(e)}"],
                     active=[],
-                    executed=[],
                     canceled=[],
                     error=[],
                     deal_id=deal_id,
@@ -1180,7 +1216,6 @@ class Strategy(ABC):
                 orders=[],
                 error_messages=all_errors,
                 active=[],
-                executed=[],
                 canceled=[],
                 error=[],
                 deal_id=deal_id,
@@ -1207,7 +1242,6 @@ class Strategy(ABC):
         
         # 13. Categorize orders by status
         active_ids = [order.order_id for order in orders if order.status == OrderStatus.ACTIVE]
-        executed_ids = [order.order_id for order in orders if order.status == OrderStatus.EXECUTED]
         canceled_ids = canceled_order_ids
         error_ids = [order.order_id for order in orders if order.status == OrderStatus.ERROR]
         
@@ -1223,7 +1257,6 @@ class Strategy(ABC):
             orders=orders,
             error_messages=all_errors,
             active=active_ids,
-            executed=executed_ids,
             canceled=canceled_ids,
             error=error_ids,
             deal_id=deal_id_result,
