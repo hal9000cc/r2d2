@@ -2250,7 +2250,14 @@ function prepareTaskData() {
             const parsed = parseFloat(value)
             customParameters[paramName] = isNaN(parsed) ? value : parsed
           } else if (typeLower === 'bool' || typeLower === 'boolean') {
-            customParameters[paramName] = Boolean(value)
+            // Properly convert to boolean: handle both boolean and string values
+            if (typeof value === 'boolean') {
+              customParameters[paramName] = value
+            } else if (typeof value === 'string') {
+              customParameters[paramName] = value.toLowerCase() === 'true'
+            } else {
+              customParameters[paramName] = Boolean(value)
+            }
           } else {
             customParameters[paramName] = String(value)
           }

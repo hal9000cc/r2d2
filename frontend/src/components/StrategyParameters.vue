@@ -284,12 +284,41 @@ export default {
         const parsed = parseFloat(value)
         return isNaN(parsed) ? value : parsed
       } else if (typeLower === 'bool' || typeLower === 'boolean') {
-        return Boolean(value)
+        // Properly convert to boolean: handle both boolean and string values
+        if (typeof value === 'boolean') {
+          return value
+        } else if (typeof value === 'string') {
+          return value.toLowerCase() === 'true'
+        } else {
+          return Boolean(value)
+        }
       }
       return String(value)
     },
     getInputValue(paramName, paramType) {
       const value = this.parameterValues[paramName]
+      const typeLower = paramType.toLowerCase()
+      
+      // For boolean/checkbox, return boolean value directly
+      if (typeLower === 'bool' || typeLower === 'boolean') {
+        if (value === null || value === undefined || value === '') {
+          // Get default value from description
+          const paramDesc = this.parametersDescription[paramName]
+          if (paramDesc && paramDesc.default_value !== undefined) {
+            return Boolean(paramDesc.default_value)
+          }
+          return false
+        }
+        // Ensure boolean value
+        if (typeof value === 'boolean') {
+          return value
+        } else if (typeof value === 'string') {
+          return value.toLowerCase() === 'true'
+        } else {
+          return Boolean(value)
+        }
+      }
+      
       // Always return a value - never undefined
       if (value === null || value === undefined || value === '') {
         // Get default value from description
@@ -300,7 +329,6 @@ export default {
         return ''
       }
       // For number types, ensure we return a string representation
-      const typeLower = paramType.toLowerCase()
       if (typeLower === 'int' || typeLower === 'integer' || typeLower === 'float' || typeLower === 'double') {
         return String(value)
       }
@@ -308,7 +336,18 @@ export default {
     },
     handleValueInput(paramName, event) {
       // Update value immediately for v-model-like behavior
-      const value = event.target.value
+      const paramDesc = this.parametersDescription[paramName]
+      const paramType = paramDesc ? paramDesc.type : 'string'
+      const typeLower = paramType.toLowerCase()
+      
+      let value
+      if (typeLower === 'bool' || typeLower === 'boolean') {
+        // For checkbox, use checked property instead of value
+        value = event.target.checked
+      } else {
+        value = event.target.value
+      }
+      
       this.parameterValues[paramName] = value
       // Emit change event for auto-save
       this.$emit('parameters-changed')
@@ -349,8 +388,14 @@ export default {
             convertedValue = parsed
           }
         } else if (typeLower === 'bool' || typeLower === 'boolean') {
-          // For boolean, keep as is (checkbox handles it)
-          convertedValue = Boolean(value)
+          // For boolean, properly convert: handle both boolean and string values
+          if (typeof value === 'boolean') {
+            convertedValue = value
+          } else if (typeof value === 'string') {
+            convertedValue = value.toLowerCase() === 'true'
+          } else {
+            convertedValue = Boolean(value)
+          }
         } else {
           // For string, keep as is
           convertedValue = String(value)
