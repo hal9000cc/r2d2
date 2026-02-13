@@ -2242,6 +2242,8 @@ function prepareTaskData() {
         if (parametersDesc[paramName]) {
           const paramDesc = parametersDesc[paramName]
           const typeLower = paramDesc.type?.toLowerCase() || 'string'
+          // Skip separators
+          if (typeLower === 'separator') continue
           // Convert to proper type
           if (typeLower === 'int' || typeLower === 'integer') {
             const parsed = parseInt(value, 10)

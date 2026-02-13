@@ -22,8 +22,9 @@ class ParameterDescription(BaseModel):
     Parameter description with default value, type and description
     """
     default_value: Any  # Default value for the parameter
-    type: str  # Type name as string (e.g., "int", "float", "str")
+    type: str  # Type name as string (e.g., "int", "float", "str", "separator")
     description: str
+    order: int = 0  # Insertion order to preserve dict ordering on the frontend
 
 
 class StrategyModel(BaseModel):
@@ -404,8 +405,15 @@ def get_strategy_parameters_description(name: str, text: str) -> Tuple[Optional[
             
             # Convert to simple format: Dict[str, Tuple[Any, str, str]]
             # Type is determined automatically from default_value
+            # Separator entries (string value instead of tuple) get type='separator'
             result = {}
-            for param_name, (default_value, param_desc) in params_dict.items():
+            for order_idx, (param_name, param_value) in enumerate(params_dict.items()):
+                # Separator: value is a string instead of a tuple
+                if isinstance(param_value, str):
+                    result[param_name] = (None, 'separator', param_value, order_idx)
+                    continue
+                
+                default_value, param_desc = param_value
                 # Determine type from default_value
                 if default_value is None:
                     type_name = 'str'  # Default to str if None
@@ -420,7 +428,7 @@ def get_strategy_parameters_description(name: str, text: str) -> Tuple[Optional[
                 else:
                     type_name = type(default_value).__name__
                 
-                result[param_name] = (default_value, type_name, param_desc)
+                result[param_name] = (default_value, type_name, param_desc, order_idx)
             
             return result, errors
         except NotImplementedError:

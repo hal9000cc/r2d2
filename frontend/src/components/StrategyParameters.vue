@@ -44,22 +44,32 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(paramDesc, paramName) in parametersDescription" :key="paramName">
-              <td class="param-name">{{ paramName }}</td>
-              <td class="param-value">
-                <input
-                  :value="getInputType(paramDesc.type) !== 'checkbox' ? getInputValue(paramName, paramDesc.type) : undefined"
-                  :checked="getInputType(paramDesc.type) === 'checkbox' ? getInputValue(paramName, paramDesc.type) : undefined"
-                  @input="handleValueInput(paramName, $event)"
-                  :type="getInputType(paramDesc.type)"
-                  :step="getInputStep(paramDesc.type)"
-                  :placeholder="getPlaceholder(paramDesc.type)"
-                  @blur="handleValueBlur(paramName, paramDesc.type)"
-                  class="param-input"
-                />
-              </td>
-              <td class="param-description">{{ paramDesc.description }}</td>
-            </tr>
+            <template v-for="param in orderedParameters" :key="param.name">
+              <tr v-if="isSeparator(param.type)" class="separator-row">
+                <td colspan="3">
+                  <div class="separator-container">
+                    <hr class="separator-line" />
+                    <span v-if="param.description" class="separator-label">{{ param.description }}</span>
+                  </div>
+                </td>
+              </tr>
+              <tr v-else>
+                <td class="param-name">{{ param.name }}</td>
+                <td class="param-value">
+                  <input
+                    :value="getInputType(param.type) !== 'checkbox' ? getInputValue(param.name, param.type) : undefined"
+                    :checked="getInputType(param.type) === 'checkbox' ? getInputValue(param.name, param.type) : undefined"
+                    @input="handleValueInput(param.name, $event)"
+                    :type="getInputType(param.type)"
+                    :step="getInputStep(param.type)"
+                    :placeholder="getPlaceholder(param.type)"
+                    @blur="handleValueBlur(param.name, param.type)"
+                    class="param-input"
+                  />
+                </td>
+                <td class="param-description">{{ param.description }}</td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -89,6 +99,14 @@ export default {
     }
   },
   emits: ['update-parameters', 'parameters-changed', 'history-size-changed'],
+  computed: {
+    orderedParameters() {
+      if (!this.parametersDescription) return []
+      return Object.entries(this.parametersDescription)
+        .sort(([, a], [, b]) => (a.order ?? 0) - (b.order ?? 0))
+        .map(([name, desc]) => ({ name, ...desc }))
+    }
+  },
   data() {
     return {
       parameterValues: {},
@@ -158,6 +176,9 @@ export default {
     this.loadParameterValues()
   },
   methods: {
+    isSeparator(paramType) {
+      return paramType && paramType.toLowerCase() === 'separator'
+    },
     getStorageKey() {
       if (!this.strategyName) return null
       return `backtesting-params-${this.strategyName}`
@@ -227,6 +248,12 @@ export default {
       for (const paramName in this.parametersDescription) {
         const paramDesc = this.parametersDescription[paramName]
         const paramType = paramDesc.type || 'string'
+        
+        // Skip separators — they are visual only
+        if (this.isSeparator(paramType)) {
+          delete newValues[paramName]
+          continue
+        }
         
         if (!(paramName in newValues)) {
           // Use default value from parameter description
@@ -628,5 +655,43 @@ export default {
   outline: none;
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.separator-row {
+  pointer-events: none;
+}
+
+.separator-row:hover {
+  background-color: transparent !important;
+}
+
+.separator-row td {
+  padding: var(--spacing-xs) 0;
+  border-bottom: none;
+}
+
+.separator-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: var(--spacing-xs) 0;
+}
+
+.separator-line {
+  flex: 1;
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 0;
+}
+
+.separator-label {
+  position: absolute;
+  left: var(--spacing-sm);
+  padding: 0 var(--spacing-xs);
+  background-color: var(--bg-primary);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.05em;
 }
 </style>

@@ -148,11 +148,12 @@ def convert_parameters_to_model(params_dict: Optional[Dict[str, Tuple[Any, str, 
         return None
     
     result = {}
-    for param_name, (default_value, type_name, description) in params_dict.items():
+    for param_name, (default_value, type_name, description, order) in params_dict.items():
         result[param_name] = ParameterDescription(
             default_value=default_value,
             type=type_name,
-            description=description
+            description=description,
+            order=order
         )
     
     return result
