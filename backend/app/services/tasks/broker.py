@@ -1799,6 +1799,11 @@ class Broker(ABC):
         
         deal.add_trade(self, trade, self.precision_amount)
         
+        # Set close_type if deal was just closed via exit order (STOP_LOSS or TAKE_PROFIT)
+        if not was_closed and deal.is_closed:
+            if order.order_group in (OrderGroup.STOP_LOSS, OrderGroup.TAKE_PROFIT):
+                deal.close_type = order.order_group
+        
         # Add trade to broker's trades list
         self.trades.append(trade)
         

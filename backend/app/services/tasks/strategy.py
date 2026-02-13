@@ -1283,14 +1283,21 @@ class Strategy(ABC):
         frames = traceback.extract_tb(tb)
         
         # Look for strategy-related frames
+        # Strategy code is loaded via exec(), so filename is '<string>'
+        # Find the last (deepest) frame with filename='<string>' - this is where the error actually occurred
         strategy_frame = None
         for frame in frames:
-            func_name = frame.name
-            
-            # Check if frame is in strategy code by method names: on_bar, on_start, on_finish
-            if func_name in ('on_bar', 'on_start', 'on_finish'):
+            if frame.filename == '<string>':
                 strategy_frame = frame
-                break
+        
+        # Fallback: if no '<string>' frames found, look for strategy method names
+        if strategy_frame is None:
+            for frame in frames:
+                func_name = frame.name
+                # Check if frame is in strategy code by method names: on_bar, on_start, on_finish
+                if func_name in ('on_bar', 'on_start', 'on_finish'):
+                    strategy_frame = frame
+                    break
         
         if strategy_frame is None:
             return False, None
