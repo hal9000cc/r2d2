@@ -335,6 +335,102 @@ class ta_proxy(ABC):
         
         return result
     
+    def _format_indicator_args(
+        self, 
+        name: str, 
+        args: Optional[List[Any]] = None, 
+        args_names: Optional[List[str]] = None,
+        kwargs: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Format indicator arguments for error messages.
+        
+        Args:
+            name: Indicator name
+            args: Positional arguments (for TA-Lib)
+            args_names: Names for positional arguments (for TA-Lib, e.g., ['close', 'period'])
+            kwargs: Keyword arguments
+            
+        Returns:
+            Formatted string like "indicator_name(arg1, arg2, param1=value1, param2=value2)"
+        """
+        parts = []
+        
+        # Format positional arguments
+        if args and args_names:
+            # Use provided names for args
+            for arg_name in args_names:
+                parts.append(arg_name)
+        elif args:
+            # Fallback: format args directly
+            for arg in args:
+                parts.append(self._format_value(arg))
+        
+        # Format keyword arguments
+        if kwargs:
+            for key, value in sorted(kwargs.items()):
+                # Skip internal parameters that are not part of the actual function call
+                if key in ('lines',):
+                    continue
+                formatted_value = self._format_value(value)
+                parts.append(f"{key}={formatted_value}")
+        
+        return f"{name}({', '.join(parts)})"
+    
+    def _format_value(self, value: Any, max_length: int = 50) -> str:
+        """
+        Format a single value for display in error messages.
+        
+        Args:
+            value: Value to format
+            max_length: Maximum length for string values
+            
+        Returns:
+            Formatted string representation
+        """
+        if value is None:
+            return "None"
+        elif isinstance(value, bool):
+            return str(value)
+        elif isinstance(value, (int, float)):
+            return str(value)
+        elif isinstance(value, str):
+            # Add quotes and truncate if too long
+            if len(value) > max_length:
+                return f"'{value[:max_length-3]}...'"
+            return f"'{value}'"
+        elif isinstance(value, (list, tuple)):
+            # Format collections
+            if len(value) == 0:
+                return "[]" if isinstance(value, list) else "()"
+            # For short collections, show elements
+            if len(value) <= 3:
+                items = [self._format_value(item, max_length) for item in value]
+                if isinstance(value, tuple):
+                    return f"({', '.join(items)})"
+                return f"[{', '.join(items)}]"
+            else:
+                # For long collections, show first and last
+                first = self._format_value(value[0], max_length)
+                last = self._format_value(value[-1], max_length)
+                return f"[{first}, ..., {last}]"
+        elif isinstance(value, np.ndarray):
+            # Format numpy arrays
+            return f"array(shape={value.shape}, dtype={value.dtype})"
+        elif hasattr(value, '__class__'):
+            # For other objects, show class name
+            class_name = value.__class__.__name__
+            # Special handling for Quotes objects
+            if class_name == 'Quotes':
+                return "quotes_data"
+            return f"{class_name}()"
+        else:
+            # Fallback: convert to string and truncate
+            str_value = str(value)
+            if len(str_value) > max_length:
+                return f"{str_value[:max_length-3]}..."
+            return str_value
+    
     @abstractmethod
     def calc_indicator(self, name: str, **kwargs) -> ta.IndicatorResult:
         """
@@ -604,6 +700,7 @@ class ta_proxy_talib(ta_proxy):
         
         # Build positional arguments from quotes_data
         args = []
+        args_names = []  # Names for positional arguments (for error formatting)
         # Create a copy of kwargs to modify it (remove 'value' if used)
         call_kwargs = kwargs.copy()
         
@@ -622,6 +719,7 @@ class ta_proxy_talib(ta_proxy):
                 # Get data from quotes_data using series name
                 try:
                     args.append(self.quotes_data[series_name])
+                    args_names.append(series_name)
                 except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires series '{series_name}' "
@@ -641,6 +739,7 @@ class ta_proxy_talib(ta_proxy):
                 # Get data from quotes_data using series name
                 try:
                     args.append(self.quotes_data[series_name])
+                    args_names.append(series_name)
                 except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires series '{series_name}' "
@@ -660,6 +759,7 @@ class ta_proxy_talib(ta_proxy):
                 # Get data from quotes_data using series name
                 try:
                     args.append(self.quotes_data[series_name])
+                    args_names.append(series_name)
                 except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires series '{series_name}' "
@@ -678,10 +778,12 @@ class ta_proxy_talib(ta_proxy):
                 call_kwargs.pop('periods', None)
                 # Add periods value as positional argument
                 args.append(periods_value)
+                args_names.append(str(periods_value))  # Show as number in error message
             else:
                 # Regular parameter - get directly from quotes_data
                 try:
                     args.append(self.quotes_data[param_name])
+                    args_names.append(param_name)
                 except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires parameter '{param_name}', "
@@ -693,7 +795,8 @@ class ta_proxy_talib(ta_proxy):
             talib_result = talib_function(*args, **call_kwargs)
         except Exception as e:
             # Re-raise with more context
-            raise RuntimeError(f"Error calling talib.{name}(*args, **kwargs): {e}") from e
+            formatted_args = self._format_indicator_args(name, args=args, args_names=args_names, kwargs=call_kwargs)
+            raise RuntimeError(f"Error calling talib.{formatted_args}: {e}") from e
         
         # Get output series information
         try:
@@ -815,7 +918,8 @@ class ta_proxy_pyita(ta_proxy):
         try:
             result = indicator_func(self.quotes_data, **kwargs)
         except Exception as e:
-            raise RuntimeError(f"Error calling pyita.{name}(**kwargs): {e}") from e
+            formatted_args = self._format_indicator_args(name, kwargs=kwargs)
+            raise RuntimeError(f"Error calling pyita.{formatted_args}: {e}") from e
         
         # Return IndicatorResult as is
         return result
