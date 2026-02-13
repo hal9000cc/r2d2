@@ -221,13 +221,35 @@ def redis_params() -> dict:
     """
     Returns dictionary with Redis connection parameters.
     
+    Reads from os.environ dynamically so that changes made by
+    load_test_env() / load_production_env() are always reflected.
+    
     Returns:
         dict: Dictionary with keys: host, port, db, password
     """
     return {
-        "host": REDIS_HOST,
-        "port": REDIS_PORT,
-        "db": REDIS_DB,
-        "password": REDIS_PASSWORD,
+        "host": os.getenv("REDIS_HOST", "localhost"),
+        "port": int(os.getenv("REDIS_PORT", str(DEFAULT_REDIS_PORT))),
+        "db": int(os.getenv("REDIS_DB", "0")),
+        "password": os.getenv("REDIS_PASSWORD") or None,
+    }
+
+
+def clickhouse_params() -> dict:
+    """
+    Returns dictionary with ClickHouse connection parameters.
+    
+    Reads from os.environ dynamically so that changes made by
+    load_test_env() / load_production_env() are always reflected.
+    
+    Returns:
+        dict: Dictionary with keys: host, port, username, password, database
+    """
+    return {
+        "host": os.getenv("CLICKHOUSE_HOST", "localhost"),
+        "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),
+        "username": os.getenv("CLICKHOUSE_USERNAME", "default"),
+        "password": os.getenv("CLICKHOUSE_PASSWORD", ""),
+        "database": os.getenv("CLICKHOUSE_DATABASE", "quotes"),
     }
 

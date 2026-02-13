@@ -19,12 +19,8 @@ from dotenv import load_dotenv
 from app.core.config import (
     REDIS_QUOTE_REQUEST_LIST,
     REDIS_QUOTE_RESPONSE_PREFIX,
-    CLICKHOUSE_HOST,
-    CLICKHOUSE_PORT,
-    CLICKHOUSE_USERNAME,
-    CLICKHOUSE_PASSWORD,
     redis_params as get_redis_params,
-    DEFAULT_REDIS_PORT,
+    clickhouse_params as get_clickhouse_params,
 )
 from app.core.logger import setup_logging
 from app.services.quotes.client import QuotesClient
@@ -63,8 +59,9 @@ def load_test_env():
     env_file = Path(__file__).parent.parent / ".env"
     if env_file.exists():
         load_dotenv(env_file)
-    # Always set REDIS_DB to 3 for tests, overriding any value from .env
+    # Force-set values that MUST differ from production
     os.environ["REDIS_DB"] = "3"
+    os.environ["CLICKHOUSE_DATABASE"] = "quotes_test"
     # Use defaults if .env doesn't exist
     os.environ.setdefault("REDIS_HOST", "localhost")
     os.environ.setdefault("REDIS_PORT", "6379")
@@ -73,7 +70,6 @@ def load_test_env():
     os.environ.setdefault("CLICKHOUSE_PORT", "8123")
     os.environ.setdefault("CLICKHOUSE_USERNAME", "default")
     os.environ.setdefault("CLICKHOUSE_PASSWORD", "")
-    os.environ.setdefault("CLICKHOUSE_DATABASE", "quotes_test")
 
 
 def load_production_env():
@@ -177,6 +173,8 @@ def _teardown_quotes_service():
     stop_quotes_service(timeout=5.0)
     QuotesServer._instance = None
     QuotesServer._initialized = False
+    QuotesClient._instance = None
+    QuotesClient._initialized = False
 
 
 @pytest.fixture
@@ -195,18 +193,9 @@ def quotes_service():
     """Fixture for tests that need quotes service with test database."""
     load_test_env()
     
-    redis_params_dict = get_redis_params()
-    clickhouse_params = {
-        "host": CLICKHOUSE_HOST,
-        "port": CLICKHOUSE_PORT,
-        "username": CLICKHOUSE_USERNAME,
-        "password": CLICKHOUSE_PASSWORD,
-        "database": "quotes_test",
-    }
-    
     _setup_quotes_service(
-        redis_params_dict=redis_params_dict,
-        clickhouse_params=clickhouse_params,
+        redis_params_dict=get_redis_params(),
+        clickhouse_params=get_clickhouse_params(),
         drop_database=True,
         log_level=logging.DEBUG
     )
@@ -221,6 +210,11 @@ def quotes_service_production():
     """Fixture for performance tests that need quotes service with production database."""
     import sys
     
+    # Clear test environment variables to avoid leaking into production config
+    for key in ("REDIS_DB", "CLICKHOUSE_DATABASE"):
+        if key in os.environ:
+            del os.environ[key]
+    
     try:
         load_production_env()
         print("INFO: Production environment loaded successfully", file=sys.stderr)
@@ -228,26 +222,12 @@ def quotes_service_production():
         print(f"ERROR: Failed to load production environment: {e}", file=sys.stderr)
         pytest.skip(f"Failed to load production environment: {e}")
     
-    redis_params_dict = {
-        "host": os.getenv("REDIS_HOST", "localhost"),
-        "port": int(os.getenv("REDIS_PORT", str(DEFAULT_REDIS_PORT))),
-        "db": int(os.getenv("REDIS_DB", "0")),
-        "password": os.getenv("REDIS_PASSWORD") or None,
-    }
-    clickhouse_params = {
-        "host": os.getenv("CLICKHOUSE_HOST", "localhost"),
-        "port": int(os.getenv("CLICKHOUSE_PORT", "8123")),
-        "username": os.getenv("CLICKHOUSE_USERNAME", "default"),
-        "password": os.getenv("CLICKHOUSE_PASSWORD", ""),
-        "database": os.getenv("CLICKHOUSE_DATABASE", "quotes"),
-    }
-    
     # Stop any existing quotes service before starting production one
     _teardown_quotes_service()
     
     _setup_quotes_service(
-        redis_params_dict=redis_params_dict,
-        clickhouse_params=clickhouse_params,
+        redis_params_dict=get_redis_params(),
+        clickhouse_params=get_clickhouse_params(),
         drop_database=False,
         log_level=logging.INFO
     )

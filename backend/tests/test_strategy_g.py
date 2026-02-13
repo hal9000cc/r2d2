@@ -18,8 +18,7 @@ from tests.test_strategy_helpers import (
     test_task
 )
 
-# Skip all tests in this file
-pytestmark = pytest.mark.skip(reason="Temporarily skipping all tests in test_strategy_g.py")
+#pytestmark = pytest.mark.skip(reason="Temporarily skipping all tests in test_strategy_g.py")
 
 # ============================================================================
 # Group G1: Full Position Closure

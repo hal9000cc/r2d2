@@ -454,7 +454,6 @@ def test_parallel_requests(quotes_service):
     Runs three batches: first two batches on 10.10.2025 (3 processes each: 2 for BTC/USDT, 1 for ETH/USDT),
     third batch on 11.10.2025 with the same configuration.
     """
-    # Get Redis parameters from config (same as in quotes_service fixture)
     params = redis_params()
     
     # Use spawn context to avoid fork() issues in multi-threaded environment

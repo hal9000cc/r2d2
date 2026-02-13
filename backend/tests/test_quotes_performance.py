@@ -12,7 +12,7 @@ import pytest
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
 
-pytestmark = pytest.mark.skip(reason="Temporarily disabled")
+#pytestmark = pytest.mark.skip(reason="Temporarily disabled")
 
 def test_quotes_performance_btc_usdt_5m(quotes_service_production):
     """
