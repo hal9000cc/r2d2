@@ -48,9 +48,11 @@
               <td class="param-name">{{ paramName }}</td>
               <td class="param-value">
                 <input
-                  :value="getInputValue(paramName, paramDesc.type)"
+                  :value="getInputType(paramDesc.type) !== 'checkbox' ? getInputValue(paramName, paramDesc.type) : undefined"
+                  :checked="getInputType(paramDesc.type) === 'checkbox' ? getInputValue(paramName, paramDesc.type) : undefined"
                   @input="handleValueInput(paramName, $event)"
                   :type="getInputType(paramDesc.type)"
+                  :step="getInputStep(paramDesc.type)"
                   :placeholder="getPlaceholder(paramDesc.type)"
                   @blur="handleValueBlur(paramName, paramDesc.type)"
                   class="param-input"
@@ -223,18 +225,22 @@ export default {
       
       // Add missing parameters (use default value from description)
       for (const paramName in this.parametersDescription) {
+        const paramDesc = this.parametersDescription[paramName]
+        const paramType = paramDesc.type || 'string'
+        
         if (!(paramName in newValues)) {
           // Use default value from parameter description
-          const paramDesc = this.parametersDescription[paramName]
           const defaultValue = paramDesc.default_value !== undefined ? paramDesc.default_value : ''
-          newValues[paramName] = this.convertValueToType(defaultValue, paramDesc.type)
+          newValues[paramName] = this.convertValueToType(defaultValue, paramType)
         } else {
-          // Normalize: treat null or undefined, but keep existing valid values
+          // Normalize: treat null or undefined, but also normalize existing values to correct types
           const value = newValues[paramName]
-          if (value === null || value === undefined) {
-            const paramDesc = this.parametersDescription[paramName]
+          if (value === null || value === undefined || value === '') {
             const defaultValue = paramDesc.default_value !== undefined ? paramDesc.default_value : ''
-            newValues[paramName] = this.convertValueToType(defaultValue, paramDesc.type)
+            newValues[paramName] = this.convertValueToType(defaultValue, paramType)
+          } else {
+            // Normalize existing value to correct type (important for booleans from Redis)
+            newValues[paramName] = this.convertValueToType(value, paramType)
           }
         }
       }
@@ -269,6 +275,16 @@ export default {
       // No placeholder needed - values are always defined
       return ''
     },
+    getInputStep(paramType) {
+      // Return appropriate step attribute for number inputs
+      const typeLower = paramType.toLowerCase()
+      if (typeLower === 'int' || typeLower === 'integer') {
+        return '1'
+      } else if (typeLower === 'float' || typeLower === 'double') {
+        return 'any'  // Allow any decimal value
+      }
+      return undefined  // No step for non-number inputs
+    },
     convertValueToType(value, paramType) {
       // Convert value to appropriate type for storage
       if (value === null || value === undefined || value === '') {
@@ -284,11 +300,19 @@ export default {
         const parsed = parseFloat(value)
         return isNaN(parsed) ? value : parsed
       } else if (typeLower === 'bool' || typeLower === 'boolean') {
-        // Properly convert to boolean: handle both boolean and string values
+        // Properly convert to boolean: handle boolean, string, and number values
         if (typeof value === 'boolean') {
           return value
         } else if (typeof value === 'string') {
-          return value.toLowerCase() === 'true'
+          const lower = value.toLowerCase()
+          if (lower === 'true' || lower === '1') {
+            return true
+          } else if (lower === 'false' || lower === '0' || lower === '') {
+            return false
+          }
+          return Boolean(value)
+        } else if (typeof value === 'number') {
+          return value !== 0
         } else {
           return Boolean(value)
         }
@@ -313,7 +337,15 @@ export default {
         if (typeof value === 'boolean') {
           return value
         } else if (typeof value === 'string') {
-          return value.toLowerCase() === 'true'
+          const lower = value.toLowerCase()
+          if (lower === 'true' || lower === '1') {
+            return true
+          } else if (lower === 'false' || lower === '0' || lower === '') {
+            return false
+          }
+          return Boolean(value)
+        } else if (typeof value === 'number') {
+          return value !== 0
         } else {
           return Boolean(value)
         }
@@ -388,11 +420,20 @@ export default {
             convertedValue = parsed
           }
         } else if (typeLower === 'bool' || typeLower === 'boolean') {
-          // For boolean, properly convert: handle both boolean and string values
+          // For boolean, properly convert: handle boolean, string, and number values
           if (typeof value === 'boolean') {
             convertedValue = value
           } else if (typeof value === 'string') {
-            convertedValue = value.toLowerCase() === 'true'
+            const lower = value.toLowerCase()
+            if (lower === 'true' || lower === '1') {
+              convertedValue = true
+            } else if (lower === 'false' || lower === '0' || lower === '') {
+              convertedValue = false
+            } else {
+              convertedValue = Boolean(value)
+            }
+          } else if (typeof value === 'number') {
+            convertedValue = value !== 0
           } else {
             convertedValue = Boolean(value)
           }
