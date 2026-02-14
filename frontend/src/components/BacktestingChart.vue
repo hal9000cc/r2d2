@@ -108,7 +108,8 @@ export default {
       _indicatorCacheResultId: null,
       
       // Indicator state: Map<indicatorKey, {
-      //   visible: boolean,
+      //   visibleOnPrice: boolean,
+      //   visibleOnPanel: boolean,
       //   paneIndex: number|undefined,
       //   paneTitle: string,
       //   series: Array<{ color, lineWidth, lineStyle, displayType, color_up?, color_down?, is_price }>
@@ -1371,7 +1372,7 @@ export default {
         // Register or update indicator state
         let state = this._indicatorState.get(indicator.key)
         if (!state) {
-          state = { visible: true }
+          state = { visibleOnPrice: true, visibleOnPanel: true }
           this._indicatorState.set(indicator.key, state)
         }
         
@@ -1387,19 +1388,19 @@ export default {
           is_price: si.is_price === true,
         }))
         
-        if (!state.visible) {
-          continue
-        }
-        
         for (let seriesIndex = 0; seriesIndex < indicator.series_info.length; seriesIndex++) {
           const seriesInfo = indicator.series_info[seriesIndex]
           const seriesKey = this.getSeriesKey(indicator, seriesIndex)
           
           if (seriesInfo.is_price === true) {
-            this._addIndicatorSeriesToChart(seriesKey, SeriesType.indicatorPrice, indicator, seriesIndex, seriesInfo)
+            if (state.visibleOnPrice) {
+              this._addIndicatorSeriesToChart(seriesKey, SeriesType.indicatorPrice, indicator, seriesIndex, seriesInfo)
+            }
           } else {
-            const paneIndex = this._getPaneForIndicator(indicator.key)
-            this._addIndicatorSeriesToChart(seriesKey, SeriesType.indicatorNonPrice, indicator, seriesIndex, seriesInfo, paneIndex)
+            if (state.visibleOnPanel) {
+              const paneIndex = this._getPaneForIndicator(indicator.key)
+              this._addIndicatorSeriesToChart(seriesKey, SeriesType.indicatorNonPrice, indicator, seriesIndex, seriesInfo, paneIndex)
+            }
           }
         }
       }
@@ -1590,23 +1591,28 @@ export default {
     _removeIndicatorPane(indicatorKey) {
       const state = this._indicatorState.get(indicatorKey)
       if (state) {
-        state.visible = false
+        state.visibleOnPanel = false
       }
       
       // Remove ALL overlays from DOM (pane DOM will be restructured)
       this._removeAllPaneTitles()
       
-      // Remove all series belonging to this indicator
-      if (this.seriesManager) {
+      // Remove only non-price series belonging to this indicator
+      if (this.seriesManager && state && state.series) {
         const seriesKeys = this.seriesManager.getIndicatorSeriesKeys()
         for (const seriesKey of seriesKeys) {
           const pipeIdx = seriesKey.indexOf('|')
           const key = pipeIdx >= 0 ? seriesKey.substring(0, pipeIdx) : seriesKey
           if (key === indicatorKey) {
-            try {
-              this.seriesManager.removeSeries(seriesKey)
-            } catch (error) {
-              console.error(`Failed to remove indicator series "${seriesKey}":`, error)
+            const seriesIdxStr = pipeIdx >= 0 ? seriesKey.substring(pipeIdx + 1) : '0'
+            const seriesIdx = parseInt(seriesIdxStr, 10)
+            const seriesInfo = state.series[seriesIdx]
+            if (seriesInfo && !seriesInfo.is_price) {
+              try {
+                this.seriesManager.removeSeries(seriesKey)
+              } catch (error) {
+                console.error(`Failed to remove indicator series "${seriesKey}":`, error)
+              }
             }
           }
         }
@@ -1616,7 +1622,7 @@ export default {
       requestAnimationFrame(() => {
         this.resizeChart()
         for (const [key, state] of this._indicatorState) {
-          if (state.visible && state.paneIndex !== undefined && state.paneTitle) {
+          if (state.visibleOnPanel && state.paneIndex !== undefined && state.paneTitle) {
             this._createPaneTitleDOM(state.paneIndex, {
               key: key,
               paneTitle: state.paneTitle
