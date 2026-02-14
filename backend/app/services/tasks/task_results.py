@@ -230,7 +230,8 @@ class TaskResults:
             'metadata': {
                 'is_tuple': True,
                 'arrays': arrays_metadata,
-                'series_info': series_info
+                'series_info': series_info,
+                'paneTitle': indicator_desc.paneTitle
             },
             'binary_data': {
                 'arrays': arrays_binary
@@ -1119,7 +1120,8 @@ class TaskResults:
         filtered_values: Any,
         time_range_iso: list[str],
         date_start_iso: str,
-        date_end_iso: str
+        date_end_iso: str,
+        paneTitle: str
     ) -> dict[str, Any]:
         """
         Build result entry for a single indicator.
@@ -1135,6 +1137,7 @@ class TaskResults:
             time_range_iso: Time range as ISO strings
             date_start_iso: Start date as ISO string
             date_end_iso: End date as ISO string
+            paneTitle: Formatted pane title
             
         Returns:
             Dictionary with indicator data
@@ -1148,7 +1151,8 @@ class TaskResults:
             'values': filtered_values,
             'time': time_range_iso,
             'date_start': date_start_iso,
-            'date_end': date_end_iso
+            'date_end': date_end_iso,
+            'paneTitle': paneTitle
         }
     
     def get_indicators(self, result_id: str, date_start: np.datetime64, date_end: np.datetime64) -> Dict[str, Dict[str, Any]]:
@@ -1236,6 +1240,7 @@ class TaskResults:
                     )
                     
                     series_info = self._convert_dict_numpy_types(deserialized['metadata']['series_info'])
+                    pane_title = deserialized['metadata']['paneTitle']
                     
                     entry = self._build_indicator_result_entry(
                         indicator_key=indicator_key,
@@ -1247,7 +1252,8 @@ class TaskResults:
                         filtered_values=filtered_values,
                         time_range_iso=time_range_iso,
                         date_start_iso=date_start_iso,
-                        date_end_iso=date_end_iso
+                        date_end_iso=date_end_iso,
+                        paneTitle=pane_title
                     )
                     
                     entry = self._convert_dict_numpy_types(entry)
@@ -1323,6 +1329,7 @@ class TaskResults:
                     is_tuple = bool(metadata.get('is_tuple', False))
                     series_info = metadata.get('series_info', [])
                     series_info = self._convert_dict_numpy_types(series_info)
+                    pane_title = metadata['paneTitle']
                     
                     entry = {
                         'key': indicator_key,
@@ -1330,7 +1337,8 @@ class TaskResults:
                         'indicator_name': indicator_name,
                         'parameters': parameters,
                         'is_tuple': is_tuple,
-                        'series_info': series_info
+                        'series_info': series_info,
+                        'paneTitle': pane_title
                     }
                     
                     entry = self._convert_dict_numpy_types(entry)

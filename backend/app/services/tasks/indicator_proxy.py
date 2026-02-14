@@ -147,6 +147,7 @@ class UsedIndicatorDescription(BaseModel):
     values: ta.IndicatorResult  # Cached indicator values (IndicatorResult object)
     visible: bool = True  # Visibility flag for frontend display
     series_info: List[Dict[str, Any]]  # List of series descriptions: [{'name': str, 'is_price': bool, 'color': str, 'lineWidth': int, 'lineStyle': int, 'displayType': str, 'color_up': str|None, 'color_down': str|None}, ...]
+    paneTitle: str  # Formatted title for pane display (e.g., "MACD(period_short=12,period_long=26,period_signal=9)")
 
 
 class ta_proxy(ABC):
@@ -357,6 +358,39 @@ class ta_proxy(ABC):
         
         return result
     
+    def _format_pane_title(self, indicator_name: str, parameters: dict) -> str:
+        """
+        Format pane title for indicator display.
+        
+        Args:
+            indicator_name: Indicator name (e.g., 'MACD', 'SMA')
+            parameters: Indicator parameters dictionary
+            
+        Returns:
+            Formatted title string (e.g., "MACD(period_short=12,period_long=26,period_signal=9)")
+        """
+        if not parameters:
+            return indicator_name
+        
+        # Sort parameters by key for consistency
+        sorted_params = sorted(parameters.items())
+        
+        # Format each parameter
+        formatted_parts = []
+        for key, value in sorted_params:
+            if isinstance(value, str):
+                formatted_parts.append(f"{key}='{value}'")
+            elif isinstance(value, bool):
+                formatted_parts.append(f"{key}={value}")
+            elif value is None:
+                formatted_parts.append(f"{key}=None")
+            else:
+                # Numbers and other types
+                formatted_parts.append(f"{key}={value}")
+        
+        params_str = ",".join(formatted_parts)
+        return f"{indicator_name}({params_str})"
+    
     def _format_indicator_args(
         self, 
         name: str, 
@@ -494,11 +528,15 @@ class ta_proxy(ABC):
             # Build series info from metadata (pass kwargs for 'as_source' type determination)
             series_info = self._build_series_info(name, lines_config, kwargs)
             
+            # Format pane title
+            pane_title = self._format_pane_title(name, kwargs)
+            
             # Store in cache as UsedIndicatorDescription
             self.cache[cache_key] = UsedIndicatorDescription(
                 values=indicator_result,
                 visible=True,
-                series_info=series_info
+                series_info=series_info,
+                paneTitle=pane_title
             )
         
         # Get cached indicator description

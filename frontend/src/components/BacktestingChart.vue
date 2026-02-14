@@ -6,7 +6,7 @@
 </template>
 
 <script>
-import { createChart, ColorType, LineSeries } from 'lightweight-charts'
+import { createChart, ColorType, LineSeries, createTextWatermark } from 'lightweight-charts'
 import { inject } from 'vue'
 import axios from 'axios'
 import { backtestingApi } from '../services/backtestingApi.js'
@@ -110,6 +110,9 @@ export default {
       // Pane allocation for non-price indicators: Map<indicatorKey, paneIndex>
       _indicatorPaneMap: new Map(),
       _nextPaneIndex: 1, // Pane 0 is the price chart
+      
+      // Watermarks for indicator pane titles: Map<paneIndex, watermarkApi>
+      _indicatorWatermarks: new Map(),
       
       currentData: [], // Array of {time, open, high, low, close}
       
@@ -851,6 +854,23 @@ export default {
       // Reset pane allocation
       this._indicatorPaneMap = new Map()
       this._nextPaneIndex = 1
+      
+      // Remove all indicator pane watermarks
+      this._removeAllPaneTitles()
+    },
+    
+    /**
+     * Remove all indicator pane title watermarks
+     */
+    _removeAllPaneTitles() {
+      for (const [paneIndex, watermark] of this._indicatorWatermarks) {
+        try {
+          watermark.detach()
+        } catch (error) {
+          console.error(`Failed to remove watermark for pane ${paneIndex}:`, error)
+        }
+      }
+      this._indicatorWatermarks.clear()
     },
     
     resetChart() {
@@ -1398,6 +1418,9 @@ export default {
             level: 'error',
             message: `Failed to add indicator series "${seriesKey}"`
           })
+        } else if (paneIndex !== undefined && this.chart) {
+          // Create watermark title for non-price indicator pane (only once per pane)
+          this._createPaneTitle(paneIndex, indicator)
         }
       } catch (error) {
         console.error(`Failed to add indicator series "${seriesKey}":`, error)
@@ -1422,6 +1445,58 @@ export default {
       this._indicatorPaneMap.set(indicatorKey, paneIndex)
       this._nextPaneIndex++
       return paneIndex
+    },
+    
+    /**
+     * Create text watermark title for indicator pane
+     * @param {number} paneIndex - Pane index
+     * @param {Object} indicator - Indicator object with paneTitle
+     */
+    _createPaneTitle(paneIndex, indicator) {
+      // Check if watermark already exists for this pane
+      if (this._indicatorWatermarks.has(paneIndex)) {
+        return
+      }
+      
+      if (!this.chart) {
+        return
+      }
+      
+      try {
+        const panes = this.chart.panes()
+        if (!panes || paneIndex >= panes.length) {
+          return
+        }
+        
+        const pane = panes[paneIndex]
+        if (!pane) {
+          return
+        }
+        
+        // Use paneTitle from backend
+        const titleText = indicator.paneTitle
+        
+        // Create watermark with indicator name
+        const watermark = createTextWatermark(pane, {
+          horzAlign: 'left',
+          vertAlign: 'top',
+          lines: [
+            {
+              text: titleText,
+              color: 'rgba(128, 128, 128, 0.7)',
+              fontSize: 12,
+              fontStyle: 'normal',
+              fontFamily: '-apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif'
+            }
+          ],
+          visible: true
+        })
+        
+        // Store watermark for cleanup
+        this._indicatorWatermarks.set(paneIndex, watermark)
+      } catch (error) {
+        console.error(`Failed to create pane title for pane ${paneIndex}:`, error)
+      }
     },
     
     /**
