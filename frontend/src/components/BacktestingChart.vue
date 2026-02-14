@@ -1534,6 +1534,11 @@ export default {
           return
         }
         
+        // Add border-top for non-main panes (paneIndex > 0) to visually separate them
+        if (paneIndex > 0) {
+          paneRow.style.borderTop = '1px solid rgba(128, 128, 128, 0.2)'
+        }
+        
         const titleText = indicator.paneTitle
         const indicatorKey = indicator.key
         

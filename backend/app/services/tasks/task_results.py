@@ -295,6 +295,9 @@ class TaskResults:
         if deal_ids:
             for deal in broker.deals:
                 if deal.deal_id in deal_ids:
+                    date_open_iso = datetime64_to_iso(deal.date_open) if deal.date_open is not None else ""
+                    date_close_iso = datetime64_to_iso(deal.date_close) if deal.date_close is not None else ""
+                    
                     member = (
                         f"{deal.deal_id}|"
                         f"{deal.type.value if deal.type else ''}|"
@@ -304,7 +307,9 @@ class TaskResults:
                         f"{deal.fee}|"
                         f"{self._format_value(deal.profit)}|"
                         f"{self._format_value(deal.is_closed)}|"
-                        f"{deal.close_type.value if deal.close_type else 0}"
+                        f"{deal.close_type.value if deal.close_type else 0}|"
+                        f"{date_open_iso}|"
+                        f"{date_close_iso}"
                     )
                     
                     score = int(deal.deal_id)
@@ -685,7 +690,7 @@ class TaskResults:
                 member = deals_data[0]
                 parts = member.split('|')
                 
-                assert len(parts) == 9, f"Expected 9 parts in deal data, got {len(parts)}: {member[:100]}"
+                assert len(parts) == 11, f"Expected 11 parts in deal data, got {len(parts)}: {member[:100]}"
                 
                 deal_dict = {
                     'deal_id': parts[0],
@@ -696,7 +701,9 @@ class TaskResults:
                     'fee': parts[5],
                     'profit': parts[6] if parts[6] else None,
                     'is_closed': parts[7] == '1' if parts[7] else False,
-                    'close_type': int(parts[8]) if parts[8] else 0
+                    'close_type': int(parts[8]) if parts[8] else 0,
+                    'date_open': parts[9] if parts[9] else None,
+                    'date_close': parts[10] if parts[10] else None
                 }
                 deals.append(deal_dict)
             

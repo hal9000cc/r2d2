@@ -620,6 +620,18 @@ const tradesColumns = [
 const dealsColumns = [
   { key: 'deal_id', label: 'Deal ID', width: '80px' },
   { 
+    key: 'date_open', 
+    label: 'Date Open', 
+    width: '160px',
+    format: (value) => value ? new Date(value).toISOString().replace('T', ' ').substring(0, 19) : '—'
+  },
+  { 
+    key: 'date_close', 
+    label: 'Date Close', 
+    width: '160px',
+    format: (value) => value ? new Date(value).toISOString().replace('T', ' ').substring(0, 19) : '—'
+  },
+  { 
     key: 'type', 
     label: 'Type', 
     width: '100px',

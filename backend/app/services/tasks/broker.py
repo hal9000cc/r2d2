@@ -229,6 +229,10 @@ class Deal(BaseModel):
     - Marks automatic deals (auto=True) created via Strategy.buy/sell methods.
     """
 
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True
+    )
+
     deal_id: int = Field(gt=0)
     trades: List[Trade] = Field(default_factory=list)
     orders: List[Order] = Field(default_factory=list)  # List of orders (entry and exit) associated with this deal
@@ -249,6 +253,10 @@ class Deal(BaseModel):
     
     # Deal closed status (set to True when quantity == 0 and no active entry orders)
     is_closed: bool = False
+    
+    # Deal open and close dates
+    date_open: Optional[np.datetime64] = None
+    date_close: Optional[np.datetime64] = None
     
     # Emergency close flag (set to True if errors occurred during order cancellation when closing deal)
     need_emergency_close: bool = False
@@ -282,6 +290,10 @@ class Deal(BaseModel):
         """
 
         assert trade.quantity > 0, f"Trade quantity must be greater than 0, got {trade.quantity}"
+        
+        # Set date_open when first trade is added
+        if self.date_open is None and len(self.trades) == 0:
+            self.date_open = trade.time
         
         trade.deal_id = self.deal_id
         self.trades.append(trade)
@@ -329,6 +341,9 @@ class Deal(BaseModel):
                         order.cancel(broker)
                 
                 self.is_closed = True
+                # Set date_close to the time of the last trade that closed the deal
+                if self.date_close is None and len(self.trades) > 0:
+                    self.date_close = trade.time
 
     def unrealized_profit(self, broker: 'Broker') -> Optional[PRICE_TYPE]:
         """
@@ -1444,6 +1459,9 @@ class Broker(ABC):
         # 4. Check if deal should be closed (quantity == 0 after processing)
         assert deal.quantity == 0
         deal.is_closed = True
+        # Set date_close to the time of the last trade that closed the deal
+        if deal.date_close is None and len(deal.trades) > 0:
+            deal.date_close = deal.trades[-1].time
     
     def cancel_orders(self, order_ids: List[int]) -> Tuple[List[int], List[int], List[str]]:
         """
