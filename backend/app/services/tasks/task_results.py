@@ -873,11 +873,17 @@ class TaskResults:
             arr = np.frombuffer(arr_bytes, dtype=dtype).reshape(shape)
             values = arr.tolist()
         
+        result_metadata = {
+            'is_tuple': is_tuple,
+            'series_info': series_info
+        }
+        
+        # Preserve paneTitle from original metadata
+        if 'paneTitle' in metadata:
+            result_metadata['paneTitle'] = metadata['paneTitle']
+        
         return {
-            'metadata': {
-                'is_tuple': is_tuple,
-                'series_info': series_info
-            },
+            'metadata': result_metadata,
             'values': values
         }
     

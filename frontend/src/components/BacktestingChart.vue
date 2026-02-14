@@ -6,7 +6,7 @@
 </template>
 
 <script>
-import { createChart, ColorType, LineSeries, createTextWatermark } from 'lightweight-charts'
+import { createChart, ColorType, LineSeries } from 'lightweight-charts'
 import { inject } from 'vue'
 import axios from 'axios'
 import { backtestingApi } from '../services/backtestingApi.js'
@@ -107,12 +107,17 @@ export default {
       _indicatorCacheTaskId: null,
       _indicatorCacheResultId: null,
       
-      // Pane allocation for non-price indicators: Map<indicatorKey, paneIndex>
-      _indicatorPaneMap: new Map(),
+      // Indicator state: Map<indicatorKey, {
+      //   visible: boolean,
+      //   paneIndex: number|undefined,
+      //   paneTitle: string,
+      //   series: Array<{ color, lineWidth, lineStyle, displayType, color_up?, color_down?, is_price }>
+      // }>
+      _indicatorState: new Map(),
       _nextPaneIndex: 1, // Pane 0 is the price chart
       
-      // Watermarks for indicator pane titles: Map<paneIndex, watermarkApi>
-      _indicatorWatermarks: new Map(),
+      // HTML overlays for indicator pane titles: Map<paneIndex, HTMLElement>
+      _indicatorPaneOverlays: new Map(),
       
       currentData: [], // Array of {time, open, high, low, close}
       
@@ -851,26 +856,28 @@ export default {
       this.backtestingDateEnd = null
       this.dateMarkerTimestamp = null
       
-      // Reset pane allocation
-      this._indicatorPaneMap = new Map()
+      // Reset indicator state
+      this._indicatorState = new Map()
       this._nextPaneIndex = 1
       
-      // Remove all indicator pane watermarks
+      // Remove all indicator pane overlays
       this._removeAllPaneTitles()
     },
     
     /**
-     * Remove all indicator pane title watermarks
+     * Remove all indicator pane title overlays
      */
     _removeAllPaneTitles() {
-      for (const [paneIndex, watermark] of this._indicatorWatermarks) {
+      for (const [paneIndex, overlay] of this._indicatorPaneOverlays) {
         try {
-          watermark.detach()
+          if (overlay && overlay.parentNode) {
+            overlay.parentNode.removeChild(overlay)
+          }
         } catch (error) {
-          console.error(`Failed to remove watermark for pane ${paneIndex}:`, error)
+          console.error(`Failed to remove overlay for pane ${paneIndex}:`, error)
         }
       }
-      this._indicatorWatermarks.clear()
+      this._indicatorPaneOverlays.clear()
     },
     
     resetChart() {
@@ -1361,15 +1368,36 @@ export default {
           continue
         }
         
+        // Register or update indicator state
+        let state = this._indicatorState.get(indicator.key)
+        if (!state) {
+          state = { visible: true }
+          this._indicatorState.set(indicator.key, state)
+        }
+        
+        // Always update backend-provided metadata
+        state.paneTitle = indicator.paneTitle
+        state.series = indicator.series_info.map(si => ({
+          color: si.color || '#808080',
+          lineWidth: si.lineWidth ?? 2,
+          lineStyle: si.lineStyle ?? 0,
+          displayType: si.displayType || 'line',
+          color_up: si.color_up,
+          color_down: si.color_down,
+          is_price: si.is_price === true,
+        }))
+        
+        if (!state.visible) {
+          continue
+        }
+        
         for (let seriesIndex = 0; seriesIndex < indicator.series_info.length; seriesIndex++) {
           const seriesInfo = indicator.series_info[seriesIndex]
           const seriesKey = this.getSeriesKey(indicator, seriesIndex)
           
           if (seriesInfo.is_price === true) {
-            // Price indicator — add to main pane (pane 0)
             this._addIndicatorSeriesToChart(seriesKey, SeriesType.indicatorPrice, indicator, seriesIndex, seriesInfo)
           } else {
-            // Non-price indicator — add to separate pane
             const paneIndex = this._getPaneForIndicator(indicator.key)
             this._addIndicatorSeriesToChart(seriesKey, SeriesType.indicatorNonPrice, indicator, seriesIndex, seriesInfo, paneIndex)
           }
@@ -1419,7 +1447,6 @@ export default {
             message: `Failed to add indicator series "${seriesKey}"`
           })
         } else if (paneIndex !== undefined && this.chart) {
-          // Create watermark title for non-price indicator pane (only once per pane)
           this._createPaneTitle(paneIndex, indicator)
         }
       } catch (error) {
@@ -1438,23 +1465,43 @@ export default {
      * @returns {number} Pane index (1, 2, 3, ...)
      */
     _getPaneForIndicator(indicatorKey) {
-      if (this._indicatorPaneMap.has(indicatorKey)) {
-        return this._indicatorPaneMap.get(indicatorKey)
+      const state = this._indicatorState.get(indicatorKey)
+      if (state && state.paneIndex !== undefined) {
+        return state.paneIndex
       }
       const paneIndex = this._nextPaneIndex
-      this._indicatorPaneMap.set(indicatorKey, paneIndex)
+      if (state) {
+        state.paneIndex = paneIndex
+      }
       this._nextPaneIndex++
       return paneIndex
     },
     
     /**
-     * Create text watermark title for indicator pane
+     * Create HTML overlay title with close button for indicator pane
      * @param {number} paneIndex - Pane index
-     * @param {Object} indicator - Indicator object with paneTitle
+     * @param {Object} indicator - Indicator object with paneTitle and key
      */
     _createPaneTitle(paneIndex, indicator) {
-      // Check if watermark already exists for this pane
-      if (this._indicatorWatermarks.has(paneIndex)) {
+      if (this._indicatorPaneOverlays.has(paneIndex)) {
+        return
+      }
+      
+      if (!this.chart) {
+        return
+      }
+      
+      // Defer to next frame — pane DOM may not exist yet right after addSeries
+      requestAnimationFrame(() => {
+        this._createPaneTitleDOM(paneIndex, indicator)
+      })
+    },
+    
+    /**
+     * Internal: create overlay DOM once the pane element is available
+     */
+    _createPaneTitleDOM(paneIndex, indicator) {
+      if (this._indicatorPaneOverlays.has(paneIndex)) {
         return
       }
       
@@ -1473,30 +1520,111 @@ export default {
           return
         }
         
-        // Use paneTitle from backend
-        const titleText = indicator.paneTitle
+        const paneRow = pane.getHTMLElement()
+        if (!paneRow) {
+          return
+        }
         
-        // Create watermark with indicator name
-        const watermark = createTextWatermark(pane, {
-          horzAlign: 'left',
-          vertAlign: 'top',
-          lines: [
-            {
-              text: titleText,
-              color: 'rgba(128, 128, 128, 0.7)',
-              fontSize: 12,
-              fontStyle: 'normal',
-              fontFamily: '-apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif'
-            }
-          ],
-          visible: true
+        // getHTMLElement() returns <tr>; find the pane <td> cell (has position: relative)
+        const paneCell = Array.from(paneRow.querySelectorAll('td')).find(
+          td => td.style.position === 'relative'
+        )
+        if (!paneCell) {
+          return
+        }
+        
+        const titleText = indicator.paneTitle
+        const indicatorKey = indicator.key
+        
+        // Overlay container
+        const overlay = document.createElement('div')
+        overlay.style.cssText = `
+          position: absolute; top: 4px; left: 8px; z-index: 10;
+          pointer-events: none; display: flex; align-items: center; gap: 6px;
+        `
+        
+        // Title label
+        const titleSpan = document.createElement('span')
+        titleSpan.textContent = titleText
+        titleSpan.style.cssText = `
+          color: rgba(128, 128, 128, 0.7); font-size: 12px; user-select: none;
+          font-family: -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif;
+        `
+        
+        // Close button
+        const closeBtn = document.createElement('span')
+        closeBtn.textContent = '×'
+        closeBtn.title = 'Remove indicator'
+        closeBtn.style.cssText = `
+          color: rgba(128, 128, 128, 0.4); font-size: 16px; line-height: 1;
+          cursor: pointer; pointer-events: auto; user-select: none;
+          padding: 0 3px; border-radius: 3px;
+          transition: color 0.15s, background-color 0.15s;
+        `
+        closeBtn.addEventListener('mouseenter', () => {
+          closeBtn.style.color = 'rgba(200, 60, 60, 0.9)'
+          closeBtn.style.backgroundColor = 'rgba(200, 60, 60, 0.12)'
+        })
+        closeBtn.addEventListener('mouseleave', () => {
+          closeBtn.style.color = 'rgba(128, 128, 128, 0.4)'
+          closeBtn.style.backgroundColor = 'transparent'
+        })
+        closeBtn.addEventListener('click', () => {
+          this._removeIndicatorPane(indicatorKey)
         })
         
-        // Store watermark for cleanup
-        this._indicatorWatermarks.set(paneIndex, watermark)
+        overlay.appendChild(titleSpan)
+        overlay.appendChild(closeBtn)
+        paneCell.appendChild(overlay)
+        
+        this._indicatorPaneOverlays.set(paneIndex, overlay)
       } catch (error) {
         console.error(`Failed to create pane title for pane ${paneIndex}:`, error)
       }
+    },
+    
+    /**
+     * Remove indicator pane: delete all series, move remaining series to compact panes, rebuild overlays
+     * @param {string} indicatorKey - Indicator key to remove
+     */
+    _removeIndicatorPane(indicatorKey) {
+      const state = this._indicatorState.get(indicatorKey)
+      if (state) {
+        state.visible = false
+      }
+      
+      // Remove ALL overlays from DOM (pane DOM will be restructured)
+      this._removeAllPaneTitles()
+      
+      // Remove all series belonging to this indicator
+      if (this.seriesManager) {
+        const seriesKeys = this.seriesManager.getIndicatorSeriesKeys()
+        for (const seriesKey of seriesKeys) {
+          const pipeIdx = seriesKey.indexOf('|')
+          const key = pipeIdx >= 0 ? seriesKey.substring(0, pipeIdx) : seriesKey
+          if (key === indicatorKey) {
+            try {
+              this.seriesManager.removeSeries(seriesKey)
+            } catch (error) {
+              console.error(`Failed to remove indicator series "${seriesKey}":`, error)
+            }
+          }
+        }
+      }
+      
+      // Recreate overlays for remaining visible indicators (deferred — DOM needs a frame)
+      requestAnimationFrame(() => {
+        this.resizeChart()
+        for (const [key, state] of this._indicatorState) {
+          if (state.visible && state.paneIndex !== undefined && state.paneTitle) {
+            this._createPaneTitleDOM(state.paneIndex, {
+              key: key,
+              paneTitle: state.paneTitle
+            })
+          }
+        }
+      })
+      
     },
     
     /**
