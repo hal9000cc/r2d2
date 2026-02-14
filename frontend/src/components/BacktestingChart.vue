@@ -107,6 +107,10 @@ export default {
       _indicatorCacheTaskId: null,
       _indicatorCacheResultId: null,
       
+      // Pane allocation for non-price indicators: Map<indicatorKey, paneIndex>
+      _indicatorPaneMap: new Map(),
+      _nextPaneIndex: 1, // Pane 0 is the price chart
+      
       currentData: [], // Array of {time, open, high, low, close}
       
       // Flags to block concurrent updates
@@ -843,6 +847,10 @@ export default {
       this.backtestingDateStart = null
       this.backtestingDateEnd = null
       this.dateMarkerTimestamp = null
+      
+      // Reset pane allocation
+      this._indicatorPaneMap = new Map()
+      this._nextPaneIndex = 1
     },
     
     resetChart() {
@@ -1333,43 +1341,87 @@ export default {
           continue
         }
         
-        // Add series for each element in series_info with is_price === true
         for (let seriesIndex = 0; seriesIndex < indicator.series_info.length; seriesIndex++) {
           const seriesInfo = indicator.series_info[seriesIndex]
-          // Only add series with is_price === true
+          const seriesKey = this.getSeriesKey(indicator, seriesIndex)
+          
           if (seriesInfo.is_price === true) {
-            const seriesKey = this.getSeriesKey(indicator, seriesIndex)
-            try {
-              // Pass loadIndicatorData function, indicator object, seriesIndex, and line settings from backend
-              const added = this.seriesManager.addSeries(
-                seriesKey,
-                SeriesType.indicatorPrice,
-                {
-                  loadIndicatorData: this.loadIndicatorData.bind(this),
-                  indicator: indicator,
-                  seriesIndex: seriesIndex,
-                  color: seriesInfo.color || '#808080', // Use color from backend or gray fallback
-                  lineWidth: seriesInfo.lineWidth ?? 2, // Use lineWidth from backend or default 2
-                  lineStyle: seriesInfo.lineStyle ?? 0 // Use lineStyle from backend or default 0 (solid)
-                }
-              )
-              
-              if (!added) {
-                this.$emit('chart-message', {
-                  level: 'error',
-                  message: `Failed to add indicator series "${seriesKey}"`
-                })
-              }
-            } catch (error) {
-              console.error(`Failed to add indicator series "${seriesKey}":`, error)
-              this.$emit('chart-message', {
-                level: 'error',
-                message: `Failed to add indicator series "${seriesKey}": ${error.message || error}`
-              })
-            }
+            // Price indicator — add to main pane (pane 0)
+            this._addIndicatorSeriesToChart(seriesKey, SeriesType.indicatorPrice, indicator, seriesIndex, seriesInfo)
+          } else {
+            // Non-price indicator — add to separate pane
+            const paneIndex = this._getPaneForIndicator(indicator.key)
+            this._addIndicatorSeriesToChart(seriesKey, SeriesType.indicatorNonPrice, indicator, seriesIndex, seriesInfo, paneIndex)
           }
         }
       }
+    },
+    
+    /**
+     * Add a single indicator series to chart
+     * @param {string} seriesKey - Unique series key
+     * @param {string} seriesType - SeriesType enum value
+     * @param {Object} indicator - Indicator object from API
+     * @param {number} seriesIndex - Index in series_info array
+     * @param {Object} seriesInfo - Series info object from backend
+     * @param {number|undefined} paneIndex - Optional pane index for non-price indicators
+     */
+    _addIndicatorSeriesToChart(seriesKey, seriesType, indicator, seriesIndex, seriesInfo, paneIndex = undefined) {
+      try {
+        const options = {
+          loadIndicatorData: this.loadIndicatorData.bind(this),
+          indicator: indicator,
+          seriesIndex: seriesIndex,
+          color: seriesInfo.color || '#808080',
+          lineWidth: seriesInfo.lineWidth ?? 2,
+          lineStyle: seriesInfo.lineStyle ?? 0,
+          displayType: seriesInfo.displayType || 'line',
+        }
+        
+        // Pass histogram colors if present
+        if (seriesInfo.color_up) {
+          options.color_up = seriesInfo.color_up
+        }
+        if (seriesInfo.color_down) {
+          options.color_down = seriesInfo.color_down
+        }
+        
+        // Pass pane index for non-price indicators
+        if (paneIndex !== undefined) {
+          options.paneIndex = paneIndex
+        }
+        
+        const added = this.seriesManager.addSeries(seriesKey, seriesType, options)
+        
+        if (!added) {
+          this.$emit('chart-message', {
+            level: 'error',
+            message: `Failed to add indicator series "${seriesKey}"`
+          })
+        }
+      } catch (error) {
+        console.error(`Failed to add indicator series "${seriesKey}":`, error)
+        this.$emit('chart-message', {
+          level: 'error',
+          message: `Failed to add indicator series "${seriesKey}": ${error.message || error}`
+        })
+      }
+    },
+    
+    /**
+     * Get or allocate pane index for a non-price indicator
+     * All series of the same indicator share the same pane
+     * @param {string} indicatorKey - Indicator key from API
+     * @returns {number} Pane index (1, 2, 3, ...)
+     */
+    _getPaneForIndicator(indicatorKey) {
+      if (this._indicatorPaneMap.has(indicatorKey)) {
+        return this._indicatorPaneMap.get(indicatorKey)
+      }
+      const paneIndex = this._nextPaneIndex
+      this._indicatorPaneMap.set(indicatorKey, paneIndex)
+      this._nextPaneIndex++
+      return paneIndex
     },
     
     /**

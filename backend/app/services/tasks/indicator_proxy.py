@@ -146,7 +146,7 @@ class UsedIndicatorDescription(BaseModel):
     
     values: ta.IndicatorResult  # Cached indicator values (IndicatorResult object)
     visible: bool = True  # Visibility flag for frontend display
-    series_info: List[Dict[str, Any]]  # List of series descriptions: [{'name': str, 'is_price': bool, 'color': str, 'lineWidth': int, 'lineStyle': int}, ...]
+    series_info: List[Dict[str, Any]]  # List of series descriptions: [{'name': str, 'is_price': bool, 'color': str, 'lineWidth': int, 'lineStyle': int, 'displayType': str, 'color_up': str|None, 'color_down': str|None}, ...]
 
 
 class ta_proxy(ABC):
@@ -238,7 +238,15 @@ class ta_proxy(ABC):
                     # Convert 'is_price' to 'type'
                     is_price = s.get('is_price', True)
                     series_type = 'price' if is_price else None
-                    result.append({'name': s.get('name', str(s)), 'type': series_type})
+                    entry = {'name': s.get('name', str(s)), 'type': series_type}
+                    # Pass through display properties if present
+                    if 'displayType' in s:
+                        entry['displayType'] = s['displayType']
+                    if 'color_up' in s:
+                        entry['color_up'] = s['color_up']
+                    if 'color_down' in s:
+                        entry['color_down'] = s['color_down']
+                    result.append(entry)
                 else:
                     result.append({'name': str(s), 'type': 'price'})
             return result
@@ -278,7 +286,9 @@ class ta_proxy(ABC):
             kwargs: Indicator parameters (used to determine series type for 'as_source')
             
         Returns:
-            List of series info dictionaries: [{'name': str, 'is_price': bool, 'color': str, 'lineWidth': int, 'lineStyle': int}, ...]
+            List of series info dictionaries:
+            [{'name': str, 'is_price': bool, 'color': str, 'lineWidth': int, 'lineStyle': int,
+              'displayType': str, 'color_up': str|None, 'color_down': str|None}, ...]
         """
         # Get output series information (list of dicts with 'name' and 'type')
         try:
@@ -325,13 +335,25 @@ class ta_proxy(ABC):
             # Get line settings cyclically
             line_setting = lines_settings[i % len(lines_settings)]
             
-            result.append({
+            # Determine displayType from series metadata (default: 'line')
+            display_type = series_info.get('displayType', 'line')
+            
+            entry = {
                 'name': series_name,
                 'is_price': series_is_price,
                 'color': line_setting['color'],
                 'lineWidth': line_setting['lineWidth'],
-                'lineStyle': line_setting['lineStyle']
-            })
+                'lineStyle': line_setting['lineStyle'],
+                'displayType': display_type,
+            }
+            
+            # Add histogram-specific color properties if present
+            if 'color_up' in series_info:
+                entry['color_up'] = series_info['color_up']
+            if 'color_down' in series_info:
+                entry['color_down'] = series_info['color_down']
+            
+            result.append(entry)
         
         return result
     
@@ -533,7 +555,11 @@ class ta_proxy_talib(ta_proxy):
         # Multi-series indicators
         'MACD': {
             'is_price': False,
-            'series': [{'name': 'macd'}, {'name': 'macdsignal'}, {'name': 'macdhist'}],
+            'series': [
+                {'name': 'macd'},
+                {'name': 'macdsignal'},
+                {'name': 'macdhist', 'displayType': 'histogram', 'color_up': '#26a69a', 'color_down': '#ef5350'},
+            ],
         },
         'BBANDS': {
             'is_price': True,
@@ -878,6 +904,14 @@ class ta_proxy_pyita(ta_proxy):
         # Bollinger Bands - custom colors for upper/middle/lower bands
         'bollinger_bands': {
             'lines': '#006666;2;solid|#B0B0B0;2;solid|#006666;2;solid'
+        },
+        # MACD - histogram for hist series
+        'macd': {
+            'output_series': [
+                {'name': 'macd', 'type': 'none'},
+                {'name': 'signal', 'type': 'none'},
+                {'name': 'hist', 'type': 'none', 'displayType': 'histogram', 'color_up': '#26a69a', 'color_down': '#ef5350'},
+            ]
         },
     }
     

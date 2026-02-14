@@ -1982,6 +1982,7 @@ class Broker(ABC):
         while True:
             self.order_processing()
             status, bar_data = self.fetch_next_bar(quotes_data, ta_proxies)
+            self.fetch_new_trades()
             
             if status == BarStatus.FINISHED:
                 return None
