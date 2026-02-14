@@ -114,7 +114,7 @@ class Task(Objects2Redis):
             
         self._list.clear_result(self.id)
     
-    def send_message(self, type: MessageType, data: Dict) -> None:
+    def send_message(self, type: MessageType, data: Dict, broker_time: Optional[str] = None) -> None:
         """
         Send message to Redis pub/sub channel for this task.
         
@@ -123,6 +123,7 @@ class Task(Objects2Redis):
             data: Dictionary with message data. Structure depends on type:
                 - For MessageType.MESSAGE: must contain 'level' (str) and 'message' (str)
                 - For MessageType.EVENT: must contain 'event' (str)
+            broker_time: Broker time in ISO format (optional, None if not available)
             
         Raises:
             ValueError: If data structure is invalid for the given type
@@ -130,9 +131,9 @@ class Task(Objects2Redis):
         """
         if self._list is None:
             raise RuntimeError("Task is not associated with a list. Cannot send message.")
-        self._list.send_message(self.id, type, data)
+        self._list.send_message(self.id, type, data, broker_time)
     
-    def message(self, message: str, level: str = "info") -> None:
+    def message(self, message: str, level: str = "info", broker_time: Optional[str] = None) -> None:
         """
         Send message to user via Redis pub/sub channel.
         Convenience method that wraps send_message for user messages.
@@ -141,11 +142,12 @@ class Task(Objects2Redis):
             message: Message text to display to user
             level: Message level (optional, default: "info")
                   Valid levels: info, warning, error, success, debug
+            broker_time: Broker time in ISO format (optional, None if not available)
             
         Raises:
             RuntimeError: If task is not associated with a list or publish fails
         """
-        self.send_message(MessageType.MESSAGE, {"level": level, "message": message})
+        self.send_message(MessageType.MESSAGE, {"level": level, "message": message}, broker_time)
     
     def backtesting_error(self, message: str) -> None:
         """
@@ -159,12 +161,8 @@ class Task(Objects2Redis):
         Raises:
             RuntimeError: If task is not associated with a list or publish fails
         """
-        if self._list is None:
-            raise RuntimeError("Task is not associated with a list. Cannot send message.")
-        # Send event notification
-        self._list.send_message(self.id, MessageType.EVENT, {"event": "backtesting_error"})
-        # Send error message to user
-        self._list.send_message(self.id, MessageType.MESSAGE, {"level": "error", "message": message})
+        self.send_message(MessageType.EVENT, {"event": "backtesting_error"})
+        self.message(message, "error")
 
 
 class TaskList(Objects2RedisList[Task]):

@@ -1512,9 +1512,13 @@ class Broker(ABC):
             logger.debug(message)
         else:
             logger.info(message)
+        
+        # Convert broker time to ISO format if available
+        broker_time_iso = None
+        if self.current_time is not None:
+            broker_time_iso = datetime64_to_iso(self.current_time)
             
-        if hasattr(self.task, 'send_message'):
-            self.task.send_message(MessageType.MESSAGE, {"level": level, "message": message})
+        self.task.message(message, level, broker_time=broker_time_iso)
     
     def update_state(self, results: Optional['TaskResults'], is_finish: bool = False) -> None:
         """

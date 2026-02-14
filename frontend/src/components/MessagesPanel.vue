@@ -10,7 +10,8 @@
         class="message-item"
         :class="`message-${message.level}`"
       >
-        <span class="message-time">{{ formatTime(message.timestamp) }}</span>
+        <span class="message-time">{{ formatLocalTime(message.timestamp) }}</span>
+        <span class="message-broker-time">{{ message.broker_time ? formatBrokerTime(message.broker_time) : '' }}</span>
         <span class="message-level">{{ message.level.toUpperCase() }}</span>
         <span class="message-text">{{ message.message }}</span>
       </div>
@@ -46,14 +47,33 @@ export default {
     this.messagesContainer = this.$refs.messagesContainer
   },
   methods: {
-    formatTime(timestamp) {
+    formatLocalTime(timestamp) {
       if (!timestamp) return ''
       const date = new Date(timestamp)
-      return date.toLocaleTimeString('en-US', {
-        hour12: false,
+      // Use local time with timezone conversion
+      return date.toLocaleString(undefined, {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
         hour: '2-digit',
         minute: '2-digit',
-        second: '2-digit'
+        second: '2-digit',
+        hour12: false
+      })
+    },
+    formatBrokerTime(timestamp) {
+      if (!timestamp) return ''
+      const date = new Date(timestamp)
+      // Use local format but without timezone conversion - display UTC time in local format
+      return date.toLocaleString(undefined, {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+        timeZone: 'UTC'
       })
     },
     isAtBottom() {
@@ -116,7 +136,14 @@ export default {
 .message-time {
   color: var(--text-tertiary);
   font-size: 11px;
-  min-width: 80px;
+  min-width: 160px;
+  flex-shrink: 0;
+}
+
+.message-broker-time {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  min-width: 160px;
   flex-shrink: 0;
 }
 

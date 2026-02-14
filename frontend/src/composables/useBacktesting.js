@@ -183,6 +183,7 @@ export function useBacktesting(taskId) {
             if (data.level && data.message) {
               wsMessages.value.push({
                 timestamp: packet.timestamp,
+                broker_time: packet.broker_time || null,
                 level: data.level,
                 message: data.message
               })

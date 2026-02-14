@@ -467,12 +467,12 @@ class Objects2RedisList(ABC, Generic[T]):
         else:
             raise ValueError(f"Unknown message type: {type}")
     
-    def send_message(self, obj_id: int, type: MessageType, data: Dict) -> None:
+    def send_message(self, obj_id: int, type: MessageType, data: Dict, broker_time: Optional[str] = None) -> None:
         """
         Send message to Redis pub/sub channel for the object.
         
         Channel name format: {list_key()}:messages:{obj_id}
-        Message format: JSON with timestamp, type, and data.
+        Message format: JSON with timestamp, type, data, and broker_time.
         
         Args:
             obj_id: Object ID
@@ -480,6 +480,7 @@ class Objects2RedisList(ABC, Generic[T]):
             data: Dictionary with message data. Structure depends on type:
                 - For MessageType.MESSAGE: must contain 'level' (str) and 'message' (str)
                 - For MessageType.EVENT: must contain 'event' (str)
+            broker_time: Broker time in ISO format (optional, None if not available)
             
         Raises:
             ValueError: If data structure is invalid for the given type
@@ -497,7 +498,8 @@ class Objects2RedisList(ABC, Generic[T]):
         message_data = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "type": type.value,
-            "data": data
+            "data": data,
+            "broker_time": broker_time
         }
         
         # Serialize to JSON
