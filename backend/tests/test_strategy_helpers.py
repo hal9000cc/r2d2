@@ -171,7 +171,7 @@ def create_broker_and_strategy(
     # Mock task._list.send_message to raise exception with message info instead of failing silently
     # This helps catch backtesting errors in tests with informative error messages
     mock_list = Mock()
-    def send_message_side_effect(obj_id, msg_type, data):
+    def send_message_side_effect(obj_id, msg_type, data, broker_time=None):
         """Side effect for mocked send_message that raises exception with message info."""
         if msg_type == MessageType.MESSAGE:
             # For error messages, raise exception with the actual error message

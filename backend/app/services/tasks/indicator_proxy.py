@@ -30,105 +30,75 @@ DEFAULT_LINE_WIDTH = 2
 DEFAULT_LINE_STYLE = 'solid'  # Maps to 0
 
 
-def parse_lines_config(lines_str: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+def parse_lines_dict(lines_dict: Dict[str, Dict[str, Any]], valid_line_names: List[str]) -> Dict[str, Dict[str, Any]]:
     """
-    Parse lines configuration string into list of line settings.
+    Parse lines configuration dictionary into validated line settings.
     
-    Format: "#color;width;style|#color;width;style|..."
-    - Color: hex string (e.g., '#FF5733')
-    - Width: number 1-10 (default: 2)
-    - Style: solid|dotted|dashed|large-dashed|sparse-dotted (default: solid)
-    
-    Parameters can be omitted (from right to left):
-    - "#FF5733" - only color, width=2, style=solid
-    - "#FF5733;3" - color and width, style=solid
-    - "#FF5733;3;dashed" - all parameters
+    Format: {'line_name': {'visible': bool, 'color': str, 'lineWidth': int, 'lineStyle': str}, ...}
+    - visible: bool (default: True if not specified)
+    - color: hex string (e.g., '#FF5733') - optional, uses generate_random_color() if not specified
+    - lineWidth: int 1-10 (default: 2) - optional
+    - lineStyle: str - solid|dotted|dashed|large-dashed|sparse-dotted (default: 'solid') - optional
     
     Args:
-        lines_str: Lines configuration string
+        lines_dict: Lines configuration dictionary
+        valid_line_names: List of valid line names for this indicator (from IndicatorResult)
         
     Returns:
-        Tuple of (line_settings, errors):
-        - line_settings: List of line settings: [{'color': str, 'lineWidth': int, 'lineStyle': int}, ...]
-          Always returns valid settings (uses defaults on parse error)
-        - errors: List of error messages (empty if no errors)
+        Dictionary of validated line settings: {'line_name': {'visible': bool, 'color': str, 'lineWidth': int, 'lineStyle': int}, ...}
+        
+    Raises:
+        ValueError: If unknown line name is specified
     """
-    errors = []
+    if not isinstance(lines_dict, dict):
+        raise ValueError(f"lines must be a dictionary, got {type(lines_dict).__name__}")
     
-    if not lines_str or not isinstance(lines_str, str):
-        error_msg = f"Invalid lines config: empty or invalid input"
-        logger.error(error_msg)
-        errors.append(error_msg)
-        return [{'color': generate_random_color(), 'lineWidth': DEFAULT_LINE_WIDTH, 'lineStyle': LINE_STYLE_MAP[DEFAULT_LINE_STYLE]}], errors
+    valid_names_set = set(valid_line_names)
+    result = {}
     
-    result = []
-    lines = lines_str.split('|')
-    
-    for line_config in lines:
-        line_config = line_config.strip()
-        if not line_config:
-            continue
+    for line_name, line_settings in lines_dict.items():
+        if not isinstance(line_settings, dict):
+            raise ValueError(f"Line settings for '{line_name}' must be a dictionary, got {type(line_settings).__name__}")
         
-        parts = [p.strip() for p in line_config.split(';')]
+        if line_name not in valid_names_set:
+            raise ValueError(
+                f"Unknown line name '{line_name}' for indicator. "
+                f"Valid names: {', '.join(valid_line_names)}"
+            )
         
-        # Parse color (required, first part)
-        if not parts or not parts[0]:
-            error_msg = f"Invalid lines config: missing color in '{line_config}'"
-            logger.error(error_msg)
-            errors.append(error_msg)
-            result.append({'color': generate_random_color(), 'lineWidth': DEFAULT_LINE_WIDTH, 'lineStyle': LINE_STYLE_MAP[DEFAULT_LINE_STYLE]})
-            continue
+        # Validate and apply defaults
+        visible = line_settings.get('visible', True)
+        if not isinstance(visible, bool):
+            raise ValueError(f"Line 'visible' for '{line_name}' must be a boolean, got {type(visible).__name__}")
         
-        color = parts[0]
-        # Validate hex color format
-        if not re.match(r'^#[0-9A-Fa-f]{6}$', color):
-            error_msg = f"Invalid lines config: invalid color format '{color}' in '{line_config}'"
-            logger.error(error_msg)
-            errors.append(error_msg)
-            result.append({'color': generate_random_color(), 'lineWidth': DEFAULT_LINE_WIDTH, 'lineStyle': LINE_STYLE_MAP[DEFAULT_LINE_STYLE]})
-            continue
+        color = line_settings.get('color')
+        if color is not None:
+            if not isinstance(color, str) or not re.match(r'^#[0-9A-Fa-f]{6}$', color):
+                raise ValueError(f"Line 'color' for '{line_name}' must be a hex color string (e.g., '#FF5733'), got {color}")
+        else:
+            color = generate_random_color()
         
-        # Parse width (optional, second part)
-        line_width = DEFAULT_LINE_WIDTH
-        if len(parts) >= 2 and parts[1]:
-            try:
-                width = int(parts[1])
-                if 1 <= width <= 10:
-                    line_width = width
-                else:
-                    error_msg = f"Invalid lines config: width must be 1-10, got '{parts[1]}' in '{line_config}'"
-                    logger.error(error_msg)
-                    errors.append(error_msg)
-            except ValueError:
-                error_msg = f"Invalid lines config: invalid width '{parts[1]}' in '{line_config}'"
-                logger.error(error_msg)
-                errors.append(error_msg)
+        line_width = line_settings.get('lineWidth', DEFAULT_LINE_WIDTH)
+        if not isinstance(line_width, int) or not (1 <= line_width <= 10):
+            raise ValueError(f"Line 'lineWidth' for '{line_name}' must be an integer 1-10, got {line_width}")
         
-        # Parse style (optional, third part)
-        line_style = LINE_STYLE_MAP[DEFAULT_LINE_STYLE]
-        if len(parts) >= 3 and parts[2]:
-            style_str = parts[2].lower()
-            if style_str in LINE_STYLE_MAP:
-                line_style = LINE_STYLE_MAP[style_str]
-            else:
-                error_msg = f"Invalid lines config: invalid style '{parts[2]}' in '{line_config}', valid: {list(LINE_STYLE_MAP.keys())}"
-                logger.error(error_msg)
-                errors.append(error_msg)
+        line_style_str = line_settings.get('lineStyle', DEFAULT_LINE_STYLE)
+        if not isinstance(line_style_str, str) or line_style_str.lower() not in LINE_STYLE_MAP:
+            raise ValueError(
+                f"Line 'lineStyle' for '{line_name}' must be one of {list(LINE_STYLE_MAP.keys())}, got {line_style_str}"
+            )
+        line_style = LINE_STYLE_MAP[line_style_str.lower()]
         
-        result.append({
+        result[line_name] = {
+            'visible': visible,
             'color': color,
             'lineWidth': line_width,
             'lineStyle': line_style
-        })
+        }
     
-    # If no valid lines parsed, return default
-    if not result:
-        error_msg = f"Failed to parse lines config: '{lines_str}', using defaults"
-        logger.error(error_msg)
-        errors.append(error_msg)
-        return [{'color': generate_random_color(), 'lineWidth': DEFAULT_LINE_WIDTH, 'lineStyle': LINE_STYLE_MAP[DEFAULT_LINE_STYLE]}], errors
-    
-    return result, errors
+    return result
+
+
 
 
 class IndicatorDescription(BaseModel):
@@ -277,19 +247,21 @@ class ta_proxy(ABC):
             return True
         return False
     
-    def _build_series_info(self, name: str, lines_config: Optional[str] = None, kwargs: dict = None) -> List[Dict[str, Any]]:
+    def _build_series_info(self, name: str, lines_config: Optional[Dict[str, Dict[str, Any]]] = None, kwargs: dict = None) -> List[Dict[str, Any]]:
         """
         Build series info from indicator metadata and lines configuration.
         
         Args:
             name: Indicator name
-            lines_config: Optional lines configuration string from kwargs (has priority)
+            lines_config: Optional lines configuration dictionary from kwargs (has priority)
+                Format: {'line_name': {'visible': bool, 'color': str, 'lineWidth': int, 'lineStyle': str}, ...}
             kwargs: Indicator parameters (used to determine series type for 'as_source')
             
         Returns:
             List of series info dictionaries:
             [{'name': str, 'is_price': bool, 'color': str, 'lineWidth': int, 'lineStyle': int,
               'displayType': str, 'color_up': str|None, 'color_down': str|None}, ...]
+            Only includes series with visible=True (or not specified in lines_config)
         """
         # Get output series information (list of dicts with 'name' and 'type')
         try:
@@ -298,30 +270,21 @@ class ta_proxy(ABC):
             # Indicator not found, use generic name
             output_series = [{'name': name, 'type': 'price'}]
         
-        # Get metadata for indicator
-        indicator_info = self._indicator_metadata.get(name, {})
+        # Get valid line names from output_series
+        valid_line_names = [s.get('name', f'series{i}') for i, s in enumerate(output_series)]
         
-        # Parse lines configuration
-        lines_settings = None
-        all_parse_errors = []
-        
-        # Priority: lines_config (from kwargs) > indicator description > defaults
+        # Parse lines configuration dictionary
+        lines_settings = {}
         if lines_config:
-            lines_settings, parse_errors = parse_lines_config(lines_config)
-            all_parse_errors.extend(parse_errors)
-        elif 'lines' in indicator_info:
-            lines_settings, parse_errors = parse_lines_config(indicator_info['lines'])
-            all_parse_errors.extend(parse_errors)
-        
-        # If no lines settings, use defaults
-        if not lines_settings:
-            default_line = {'color': generate_random_color(), 'lineWidth': DEFAULT_LINE_WIDTH, 'lineStyle': LINE_STYLE_MAP[DEFAULT_LINE_STYLE]}
-            lines_settings = [default_line]
-        
-        # Send parse errors to frontend if broker is available
-        if all_parse_errors and self.broker:
-            for error_msg in all_parse_errors:
-                self.broker.logging(f"Indicator '{name}': {error_msg}", 'error')
+            try:
+                lines_settings = parse_lines_dict(lines_config, valid_line_names)
+            except ValueError as e:
+                error_msg = f"Invalid lines configuration for indicator '{name}': {e}"
+                if self.broker:
+                    self.broker.logging(error_msg, 'error')
+                else:
+                    logger.error(error_msg)
+                # Continue with empty lines_settings (will use defaults)
         
         # Build series info list
         result = []
@@ -330,11 +293,27 @@ class ta_proxy(ABC):
             series_name = series_info.get('name', f'series{i}')
             series_type = series_info.get('type')
             
+            # Check if this series should be visible
+            if series_name in lines_settings:
+                if not lines_settings[series_name]['visible']:
+                    # Skip this series if visible=False
+                    continue
+                line_setting = lines_settings[series_name]
+            else:
+                # Series not in lines_config - use defaults and visible=True
+                # Check for hardcoded color in series_info, otherwise use generate_random_color()
+                default_color = series_info.get('color')
+                if not default_color:
+                    default_color = generate_random_color()
+                
+                line_setting = {
+                    'color': default_color,
+                    'lineWidth': DEFAULT_LINE_WIDTH,
+                    'lineStyle': LINE_STYLE_MAP[DEFAULT_LINE_STYLE]
+                }
+            
             # Determine is_price using overridable method
             series_is_price = self._determine_is_price_for_series(series_type, name, kwargs or {})
-            
-            # Get line settings cyclically
-            line_setting = lines_settings[i % len(lines_settings)]
             
             # Determine displayType from series metadata (default: 'line')
             display_type = series_info.get('displayType', 'line')
@@ -510,6 +489,7 @@ class ta_proxy(ABC):
         Args:
             name: Indicator name (e.g., 'SMA', 'EMA', 'RSI')
             **kwargs: Indicator parameters (may include 'lines' for line styling)
+                lines format: {'line_name': {'visible': bool, 'color': str, 'lineWidth': int, 'lineStyle': str}, ...}
             
         Returns:
             IndicatorResult object with indicator values sliced to current bar
@@ -578,16 +558,16 @@ class ta_proxy_talib(ta_proxy):
     VALID_POSITIONAL_PARAMS = {'open', 'high', 'low', 'close', 'volume', 'real', 'real0', 'real1', 'periods'}
     
     # Dictionary of indicator descriptions with series names, price chart displayability, and line settings
-    # Format: {'is_price': bool, 'lines': Optional[str], 'series': Optional[List[Dict]]}
+    # Format: {'is_price': bool, 'series': Optional[List[Dict]]}
     # If 'series' is provided, uses those names. If not, generates generic names (series0, series1, ...)
     # Each series can override 'is_price' by including it in its dict
-    # Lines priority: kwargs.lines > indicator.lines > defaults
-    # Lines format: "#color;width;style|#color;width;style|..."
-    #   - Color: hex string (e.g., '#FF5733')
-    #   - Width: number 1-10 (default: 2)
-    #   - Style: solid|dotted|dashed|large-dashed|sparse-dotted (default: solid)
-    #   - Parameters can be omitted from right: "#FF5733" or "#FF5733;3" or "#FF5733;3;dashed"
-    #   - Multiple lines separated by '|', applied cyclically to series
+    # Lines configuration is passed via kwargs['lines'] with format:
+    #   {'line_name': {'visible': bool, 'color': str, 'lineWidth': int, 'lineStyle': str}, ...}
+    #   - visible: bool (default: True if not specified)
+    #   - color: hex string (e.g., '#FF5733') - optional, uses generate_random_color() if not specified
+    #   - lineWidth: int 1-10 (default: 2) - optional
+    #   - lineStyle: str - solid|dotted|dashed|large-dashed|sparse-dotted (default: 'solid') - optional
+    # Line names must match those in IndicatorResult (e.g., 'macd', 'macdsignal', 'macdhist' for MACD)
     # Names are taken from TA-Lib documentation (Outputs section)
     INDICATOR_SERIES_NAMES = {
         # Multi-series indicators
@@ -601,7 +581,6 @@ class ta_proxy_talib(ta_proxy):
         },
         'BBANDS': {
             'is_price': True,
-            'lines': '#006666;2;solid|#B0B0B0;2;solid|#006666;2;solid',
             'series': [{'name': 'upperband'}, {'name': 'middleband'}, {'name': 'lowerband'}],
         },
         'STOCH': {
@@ -937,12 +916,9 @@ class ta_proxy_pyita(ta_proxy):
     # Dictionary with custom visualization settings for pyita indicators
     # Only contains indicators that need custom line styling (colors, widths, styles)
     # All other metadata (names, types) is retrieved from pyita.metadata()
-    # Lines priority: kwargs.lines > indicator.lines > defaults
+    # Lines configuration is passed via kwargs['lines'] with format:
+    #   {'line_name': {'visible': bool, 'color': str, 'lineWidth': int, 'lineStyle': str}, ...}
     INDICATOR_SERIES_NAMES = {
-        # Bollinger Bands - custom colors for upper/middle/lower bands
-        'bollinger_bands': {
-            'lines': '#006666;2;solid|#B0B0B0;2;solid|#006666;2;solid'
-        },
         # MACD - histogram for hist series
         'macd': {
             'output_series': [

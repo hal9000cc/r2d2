@@ -113,13 +113,11 @@ class TestBuySltpFullPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, all stops trigger on bar 1
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: both stops trigger simultaneously (3 trades total - entry + stop1 + stop2)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 3, "Both stops should trigger simultaneously on bar 1"
-        # Trades from bar 2 are processed after loop completion, check final broker state
-        assert len(broker.trades) == 3, "No execution on bar 2 (3 trades total: entry + stop1 + stop2)"
+        # Market entry created on bar 0, executes on bar 1. Both stops trigger on bar 1.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 3, "Entry + both stops trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "No new trades on bar 2"
+        assert len(broker.trades) == 3, "Total 3 trades: entry + stop1 + stop2"
         
         # Check final state: deal should be fully closed
         deal = broker.get_deal(method_result.deal_id)
@@ -127,9 +125,6 @@ class TestBuySltpFullPositionClosure:
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
-        
-        # Check total trades count
-        assert len(broker.trades) == 3, f"Expected 3 trades total (entry + stop1 + stop2), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
         assert abs(deal.profit - expected_profit) < 1e-6, \
@@ -239,13 +234,11 @@ class TestBuySltpFullPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, all takes trigger on bar 1
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: both takes trigger simultaneously (3 trades total - entry + take1 + take2)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 3, "Both takes should trigger simultaneously on bar 1"
-        # Trades from bar 2 are processed after loop completion, check final broker state
-        assert len(broker.trades) == 3, "No execution on bar 2 (3 trades total: entry + take1 + take2)"
+        # Market entry created on bar 0, executes on bar 1. Both takes trigger on bar 1.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 3, "Entry + both takes trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "No new trades on bar 2"
+        assert len(broker.trades) == 3, "Total 3 trades: entry + take1 + take2"
         
         # Check final state: deal should be fully closed
         deal = broker.get_deal(method_result.deal_id)
@@ -254,8 +247,6 @@ class TestBuySltpFullPositionClosure:
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
-        # Check total trades count
-        assert len(broker.trades) == 3, f"Expected 3 trades total (entry + take1 + take2), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
         assert abs(deal.profit - expected_profit) < 1e-6, \
@@ -377,16 +368,12 @@ class TestBuySltpFullPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, stops trigger sequentially
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: first stop triggers (2 trades total - entry + stop1)
-        # Bar 2: second stop triggers (3 trades total - entry + stop1 + stop2)
-        # Bar 3: third stop triggers (4 trades total - entry + stop1 + stop2 + stop3)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First stop should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 3, "Second stop should trigger on bar 2"
-        # Trades from bar 3 are processed after loop completion, check final broker state
-        assert len(broker.trades) == 4, "Third stop should trigger on bar 3 (4 trades total: entry + stop1 + stop2 + stop3)"
+        # Market entry created on bar 0, executes on bar 1. Stops trigger sequentially.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry + first stop trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "Second stop triggers on bar 2"
+        assert collected_data[3]['trades_count'] == 4, "Third stop triggers on bar 3"
+        assert len(broker.trades) == 4, "Total 4 trades: entry + stop1 + stop2 + stop3"
         
         # Check final state: deal should be fully closed
         deal = broker.get_deal(method_result.deal_id)
@@ -395,8 +382,6 @@ class TestBuySltpFullPositionClosure:
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
-        # Check total trades count
-        assert len(broker.trades) == 4, f"Expected 4 trades total (entry + stop1 + stop2 + stop3), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
         assert abs(deal.profit - expected_profit) < 1e-6, \
@@ -518,16 +503,12 @@ class TestBuySltpFullPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, takes trigger sequentially
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: first take triggers (2 trades total - entry + take1)
-        # Bar 2: second take triggers (3 trades total - entry + take1 + take2)
-        # Bar 3: third take triggers (4 trades total - entry + take1 + take2 + take3)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First take should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 3, "Second take should trigger on bar 2"
-        # Trades from bar 3 are processed after loop completion, check final broker state
-        assert len(broker.trades) == 4, "Third take should trigger on bar 3 (4 trades total: entry + take1 + take2 + take3)"
+        # Market entry created on bar 0, executes on bar 1. Takes trigger sequentially.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry + first take trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "Second take triggers on bar 2"
+        assert collected_data[3]['trades_count'] == 4, "Third take triggers on bar 3"
+        assert len(broker.trades) == 4, "Total 4 trades: entry + take1 + take2 + take3"
         
         # Check final state: deal should be fully closed
         deal = broker.get_deal(method_result.deal_id)
@@ -536,8 +517,6 @@ class TestBuySltpFullPositionClosure:
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
-        # Check total trades count
-        assert len(broker.trades) == 4, f"Expected 4 trades total (entry + take1 + take2 + take3), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
         assert abs(deal.profit - expected_profit) < 1e-6, \
@@ -651,13 +630,11 @@ class TestSellSltpFullPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, all stops trigger on bar 1
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: both stops trigger simultaneously (3 trades total - entry + stop1 + stop2)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 3, "Both stops should trigger simultaneously on bar 1"
-        # Trades from bar 2 are processed after loop completion, check final broker state
-        assert len(broker.trades) == 3, "No execution on bar 2 (3 trades total: entry + stop1 + stop2)"
+        # Market entry created on bar 0, executes on bar 1. Both stops trigger on bar 1.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 3, "Entry + both stops trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "No new trades on bar 2"
+        assert len(broker.trades) == 3, "Total 3 trades: entry + stop1 + stop2"
         
         # Check final state: deal should be fully closed
         deal = broker.get_deal(method_result.deal_id)
@@ -665,9 +642,6 @@ class TestSellSltpFullPositionClosure:
         assert deal.quantity == 0.0, f"Deal should be closed (quantity=0), got {deal.quantity}"
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
-        
-        # Check total trades count
-        assert len(broker.trades) == 3, f"Expected 3 trades total (entry + stop1 + stop2), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
         assert abs(deal.profit - expected_profit) < 1e-6, \
@@ -777,13 +751,11 @@ class TestSellSltpFullPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, all takes trigger on bar 1
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: both takes trigger simultaneously (3 trades total - entry + take1 + take2)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 3, "Both takes should trigger simultaneously on bar 1"
-        # Trades from bar 2 are processed after loop completion, check final broker state
-        assert len(broker.trades) == 3, "No execution on bar 2 (3 trades total: entry + take1 + take2)"
+        # Market entry created on bar 0, executes on bar 1. Both takes trigger on bar 1.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 3, "Entry + both takes trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "No new trades on bar 2"
+        assert len(broker.trades) == 3, "Total 3 trades: entry + take1 + take2"
         
         # Check final state: deal should be fully closed
         deal = broker.get_deal(method_result.deal_id)
@@ -792,8 +764,6 @@ class TestSellSltpFullPositionClosure:
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
-        # Check total trades count
-        assert len(broker.trades) == 3, f"Expected 3 trades total (entry + take1 + take2), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
         assert abs(deal.profit - expected_profit) < 1e-6, \
@@ -915,16 +885,12 @@ class TestSellSltpFullPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, stops trigger sequentially
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: first stop triggers (2 trades total - entry + stop1)
-        # Bar 2: second stop triggers (3 trades total - entry + stop1 + stop2)
-        # Bar 3: third stop triggers (4 trades total - entry + stop1 + stop2 + stop3)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First stop should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 3, "Second stop should trigger on bar 2"
-        # Trades from bar 3 are processed after loop completion, check final broker state
-        assert len(broker.trades) == 4, "Third stop should trigger on bar 3 (4 trades total: entry + stop1 + stop2 + stop3)"
+        # Market entry created on bar 0, executes on bar 1. Stops trigger sequentially.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry + first stop trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "Second stop triggers on bar 2"
+        assert collected_data[3]['trades_count'] == 4, "Third stop triggers on bar 3"
+        assert len(broker.trades) == 4, "Total 4 trades: entry + stop1 + stop2 + stop3"
         
         # Check final state: deal should be fully closed
         deal = broker.get_deal(method_result.deal_id)
@@ -933,8 +899,6 @@ class TestSellSltpFullPositionClosure:
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
-        # Check total trades count
-        assert len(broker.trades) == 4, f"Expected 4 trades total (entry + stop1 + stop2 + stop3), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
         assert abs(deal.profit - expected_profit) < 1e-6, \
@@ -1056,16 +1020,12 @@ class TestSellSltpFullPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, takes trigger sequentially
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: first take triggers (2 trades total - entry + take1)
-        # Bar 2: second take triggers (3 trades total - entry + take1 + take2)
-        # Bar 3: third take triggers (4 trades total - entry + take1 + take2 + take3)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First take should trigger on bar 1"
-        assert collected_data[3]['trades_count'] == 3, "Second take should trigger on bar 2"
-        # Trades from bar 3 are processed after loop completion, check final broker state
-        assert len(broker.trades) == 4, "Third take should trigger on bar 3 (4 trades total: entry + take1 + take2 + take3)"
+        # Market entry created on bar 0, executes on bar 1. Takes trigger sequentially.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry + first take trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 3, "Second take triggers on bar 2"
+        assert collected_data[3]['trades_count'] == 4, "Third take triggers on bar 3"
+        assert len(broker.trades) == 4, "Total 4 trades: entry + take1 + take2 + take3"
         
         # Check final state: deal should be fully closed
         deal = broker.get_deal(method_result.deal_id)
@@ -1074,8 +1034,6 @@ class TestSellSltpFullPositionClosure:
         assert deal.is_closed, "Deal should be closed"
         assert deal.profit is not None, "Deal profit should be calculated"
         
-        # Check total trades count
-        assert len(broker.trades) == 4, f"Expected 4 trades total (entry + take1 + take2 + take3), got {len(broker.trades)}"
         
         # Check actual profit matches expected calculation
         assert abs(deal.profit - expected_profit) < 1e-6, \
@@ -1171,12 +1129,10 @@ class TestBuySltpPartialPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, first stop triggers on bar 1
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: first stop triggers (2 trades total - entry + stop1)
-        # After backtesting ends: automatic closure closes remaining position (3 trades total)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First stop should trigger on bar 1"
+        # Market entry created on bar 0, executes on bar 1. First stop triggers on bar 1.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry + first stop trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "No new trades on bar 2"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         deal = broker.get_deal(method_result.deal_id)
@@ -1270,12 +1226,10 @@ class TestBuySltpPartialPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, first take triggers on bar 1
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: first take triggers (2 trades total - entry + take1)
-        # After backtesting ends: automatic closure closes remaining position (3 trades total)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First take should trigger on bar 1"
+        # Market entry created on bar 0, executes on bar 1. First take triggers on bar 1.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry + first take trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "No new trades on bar 2"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         deal = broker.get_deal(method_result.deal_id)
@@ -1373,12 +1327,10 @@ class TestSellSltpPartialPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, first stop triggers on bar 1
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: first stop triggers (2 trades total - entry + stop1)
-        # After backtesting ends: automatic closure closes remaining position (3 trades total)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First stop should trigger on bar 1"
+        # Market entry created on bar 0, executes on bar 1. First stop triggers on bar 1.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry + first stop trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "No new trades on bar 2"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         deal = broker.get_deal(method_result.deal_id)
@@ -1472,12 +1424,10 @@ class TestSellSltpPartialPositionClosure:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, first take triggers on bar 1
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: first take triggers (2 trades total - entry + take1)
-        # After backtesting ends: automatic closure closes remaining position (3 trades total)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First take should trigger on bar 1"
+        # Market entry created on bar 0, executes on bar 1. First take triggers on bar 1.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry + first take trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "No new trades on bar 2"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         deal = broker.get_deal(method_result.deal_id)
@@ -1593,8 +1543,9 @@ class TestBuySltpOrderCancellation:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
+        # Market entry created on bar 0, executes on bar 1
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 1, "Entry executes on bar 1"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         # (stops/takes were canceled, so deal remained open and was autoclosed)
@@ -1803,8 +1754,9 @@ class TestSellSltpOrderCancellation:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
+        # Market entry created on bar 0, executes on bar 1
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 1, "Entry executes on bar 1"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         # (stops/takes were canceled, so deal remained open and was autoclosed)
@@ -2003,9 +1955,10 @@ class TestBuySltpUnclosedDealsAtEnd:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, stops don't trigger
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "No execution on bar 1 (stops don't trigger)"
+        # Market entry created on bar 0, executes on bar 1. Stops don't trigger.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 1, "Entry executes on bar 1, stops don't trigger"
+        assert collected_data[2]['trades_count'] == 1, "No new trades on bar 2"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         deal = broker.get_deal(method_result.deal_id)
@@ -2090,9 +2043,10 @@ class TestBuySltpUnclosedDealsAtEnd:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, takes don't trigger
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "No execution on bar 1 (takes don't trigger)"
+        # Market entry created on bar 0, executes on bar 1. Takes don't trigger.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 1, "Entry executes on bar 1, takes don't trigger"
+        assert collected_data[2]['trades_count'] == 1, "No new trades on bar 2"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         deal = broker.get_deal(method_result.deal_id)
@@ -2178,12 +2132,10 @@ class TestBuySltpUnclosedDealsAtEnd:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, first stop triggers on bar 1
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: first stop triggers (2 trades total - entry + stop1)
-        # After backtesting ends: automatic closure closes remaining position (3 trades total)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First stop should trigger on bar 1"
+        # Market entry created on bar 0, executes on bar 1. First stop triggers on bar 1.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry + first stop trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "No new trades on bar 2"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         deal = broker.get_deal(method_result.deal_id)
@@ -2280,9 +2232,10 @@ class TestSellSltpUnclosedDealsAtEnd:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, stops don't trigger
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "No execution on bar 1 (stops don't trigger)"
+        # Market entry created on bar 0, executes on bar 1. Stops don't trigger.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 1, "Entry executes on bar 1, stops don't trigger"
+        assert collected_data[2]['trades_count'] == 1, "No new trades on bar 2"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         deal = broker.get_deal(method_result.deal_id)
@@ -2367,9 +2320,10 @@ class TestSellSltpUnclosedDealsAtEnd:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, takes don't trigger
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "No execution on bar 1 (takes don't trigger)"
+        # Market entry created on bar 0, executes on bar 1. Takes don't trigger.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 1, "Entry executes on bar 1, takes don't trigger"
+        assert collected_data[2]['trades_count'] == 1, "No new trades on bar 2"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         deal = broker.get_deal(method_result.deal_id)
@@ -2455,12 +2409,10 @@ class TestSellSltpUnclosedDealsAtEnd:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry triggers on bar 0, first stop triggers on bar 1
-        # Bar 0: entry triggers (1 trade)
-        # Bar 1: first stop triggers (2 trades total - entry + stop1)
-        # After backtesting ends: automatic closure closes remaining position (3 trades total)
-        assert collected_data[1]['trades_count'] == 1, "Entry should trigger on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "First stop should trigger on bar 1"
+        # Market entry created on bar 0, executes on bar 1. First stop triggers on bar 1.
+        assert collected_data[0]['trades_count'] == 0, "Market entry created on bar 0, executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry + first stop trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 2, "No new trades on bar 2"
         
         # Check final state: deal should be fully closed after automatic closure at end of backtesting
         deal = broker.get_deal(method_result.deal_id)

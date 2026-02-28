@@ -261,6 +261,9 @@ class Deal(BaseModel):
     # Emergency close flag (set to True if errors occurred during order cancellation when closing deal)
     need_emergency_close: bool = False
     
+    # Pending close flag (set to True when deal should be closed)
+    pending_close: bool = False
+    
     # List of error messages for the deal
     errors: List[str] = Field(default_factory=list)
     
@@ -1022,7 +1025,7 @@ class Broker(ABC):
         
         # Start deal: activate entry and stop loss orders
         orders_to_sync = deal.start(self)
-        
+        #self.order_processing(markets_only=True)
         # Note: orders_to_sync contains orders that need to be sent to exchange
         # This will be handled later by exchange synchronization logic
         # For now, we don't collect errors from start() as it no longer returns them
@@ -1418,6 +1421,8 @@ class Broker(ABC):
         for deal in self.deals:
             if not deal.is_closed:
                 self.close_deal(deal.deal_id)
+
+        self.close_deal_processing()
     
     def close_deal(self, deal_id: int) -> None:
         """
@@ -1433,36 +1438,53 @@ class Broker(ABC):
         if deal.is_closed:
             return
         
-        # 1. Cancel all active/new orders associated with the deal
-        deal.cancel_orders(self)
+        deal.pending_close = True
+
+    def close_deal_processing(self) -> None:
+        """Process all deals marked for closing (pending_close=True)."""
+
+        deals_to_close = [
+            deal for deal in self.deals
+            if deal.pending_close and not deal.is_closed
+        ]
         
-        # 2. Create market order to close position if quantity is not zero
-        if deal.quantity != 0:
-            side = OrderSide.SELL if deal.quantity > 0 else OrderSide.BUY
-            order = self._create_order(
-                deal=deal,
-                order_type=OrderType.MARKET,
-                side=side,
-                volume=abs(deal.quantity),
-                order_group=OrderGroup.NONE,
-                price=None,
-                trigger_price=None,
-                fraction=None
-            )
-            # Activate order so it will be sent to exchange
-            order._set_sync_field('status', OrderStatus.ACTIVE)
-            order.update_modify_time(self)
+        for deal in deals_to_close:
+            deal.cancel_orders(self)
             
-        # 3. Process orders (cancel old ones and place closing order)
-        self.order_processing(True)
+            if deal.quantity != 0:
+                side = OrderSide.SELL if deal.quantity > 0 else OrderSide.BUY
+                order = self._create_order(
+                    deal=deal,
+                    order_type=OrderType.MARKET,
+                    side=side,
+                    volume=abs(deal.quantity),
+                    order_group=OrderGroup.NONE,
+                    price=None,
+                    trigger_price=None,
+                    fraction=None
+                )
+                # Activate order so it will be sent to exchange
+                order._set_sync_field('status', OrderStatus.ACTIVE)
+                order.update_modify_time(self)
         
-        # 4. Check if deal should be closed (quantity == 0 after processing)
-        assert deal.quantity == 0
-        deal.is_closed = True
-        # Set date_close to the time of the last trade that closed the deal
-        if deal.date_close is None and len(deal.trades) > 0:
-            deal.date_close = deal.trades[-1].time
-    
+        if deals_to_close:
+            self.order_processing(markets_only=True)
+        
+        for deal in deals_to_close:
+            if deal.quantity == 0:
+                deal.is_closed = True
+                deal.pending_close = False
+                
+                if deal.date_close is None and len(deal.trades) > 0:
+                    deal.date_close = deal.trades[-1].time
+            else:
+                self.logging(
+                    f"Deal {deal.deal_id} failed to close: quantity={deal.quantity}",
+                    level="error",
+                    deal_id=deal.deal_id
+                )
+                deal.cancel_orders(self)
+
     def cancel_orders(self, order_ids: List[int]) -> Tuple[List[int], List[int], List[str]]:
         """
         Cancel orders by their IDs.
@@ -1998,13 +2020,16 @@ class Broker(ABC):
             Tuple of (sliced_quotes, current_time, current_price) or None if finished
         """
         while True:
-            self.order_processing()
+            self.close_deal_processing()
+            self.order_processing(markets_only=True)
             status, bar_data = self.fetch_next_bar(quotes_data, ta_proxies)
-            self.fetch_new_trades()
             
             if status == BarStatus.FINISHED:
                 return None
             
+            self.current_time = bar_data[1]
+            self.order_processing()
+
             if status == BarStatus.WAITING:
                 if self.bar_wait_interval > 0:
                     time.sleep(self.bar_wait_interval)
@@ -2023,9 +2048,8 @@ class Broker(ABC):
             markets_only: If True, only process market orders (skip stop and limit order checks)
         """
         
-        placed_count = self.place_orders()
-
         while True:
+
             updated_deal_ids = self.fetch_new_trades(markets_only=markets_only)
             
             # Update order volumes for deals that had trades added
@@ -2033,7 +2057,7 @@ class Broker(ABC):
                 deal = self.get_deal(deal_id)
                 if not deal.is_closed and not deal.auto:
                     deal.update_order_volumes(self)
-            
+
             placed_count = self.place_orders()
             
             if placed_count == 0:
@@ -2041,6 +2065,8 @@ class Broker(ABC):
                 
             if self.order_wait_interval > 0:
                 time.sleep(self.order_wait_interval)
+
+            
 
     def run(self, save_results: bool = True):
         """
@@ -2080,9 +2106,8 @@ class Broker(ABC):
             if bar_data is None:
                 break
             
-            sliced_quotes, current_time, current_price = bar_data
+            sliced_quotes, _, current_price = bar_data
             
-            self.current_time = current_time
             if hasattr(self, 'price'):
                 self.price = current_price
             
@@ -2091,7 +2116,7 @@ class Broker(ABC):
                 equity_symbol = getattr(self, 'equity_symbol', 0.0)
                 self.callbacks['on_bar'](
                     current_price,
-                    current_time,
+                    self.current_time,
                     sliced_quotes.time,
                     sliced_quotes.open,
                     sliced_quotes.high,

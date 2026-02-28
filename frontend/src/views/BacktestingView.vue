@@ -793,8 +793,15 @@ const ordersColumns = [
   }
 ]
 
-// Computed: deals as array for table
-const dealsArray = computed(() => getAllDeals())
+// Computed: deals as array for table, sorted by deal_id
+const dealsArray = computed(() => {
+  const deals = getAllDeals()
+  return deals.sort((a, b) => {
+    const idA = parseInt(a.deal_id, 10)
+    const idB = parseInt(b.deal_id, 10)
+    return idA - idB
+  })
+})
 
 // Computed: orders as array for table
 const allOrders = computed(() => getAllOrders())

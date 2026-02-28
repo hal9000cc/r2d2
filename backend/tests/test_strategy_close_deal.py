@@ -424,15 +424,14 @@ class TestCloseDealBuy:
     # ============================================================================
     
     def test_close_deal_limit_entry_next_bar_before_entry_triggers(self, test_task):
-        """Test 4.5: BUY limit entry on Bar 0, close_deal on Bar 1 before entry triggers.
+        """Test 4.5: BUY limit entry on Bar 0, close_deal on Bar 0 before entry triggers on Bar 1.
         
         Scenario:
-        - Bar 0: buy_sltp(limit entry at 95, stop=90, take=110)
-          - Entry limit does NOT trigger (low=96.0 > 95.0)
-          - Stop/Take don't trigger
-        - Bar 1: close_deal() BEFORE entry limit can trigger
-          - Entry limit would trigger (low=94.0 <= 95.0), but close_deal cancels it first
-          - close_deal cancels all orders
+        - Bar 0: buy_sltp(limit entry at 95, stop=90, take=110), then close_deal()
+          - Entry limit does NOT trigger on bar 0 (low=96.0 > 95.0)
+          - close_deal sets pending_close, processed at start of bar 1
+          - close_deal cancels all orders before order_processing on bar 1
+        - Bar 1: entry limit would trigger (low=94.0 <= 95.0), but already canceled
           - No trades executed
         
         Expected:
@@ -442,7 +441,7 @@ class TestCloseDealBuy:
         - Profit = None
         """
         quotes_data = create_custom_quotes_data(
-            prices=[100.0, 100.0, 100.0],
+            prices=[100.0, 100.1, 100.2],
             highs=[101.0, 101.0, 101.0],
             lows=[96.0, 94.0, 99.0]  # Bar 0: low=96.0 > 95.0 (no trigger), Bar 1: low=94.0 <= 95.0 (would trigger)
         )
@@ -460,7 +459,7 @@ class TestCloseDealBuy:
                 }
             },
             {
-                'bar_index': 1,
+                'bar_index': 0,
                 'method': 'close_deal',
                 'args': {
                     'deal_id': None
@@ -518,9 +517,9 @@ class TestCloseDealBuy:
         # Check results
         assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
         
-        # Check no trades on any bar
+        # Check no trades on any bar (close_deal on bar 0, processed at start of bar 1, cancels orders before trigger)
         assert collected_data[0]['trades_count'] == 0, "No trades on bar 0"
-        assert collected_data[1]['trades_count'] == 0, "No trades on bar 1 (entry canceled before trigger)"
+        assert collected_data[1]['trades_count'] == 0, "No trades on bar 1 (entry canceled by close_deal before trigger)"
         assert collected_data[2]['trades_count'] == 0, "No trades on bar 2"
         assert len(broker.trades) == 0, "Total trades should be 0"
         
@@ -549,13 +548,13 @@ class TestCloseDealBuy:
         
         Scenario:
         - Bar 0: buy_sltp(market entry, stop=90, take=110)
-          - Entry market executes: BUY 1.0 @ 100.1 (100.0 + slippage)
+          - Entry market order created (executes on next bar)
           - Stop/Take don't trigger (high=101.0, low=99.0)
-        - Bar 1: close_deal()
-          - close_deal cancels stop/take
-          - close_deal creates market SELL 1.0
-          - Market SELL executes: @ 99.9 (100.0 - slippage)
-        - Bar 2: 2 trades visible
+        - Bar 1: entry market executes: BUY 1.0 @ 100.1 (100.0 + slippage)
+          - close_deal() cancels stop/take
+          - close_deal creates market SELL 1.0 (executes on next bar)
+        - Bar 2: close market SELL executes: @ 99.9 (100.0 - slippage)
+          - 2 trades visible (entry + close)
         
         Expected profit:
         - Entry: BUY 1.0 @ 100.1, fee = 0.1001
@@ -645,8 +644,11 @@ class TestCloseDealBuy:
         assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
         
         # Check trade counts per bar
+        # Bar 0: market entry order created, executes on next bar
+        # Bar 1: entry market order executed (1 trade), close_deal creates market close order (executes on next bar)
+        # Bar 2: close market order executed (2 trades total)
         assert collected_data[0]['trades_count'] == 0, "No trades visible on bar 0"
-        assert collected_data[1]['trades_count'] == 2, "Entry + close trades visible on bar 2"
+        assert collected_data[1]['trades_count'] == 1, "Entry trade visible on bar 1 (close order created but executes on next bar)"
         assert collected_data[2]['trades_count'] == 2, "Entry + close trades visible on bar 2"
         assert len(broker.trades) == 2, "Total 2 trades"
         
@@ -681,11 +683,11 @@ class TestCloseDealBuy:
         
         Scenario:
         - Bar 0: buy_sltp(market entry, stop=90, take=110)
-          - Entry market executes: BUY 1.0 @ 100.1
-          - Take profit triggers: SELL 1.0 @ 110.0 (high=115.0)
+          - Entry market order created (executes on next bar)
+        - Bar 1: entry market executes: BUY 1.0 @ 100.1
+          - Take profit triggers: SELL 1.0 @ 110.0 (high=115.0 >= 110.0)
           - Deal closed, quantity = 0
-        - Bar 1: close_deal() on already closed deal
-          - close_deal does nothing (deal already closed)
+          - close_deal() on already closed deal does nothing
         - Bar 2: still 2 trades
         
         Expected profit:
@@ -697,7 +699,7 @@ class TestCloseDealBuy:
         """
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 100.0, 100.0],
-            highs=[115.0, 101.0, 101.0],  # High enough for take profit on bar 0
+            highs=[101.0, 115.0, 101.0],  # High enough for take profit on bar 1 (after entry executes)
             lows=[99.0, 99.0, 99.0]
         )
         
@@ -774,6 +776,9 @@ class TestCloseDealBuy:
         expected_profit = exit_proceeds - entry_cost  # 9.7449
         
         # Check results
+        # Bar 0: market entry order created, executes on next bar
+        # Bar 1: entry market order executed, take profit triggers (high=115.0 >= 110.0), deal closed
+        # Bar 2: close_deal called on already closed deal, no effect
         assert collected_data[0]['trades_count'] == 0, "No trades visible on bar 0"
         assert collected_data[1]['trades_count'] == 2, "Entry + take trades visible on bar 1"
         assert collected_data[2]['trades_count'] == 2, "Still 2 trades on bar 2"
@@ -806,10 +811,10 @@ class TestCloseDealBuy:
         
         Scenario:
         - Bar 0: buy_sltp(limit entry at 95, stop=90, take=110)
-          - Entry limit executes: BUY 1.0 @ 95.0 (low=94.0)
-          - Stop/Take don't trigger
-        - Bar 1: close_deal()
-          - close_deal creates market SELL 1.0 @ 99.9
+          - Entry limit order created (low=99.0 > 95.0, does not trigger)
+        - Bar 1: entry limit executes: BUY 1.0 @ 95.0 (low=94.0 <= 95.0)
+          - close_deal() cancels stop/take, creates market SELL 1.0 (executes on next bar)
+        - Bar 2: close market SELL executes @ 99.9
         
         Expected profit:
         - Entry: BUY 1.0 @ 95.0, fee_maker = 0.0475
@@ -821,7 +826,7 @@ class TestCloseDealBuy:
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 100.0, 100.0],
             highs=[101.0, 101.0, 101.0],
-            lows=[94.0, 99.0, 99.0]  # Low enough for limit entry on bar 0
+            lows=[99.0, 94.0, 99.0]  # Low enough for limit entry on bar 1
         )
         
         deal_id = None
@@ -897,7 +902,11 @@ class TestCloseDealBuy:
         expected_profit = exit_proceeds - entry_cost  # 4.7526
         
         # Check results
-        assert collected_data[1]['trades_count'] == 2, "Entry + close trades visible on bar 2"
+        # Bar 0: limit entry order created (0 trades, low=99 > 95, does not trigger)
+        # Bar 1: entry triggers (low=94 <= 95), close_deal creates market close (executes on next bar)
+        # Bar 2: close market SELL executed (2 trades total)
+        assert collected_data[0]['trades_count'] == 0, "No trades on bar 0 (limit entry not triggered yet)"
+        assert collected_data[1]['trades_count'] == 1, "Entry trade visible on bar 1 (close order executes on next bar)"
         assert collected_data[2]['trades_count'] == 2, "Entry + close trades visible on bar 2"
         assert len(broker.trades) == 2, "Total 2 trades"
         
@@ -930,11 +939,12 @@ class TestCloseDealBuy:
         
         Scenario:
         - Bar 0: buy_sltp(limit entry at 95, stop=90, take=110)
-          - Entry limit executes: BUY 1.0 @ 95.0 (low=94.0)
-          - Take profit triggers: SELL 1.0 @ 110.0 (high=115.0)
+          - Entry limit order created (low=99.0 > 95.0, does not trigger)
+        - Bar 1: entry limit executes: BUY 1.0 @ 95.0 (low=94.0 <= 95.0)
+          - Take profit order activated after entry
+          - Take profit triggers: SELL 1.0 @ 110.0 (high=115.0 >= 110.0)
           - Deal closed
-        - Bar 1: close_deal() on already closed deal
-          - Does nothing
+          - close_deal() on already closed deal does nothing
         
         Expected profit:
         - Entry: BUY 1.0 @ 95.0, fee_maker = 0.0475
@@ -945,8 +955,8 @@ class TestCloseDealBuy:
         """
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 100.0, 100.0],
-            highs=[115.0, 101.0, 101.0],  # High enough for take profit
-            lows=[94.0, 99.0, 99.0]  # Low enough for limit entry
+            highs=[101.0, 115.0, 101.0],  # High enough for take profit on bar 1 (after entry executes)
+            lows=[99.0, 94.0, 99.0]  # Low enough for limit entry on bar 1
         )
         
         deal_id = None
@@ -1021,6 +1031,10 @@ class TestCloseDealBuy:
         expected_profit = exit_proceeds - entry_cost  # 14.8975
         
         # Check results
+        # Bar 0: limit entry order created (0 trades, low=99 > 95, does not trigger)
+        # Bar 1: entry triggers (low=94 <= 95), take triggers (high=115 >= 110), deal closed (2 trades)
+        # Bar 2: close_deal called on already closed deal, no effect
+        assert collected_data[0]['trades_count'] == 0, "No trades on bar 0 (limit entry not triggered yet)"
         assert collected_data[1]['trades_count'] == 2, "Entry + take trades visible on bar 1"
         assert collected_data[2]['trades_count'] == 2, "Still 2 trades on bar 2"
         assert len(broker.trades) == 2, "Total 2 trades"
@@ -1359,15 +1373,14 @@ class TestCloseDealSell:
     # ============================================================================
     
     def test_close_deal_limit_entry_next_bar_before_entry_triggers(self, test_task):
-        """Test 4.5 SELL: SELL limit entry on Bar 0, close_deal on Bar 1 before entry triggers.
+        """Test 4.5 SELL: SELL limit entry on Bar 0, close_deal on Bar 0 before entry triggers on Bar 1.
         
         Scenario:
-        - Bar 0: sell_sltp(limit entry at 105, stop=110, take=90)
-          - Entry limit does NOT trigger (high=104.0 < 105.0)
-          - Stop/Take don't trigger
-        - Bar 1: close_deal() BEFORE entry limit can trigger
-          - Entry limit would trigger (high=106.0 >= 105.0), but close_deal cancels it first
-          - close_deal cancels all orders
+        - Bar 0: sell_sltp(limit entry at 105, stop=110, take=90), then close_deal()
+          - Entry limit does NOT trigger on bar 0 (high=104.0 < 105.0)
+          - close_deal sets pending_close, processed at start of bar 1
+          - close_deal cancels all orders before order_processing on bar 1
+        - Bar 1: entry limit would trigger (high=106.0 >= 105.0), but already canceled
           - No trades executed
         
         Expected:
@@ -1395,7 +1408,7 @@ class TestCloseDealSell:
                 }
             },
             {
-                'bar_index': 1,
+                'bar_index': 0,
                 'method': 'close_deal',
                 'args': {
                     'deal_id': None
@@ -1453,9 +1466,9 @@ class TestCloseDealSell:
         # Check results
         assert len(collected_data) == 3, f"Expected 3 bars, got {len(collected_data)}"
         
-        # Check no trades on any bar
+        # Check no trades on any bar (close_deal on bar 0, processed at start of bar 1, cancels orders before trigger)
         assert collected_data[0]['trades_count'] == 0, "No trades on bar 0"
-        assert collected_data[1]['trades_count'] == 0, "No trades on bar 1 (entry canceled before trigger)"
+        assert collected_data[1]['trades_count'] == 0, "No trades on bar 1 (entry canceled by close_deal before trigger)"
         assert collected_data[2]['trades_count'] == 0, "No trades on bar 2"
         assert len(broker.trades) == 0, "Total trades should be 0"
         
@@ -1481,6 +1494,16 @@ class TestCloseDealSell:
     
     def test_close_deal_market_entry_next_bar_no_trigger(self, test_task):
         """Test 5 SELL: SELL market entry on Bar 0, close_deal on Bar 1, no stop/take trigger.
+        
+        Scenario:
+        - Bar 0: sell_sltp(market entry, stop=110, take=90)
+          - Entry market order created (executes on next bar)
+          - Stop/Take don't trigger (high=101.0, low=99.0)
+        - Bar 1: entry market executes: SELL 1.0 @ 99.9 (100.0 - slippage)
+          - close_deal() cancels stop/take
+          - close_deal creates market BUY 1.0 (executes on next bar)
+        - Bar 2: close market BUY executes: @ 100.1 (100.0 + slippage)
+          - 2 trades visible (entry + close)
         
         Expected profit:
         - Entry: SELL 1.0 @ 99.9 (100.0 - slippage), fee = 0.0999
@@ -1567,7 +1590,11 @@ class TestCloseDealSell:
         expected_profit = entry_proceeds - exit_cost  # -0.4
         
         # Check results
-        assert collected_data[1]['trades_count'] == 2, "Entry + close trades visible on bar 2"
+        # Bar 0: market entry order created, executes on next bar
+        # Bar 1: entry market order executed (1 trade), close_deal creates market close order (executes on next bar)
+        # Bar 2: close market order executed (2 trades total)
+        assert collected_data[0]['trades_count'] == 0, "No trades visible on bar 0"
+        assert collected_data[1]['trades_count'] == 1, "Entry trade visible on bar 1 (close order created but executes on next bar)"
         assert collected_data[2]['trades_count'] == 2, "Entry + close trades visible on bar 2"
         assert len(broker.trades) == 2, "Total 2 trades"
         
@@ -1580,6 +1607,15 @@ class TestCloseDealSell:
     def test_close_deal_market_entry_next_bar_take_triggered(self, test_task):
         """Test 6 SELL: SELL market entry on Bar 0, take profit triggers, close_deal on Bar 1.
         
+        Scenario:
+        - Bar 0: sell_sltp(market entry, stop=110, take=90)
+          - Entry market order created (executes on next bar)
+        - Bar 1: entry market executes: SELL 1.0 @ 99.9
+          - Take profit triggers: BUY 1.0 @ 90.0 (low=85.0 <= 90.0)
+          - Deal closed, quantity = 0
+          - close_deal() on already closed deal does nothing
+        - Bar 2: still 2 trades
+        
         Expected profit:
         - Entry: SELL 1.0 @ 99.9, fee_taker = 0.0999
         - Take: BUY 1.0 @ 90.0, fee_maker = 0.045
@@ -1590,7 +1626,7 @@ class TestCloseDealSell:
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 100.0, 100.0],
             highs=[101.0, 101.0, 101.0],
-            lows=[85.0, 99.0, 99.0]  # Low enough for take profit on bar 0
+            lows=[99.0, 85.0, 99.0]  # Low enough for take profit on bar 1 (after entry executes)
         )
         
         deal_id = None
@@ -1666,6 +1702,10 @@ class TestCloseDealSell:
         expected_profit = entry_proceeds - exit_cost  # 9.7551
         
         # Check results
+        # Bar 0: market entry order created, executes on next bar
+        # Bar 1: entry market order executed, take profit triggers (low=85.0 <= 90.0), deal closed
+        # Bar 2: close_deal called on already closed deal, no effect
+        assert collected_data[0]['trades_count'] == 0, "No trades visible on bar 0"
         assert collected_data[1]['trades_count'] == 2, "Entry + take trades visible on bar 1"
         assert collected_data[2]['trades_count'] == 2, "Still 2 trades on bar 2"
         assert len(broker.trades) == 2, "Total 2 trades"
@@ -1679,6 +1719,13 @@ class TestCloseDealSell:
     def test_close_deal_limit_entry_next_bar_entry_only(self, test_task):
         """Test 7 SELL: SELL limit entry on Bar 0, close_deal on Bar 1, only entry triggers.
         
+        Scenario:
+        - Bar 0: sell_sltp(limit entry at 105, stop=110, take=90)
+          - Entry limit order created (high=101.0 < 105.0, does not trigger)
+        - Bar 1: entry limit executes: SELL 1.0 @ 105.0 (high=106.0 >= 105.0)
+          - close_deal() cancels stop/take, creates market BUY 1.0 (executes on next bar)
+        - Bar 2: close market BUY executes @ 100.1
+        
         Expected profit:
         - Entry: SELL 1.0 @ 105.0, fee_maker = 0.0525
         - Close: BUY 1.0 @ 100.1, fee_taker = 0.1001
@@ -1688,7 +1735,7 @@ class TestCloseDealSell:
         """
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 100.0, 100.0],
-            highs=[106.0, 101.0, 101.0],  # High enough for limit entry on bar 0
+            highs=[101.0, 106.0, 101.0],  # High enough for limit entry on bar 1
             lows=[99.0, 99.0, 99.0]
         )
         
@@ -1765,7 +1812,11 @@ class TestCloseDealSell:
         expected_profit = entry_proceeds - exit_cost  # 4.7474
         
         # Check results
-        assert collected_data[1]['trades_count'] == 2, "Entry + close trades visible on bar 2"
+        # Bar 0: limit entry order created (0 trades, high=101 < 105, does not trigger)
+        # Bar 1: entry triggers (high=106 >= 105), close_deal creates market close (executes on next bar)
+        # Bar 2: close market BUY executed (2 trades total)
+        assert collected_data[0]['trades_count'] == 0, "No trades on bar 0 (limit entry not triggered yet)"
+        assert collected_data[1]['trades_count'] == 1, "Entry trade visible on bar 1 (close order executes on next bar)"
         assert collected_data[2]['trades_count'] == 2, "Entry + close trades visible on bar 2"
         assert len(broker.trades) == 2, "Total 2 trades"
         
@@ -1778,6 +1829,15 @@ class TestCloseDealSell:
     def test_close_deal_limit_entry_next_bar_entry_take_trigger(self, test_task):
         """Test 8 SELL: SELL limit entry on Bar 0, entry and take profit trigger, close_deal on Bar 1.
         
+        Scenario:
+        - Bar 0: sell_sltp(limit entry at 105, stop=110, take=90)
+          - Entry limit order created (high=101.0 < 105.0, does not trigger)
+        - Bar 1: entry limit executes: SELL 1.0 @ 105.0 (high=106.0 >= 105.0)
+          - Take profit order activated after entry
+          - Take profit triggers: BUY 1.0 @ 90.0 (low=85.0 <= 90.0)
+          - Deal closed
+          - close_deal() on already closed deal does nothing
+        
         Expected profit:
         - Entry: SELL 1.0 @ 105.0, fee_maker = 0.0525
         - Take: BUY 1.0 @ 90.0, fee_maker = 0.045
@@ -1787,8 +1847,8 @@ class TestCloseDealSell:
         """
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 100.0, 100.0],
-            highs=[106.0, 101.0, 101.0],  # High enough for limit entry
-            lows=[85.0, 99.0, 99.0]  # Low enough for take profit
+            highs=[101.0, 106.0, 101.0],  # High enough for limit entry on bar 1
+            lows=[99.0, 85.0, 99.0]  # Low enough for take profit on bar 1 (after entry executes)
         )
         
         deal_id = None
@@ -1863,6 +1923,10 @@ class TestCloseDealSell:
         expected_profit = entry_proceeds - exit_cost  # 14.9025
         
         # Check results
+        # Bar 0: limit entry order created (0 trades, high=101 < 105, does not trigger)
+        # Bar 1: entry triggers (high=106 >= 105), take triggers (low=85 <= 90), deal closed (2 trades)
+        # Bar 2: close_deal called on already closed deal, no effect
+        assert collected_data[0]['trades_count'] == 0, "No trades on bar 0 (limit entry not triggered yet)"
         assert collected_data[1]['trades_count'] == 2, "Entry + take trades visible on bar 1"
         assert collected_data[2]['trades_count'] == 2, "Still 2 trades on bar 2"
         assert len(broker.trades) == 2, "Total 2 trades"

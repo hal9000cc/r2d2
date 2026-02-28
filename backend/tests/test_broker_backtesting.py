@@ -1457,7 +1457,8 @@ class TestCancelOrders:
         # Execution bars: first bar at 100.0, second bar high reaches trigger_price (105.0)
         exec_times = np.array([
             np.datetime64('2024-01-01T00:00:00', 'ms'),
-            np.datetime64('2024-01-01T01:00:00', 'ms')
+            np.datetime64('2024-01-01T01:00:00', 'ms'),
+            np.datetime64('2024-01-01T02:00:00', 'ms')
         ], dtype='datetime64[ms]')
         
         current_price = 100.0
@@ -1465,11 +1466,11 @@ class TestCancelOrders:
         
         quotes_data = {
             'time': np.concatenate([history_times, exec_times]),
-            'open': np.concatenate([np.full(10, history_price, dtype=PRICE_TYPE), np.array([100.0, 100.0], dtype=PRICE_TYPE)]),
-            'high': np.concatenate([np.full(10, history_price, dtype=PRICE_TYPE), np.array([100.0, trigger_price], dtype=PRICE_TYPE)]),
-            'low': np.concatenate([np.full(10, history_price, dtype=PRICE_TYPE), np.array([100.0, 100.0], dtype=PRICE_TYPE)]),
-            'close': np.concatenate([np.full(10, history_price, dtype=PRICE_TYPE), np.array([100.0, 105.0], dtype=PRICE_TYPE)]),
-            'volume': np.full(12, 1000.0, dtype=VOLUME_TYPE)
+            'open': np.concatenate([np.full(10, history_price, dtype=PRICE_TYPE), np.array([100.0, 100, 100.0], dtype=PRICE_TYPE)]),
+            'high': np.concatenate([np.full(10, history_price, dtype=PRICE_TYPE), np.array([100.0, 102, trigger_price], dtype=PRICE_TYPE)]),
+            'low': np.concatenate([np.full(10, history_price, dtype=PRICE_TYPE), np.array([100.0, 99, 100.0], dtype=PRICE_TYPE)]),
+            'close': np.concatenate([np.full(10, history_price, dtype=PRICE_TYPE), np.array([100.0, 100, 105.0], dtype=PRICE_TYPE)]),
+            'volume': np.full(13, 1000.0, dtype=VOLUME_TYPE)
         }
         
         class CancelStopOrderStrategy(Strategy):

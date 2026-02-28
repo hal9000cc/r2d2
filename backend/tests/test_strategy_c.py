@@ -140,11 +140,11 @@ class TestBuySltpOneEntryOneStop:
         assert len(executed_stops) == 1, "Stop order should be executed"
     
     def test_buy_sltp_market_entry_stop_next_bar(self, test_task):
-        """Test C1.2: Market entry → on next bar stop triggers (entry already executed on bar 0)."""
-        # Prepare quotes data: price 100.0, market entry on bar 0, then on bar 1 price drops to trigger stop
-        # Bar 0: entry executed immediately (market order)
-        # Bar 1: low=89.0, stop=90.0 - stop triggers (89.0 <= 90.0)
-        # Note: entry already executed on bar 0, so on bar 1 only stop triggers
+        """Test C1.2: Market entry → on next bar stop triggers (entry created on bar 0, executes on bar 1)."""
+        # Prepare quotes data: price 100.0, market entry created on bar 0, executes on bar 1, then stop triggers on bar 1
+        # Bar 0: entry order created (market order executes on next bar)
+        # Bar 1: entry executed and low=89.0, stop=90.0 - stop triggers (89.0 <= 90.0)
+        # Note: entry executes on bar 1, stop also triggers on bar 1
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 90.0, 95.0],
             lows=[99.0, 89.0, 94.0]  # Bar 1 low=89.0 triggers stop at 90.0
@@ -153,7 +153,7 @@ class TestBuySltpOneEntryOneStop:
         # Protocol: On bar 0, enter market with stop loss 90.0 and take profit 110.0
         # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
         # Stop trigger: 90.0 (stop executes as market, with slippage -0.1 = 89.9)
-        # Expected: entry executes on bar 0, stop triggers on bar 1
+        # Expected: entry created on bar 0, executes on bar 1, stop triggers on bar 1
         # Expected profit calculation:
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
@@ -221,11 +221,11 @@ class TestBuySltpOneEntryOneStop:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry executed on bar 0, stop triggers on bar 1
-        # Bar 0: entry executed (1 trade)
-        # Bar 1: stop triggered (2 trades - entry + stop)
-        assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "Stop should trigger on bar 1"
+        # Check that entry created on bar 0, executes on bar 1, stop triggers on bar 1
+        # Bar 0: entry order created (0 trades - market order executes on next bar)
+        # Bar 1: entry executed and stop triggered (2 trades - entry + stop)
+        assert collected_data[0]['trades_count'] == 0, "Entry market order created on bar 0, but executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry market order executed and stop triggered on bar 1"
         
         # Check final state: deal should be closed (stop triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -363,11 +363,11 @@ class TestSellSltpOneEntryOneStop:
         assert len(executed_stops) == 1, "Stop order should be executed"
     
     def test_sell_sltp_market_entry_stop_next_bar(self, test_task):
-        """Test C1.2: Market entry → on next bar stop triggers (entry already executed on bar 0)."""
-        # Prepare quotes data: price 100.0, market entry on bar 0, then on bar 1 price rises to trigger stop
-        # Bar 0: entry executed immediately (market order)
-        # Bar 1: high=111.0, stop=110.0 - stop triggers (111.0 >= 110.0)
-        # Note: entry already executed on bar 0, so on bar 1 only stop triggers
+        """Test C1.2: Market entry → on next bar stop triggers (entry created on bar 0, executes on bar 1)."""
+        # Prepare quotes data: price 100.0, market entry created on bar 0, executes on bar 1, then stop triggers on bar 1
+        # Bar 0: entry order created (market order executes on next bar)
+        # Bar 1: entry executed and high=111.0, stop=110.0 - stop triggers (111.0 >= 110.0)
+        # Note: entry executes on bar 1, stop also triggers on bar 1
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 110.0, 108.0],
             highs=[101.0, 111.0, 109.0]  # Bar 1 high=111.0 triggers stop at 110.0
@@ -376,7 +376,7 @@ class TestSellSltpOneEntryOneStop:
         # Protocol: On bar 0, enter market SELL with stop loss 110.0 and take profit 90.0
         # Entry price: 100.0 (market SELL, with slippage -0.1 = 99.9)
         # Stop trigger: 110.0 (BUY stop executes as market, with slippage +0.1 = 110.1)
-        # Expected: entry executes on bar 0, stop triggers on bar 1
+        # Expected: entry created on bar 0, executes on bar 1, stop triggers on bar 1
         # Expected profit calculation:
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
@@ -444,11 +444,11 @@ class TestSellSltpOneEntryOneStop:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry executed on bar 0, stop triggers on bar 1
-        # Bar 0: entry executed (1 trade)
-        # Bar 1: stop triggered (2 trades - entry + stop)
-        assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
-        assert collected_data[2]['trades_count'] == 2, "Stop should trigger on bar 1"
+        # Check that entry created on bar 0, executes on bar 1, stop triggers on bar 1
+        # Bar 0: entry order created (0 trades - market order executes on next bar)
+        # Bar 1: entry executed and stop triggered (2 trades - entry + stop)
+        assert collected_data[0]['trades_count'] == 0, "Entry market order created on bar 0, but executes on next bar"
+        assert collected_data[1]['trades_count'] == 2, "Entry market order executed and stop triggered on bar 1"
         
         # Check final state: deal should be closed (stop triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -719,10 +719,10 @@ class TestBuySltpOneEntryMultipleStops:
         assert len(executed_stops) == 2, "Only first two stop orders should be executed"
     
     def test_buy_sltp_market_entry_all_stops_next_bar(self, test_task):
-        """Test C2.3: Market entry → on next bar all stops hit simultaneously (entry already executed on bar 0)."""
-        # Prepare quotes data: price 100.0, market entry on bar 0, then on bar 1 price drops to trigger all stops
-        # Bar 0: entry executed immediately (market order)
-        # Bar 1: low=87.0, stops at 90.0 and 88.0 - all stops trigger (87.0 <= 90.0, 87.0 <= 88.0)
+        """Test C2.3: Market entry → on next bar all stops hit simultaneously (entry created on bar 0, executes on bar 1)."""
+        # Prepare quotes data: price 100.0, market entry created on bar 0, executes on bar 1, then all stops trigger on bar 1
+        # Bar 0: entry order created (market order executes on next bar)
+        # Bar 1: entry executed and low=87.0, stops at 90.0 and 88.0 - all stops trigger (87.0 <= 90.0, 87.0 <= 88.0)
         # Bar 2: price recovers
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 87.0, 95.0],
@@ -732,7 +732,7 @@ class TestBuySltpOneEntryMultipleStops:
         # Protocol: On bar 0, enter market with two stops (0.5 at 90.0, 0.5 at 88.0) and take profit 110.0
         # Entry price: 100.0 (market, with slippage +0.1 = 100.1)
         # Stop triggers: 90.0 and 88.0 (stops execute as market, with slippage -0.1)
-        # Expected: entry executes on bar 0, both stops trigger simultaneously on bar 1
+        # Expected: entry created on bar 0, executes on bar 1, both stops trigger simultaneously on bar 1
         # Expected profit calculation:
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
@@ -805,11 +805,11 @@ class TestBuySltpOneEntryMultipleStops:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry executed on bar 0, both stops trigger simultaneously on bar 1
-        # Bar 0: entry executed (1 trade)
-        # Bar 1: both stops triggered simultaneously (3 trades - entry + stop1 + stop2)
-        assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
-        assert collected_data[2]['trades_count'] == 3, "Both stops should trigger simultaneously on bar 1"
+        # Check that entry created on bar 0, executes on bar 1, both stops trigger simultaneously on bar 1
+        # Bar 0: entry order created (0 trades - market order executes on next bar)
+        # Bar 1: entry executed and both stops triggered simultaneously (3 trades - entry + stop1 + stop2)
+        assert collected_data[0]['trades_count'] == 0, "Entry market order created on bar 0, but executes on next bar"
+        assert collected_data[1]['trades_count'] == 3, "Entry market order executed and both stops triggered simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
         deal = broker.get_deal(method_result.deal_id)
@@ -1080,10 +1080,10 @@ class TestSellSltpOneEntryMultipleStops:
         assert len(executed_stops) == 2, "Only first two stop orders should be executed"
     
     def test_sell_sltp_market_entry_all_stops_next_bar(self, test_task):
-        """Test C2.3: Market entry → on next bar all stops hit simultaneously (entry already executed on bar 0)."""
-        # Prepare quotes data: price 100.0, market entry on bar 0, then on bar 1 price rises to trigger all stops
-        # Bar 0: entry executed immediately (market order)
-        # Bar 1: high=113.0, stops at 110.0 and 112.0 - all stops trigger (113.0 >= 110.0, 113.0 >= 112.0)
+        """Test C2.3: Market entry → on next bar all stops hit simultaneously (entry created on bar 0, executes on bar 1)."""
+        # Prepare quotes data: price 100.0, market entry created on bar 0, executes on bar 1, then all stops trigger on bar 1
+        # Bar 0: entry order created (market order executes on next bar)
+        # Bar 1: entry executed and high=113.0, stops at 110.0 and 112.0 - all stops trigger (113.0 >= 110.0, 113.0 >= 112.0)
         # Bar 2: price recovers
         quotes_data = create_custom_quotes_data(
             prices=[100.0, 113.0, 108.0],
@@ -1093,7 +1093,7 @@ class TestSellSltpOneEntryMultipleStops:
         # Protocol: On bar 0, enter market SELL with two stops (0.5 at 110.0, 0.5 at 112.0) and take profit 90.0
         # Entry price: 100.0 (market SELL, with slippage -0.1 = 99.9)
         # Stop triggers: 110.0 and 112.0 (BUY stops execute as market, with slippage +0.1)
-        # Expected: entry executes on bar 0, both stops trigger simultaneously on bar 1
+        # Expected: entry created on bar 0, executes on bar 1, both stops trigger simultaneously on bar 1
         # Expected profit calculation:
         entry_price = 100.0
         slippage = test_task.slippage_in_steps * test_task.price_step  # 1.0 * 0.1 = 0.1
@@ -1166,11 +1166,11 @@ class TestSellSltpOneEntryMultipleStops:
         assert len(method_result.error_messages) == 0, f"Unexpected errors: {method_result.error_messages}"
         assert method_result.deal_id > 0
         
-        # Check that entry executed on bar 0, both stops trigger simultaneously on bar 1
-        # Bar 0: entry executed (1 trade)
-        # Bar 1: both stops triggered simultaneously (3 trades - entry + stop1 + stop2)
-        assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately on bar 0"
-        assert collected_data[2]['trades_count'] == 3, "Both stops should trigger simultaneously on bar 1"
+        # Check that entry created on bar 0, executes on bar 1, both stops trigger simultaneously on bar 1
+        # Bar 0: entry order created (0 trades - market order executes on next bar)
+        # Bar 1: entry executed and both stops triggered simultaneously (3 trades - entry + stop1 + stop2)
+        assert collected_data[0]['trades_count'] == 0, "Entry market order created on bar 0, but executes on next bar"
+        assert collected_data[1]['trades_count'] == 3, "Entry market order executed and both stops triggered simultaneously on bar 1"
         
         # Check final state: deal should be closed (both stops triggered)
         deal = broker.get_deal(method_result.deal_id)

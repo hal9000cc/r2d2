@@ -1684,14 +1684,14 @@ class TestSellSltpMultipleEntriesPartTakes:
         assert method_result.deal_id > 0
         
         # Check that first two entries and first take profit trigger on bar 1, second take profit triggers on bar 2
-        # Bar 0: no execution (0 trades)
+        # Bar 0: no execution (0 trades) - limit orders created but not triggered yet
         # Bar 1: first two entries and first take profit trigger (3 trades - entry1 + entry2 + take1)
         # Bar 2: second take profit triggers (4 trades total - entry1 + entry2 + take1 + take2)
-        # Trades from bar 2 are processed after loop completion, remaining position auto-closed (5 trades total)
+        # Remaining position auto-closed at end (5 trades total)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[1]['trades_count'] == 0, "No execution on bar 0 (visible on bar 1)"
-        assert collected_data[2]['trades_count'] == 3, "First two entries and first take profit should trigger on bar 1 (visible on bar 2)"
-        # Trades from bar 2 (take2) are processed after loop completion, remaining position auto-closed, check final broker state
+        assert collected_data[1]['trades_count'] == 3, "First two entries and first take profit trigger on bar 1"
+        assert collected_data[2]['trades_count'] == 4, "Second take profit triggers on bar 2"
+        # Remaining position auto-closed after loop completion, check final broker state
         
         # Check final state: deal should be closed (auto-closed at end)
         deal = broker.get_deal(method_result.deal_id)

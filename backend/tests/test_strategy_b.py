@@ -315,8 +315,8 @@ class TestBuySltpSingleExecution:
         # Bar 0: no execution (0 trades)
         # Bar 1: no execution (0 trades) - limit not triggered (low=97.0 > limit=95.0)
         # Bar 2: entry executed (1 trade) - limit triggered (low=94.0 <= limit=95.0)
-        assert collected_data[2]['trades_count'] == 0, "Entry limit order should NOT execute on bar 1 (low=97.0 > limit=95.0)"
-        assert collected_data[3]['trades_count'] == 1, "Entry limit order should execute on bar 2"
+        assert collected_data[1]['trades_count'] == 0, "Entry limit order should NOT execute on bar 1 (low=97.0 > limit=95.0)"
+        assert collected_data[2]['trades_count'] == 1, "Entry limit order should execute on bar 2"
         
         # Check that stop triggered on bar 3
         # Bar 3: stop triggered (2 trades - entry + stop)
@@ -415,8 +415,8 @@ class TestBuySltpSingleExecution:
         # Bar 0: no execution (0 trades)
         # Bar 1: no execution (0 trades) - limit not triggered (low=97.0 > limit=95.0)
         # Bar 2: entry executed (1 trade) - limit triggered (low=94.0 <= limit=95.0)
-        assert collected_data[2]['trades_count'] == 0, "Entry limit order should NOT execute on bar 1 (low=97.0 > limit=95.0)"
-        assert collected_data[3]['trades_count'] == 1, "Entry limit order should execute on bar 2"
+        assert collected_data[1]['trades_count'] == 0, "Entry limit order should NOT execute on bar 1 (low=97.0 > limit=95.0)"
+        assert collected_data[2]['trades_count'] == 1, "Entry limit order should execute on bar 2"
         
         # Check that take profit triggered on bar 3
         # Bar 3: take profit triggered (2 trades - entry + take profit)
@@ -728,8 +728,8 @@ class TestSellSltpSingleExecution:
         # Bar 2: no execution (1 trade) - stop not triggered (high=107.0 < stop=110.0)
         # Bar 3: stop triggered (2 trades - entry + stop)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "Entry limit order should execute on bar 1"
-        assert collected_data[3]['trades_count'] == 1, "Stop should NOT trigger on bar 2 (high=107.0 < stop=110.0)"
+        assert collected_data[1]['trades_count'] == 1, "Entry limit order should execute on bar 1"
+        assert collected_data[2]['trades_count'] == 1, "Stop should NOT trigger on bar 2 (high=107.0 < stop=110.0)"
         # Trades from bar 3 are processed after loop completion, check final broker state
         assert len(broker.trades) == 2, "Stop should trigger on bar 3 (2 trades total: entry + stop)"
         
@@ -830,8 +830,8 @@ class TestSellSltpSingleExecution:
         # Bar 2: no execution (1 trade) - take profit not triggered (low=104.0 > take=90.0)
         # Bar 3: take profit triggered (2 trades - entry + take profit)
         assert collected_data[0]['trades_count'] == 0, "No execution on bar 0"
-        assert collected_data[2]['trades_count'] == 1, "Entry limit order should execute on bar 1"
-        assert collected_data[3]['trades_count'] == 1, "Take profit should NOT trigger on bar 2 (low=104.0 > take=90.0)"
+        assert collected_data[1]['trades_count'] == 1, "Entry limit order should execute on bar 1"
+        assert collected_data[2]['trades_count'] == 1, "Take profit should NOT trigger on bar 2 (low=104.0 > take=90.0)"
         # Trades from bar 3 are processed after loop completion, check final broker state
         assert len(broker.trades) == 2, "Take profit should trigger on bar 3 (2 trades total: entry + take profit)"
         
@@ -1268,7 +1268,7 @@ class TestBuySltpMultipleExecutionSameBar:
         # Bar 2: first stop triggered (2 trades - entry + stop1)
         # Bar 3: second stop triggered (3 trades - entry + stop1 + stop2)
         assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately"
-        assert collected_data[3]['trades_count'] == 2, "First stop should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "First stop should trigger on bar 2"
         # Trades from bar 3 are processed after loop completion, check final broker state
         assert len(broker.trades) == 3, "Second stop should trigger on bar 3 (3 trades total: entry + stop1 + stop2)"
         
@@ -1381,7 +1381,7 @@ class TestBuySltpMultipleExecutionSameBar:
         # Bar 2: first take triggered (2 trades - entry + take1)
         # Bar 3: second take triggered (3 trades - entry + take1 + take2)
         assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately"
-        assert collected_data[3]['trades_count'] == 2, "First take should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "First take should trigger on bar 2"
         # Trades from bar 3 are processed after loop completion, check final broker state
         assert len(broker.trades) == 3, "Second take should trigger on bar 3 (3 trades total: entry + take1 + take2)"
         
@@ -1824,7 +1824,7 @@ class TestSellSltpMultipleExecutionSameBar:
         # Bar 2: first stop triggered (2 trades - entry + stop1)
         # Bar 3: second stop triggered (3 trades - entry + stop1 + stop2)
         assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately"
-        assert collected_data[3]['trades_count'] == 2, "First stop should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "First stop should trigger on bar 2"
         # Trades from bar 3 are processed after loop completion, check final broker state
         assert len(broker.trades) == 3, "Second stop should trigger on bar 3 (3 trades total: entry + stop1 + stop2)"
         
@@ -1937,7 +1937,7 @@ class TestSellSltpMultipleExecutionSameBar:
         # Bar 2: first take triggered (2 trades - entry + take1)
         # Bar 3: second take triggered (3 trades - entry + take1 + take2)
         assert collected_data[1]['trades_count'] == 1, "Entry market order should execute immediately"
-        assert collected_data[3]['trades_count'] == 2, "First take should trigger on bar 2"
+        assert collected_data[2]['trades_count'] == 2, "First take should trigger on bar 2"
         # Trades from bar 3 are processed after loop completion, check final broker state
         assert len(broker.trades) == 3, "Second take should trigger on bar 3 (3 trades total: entry + take1 + take2)"
         
