@@ -199,6 +199,56 @@ macd, signal, histogram = self.talib.MACD(value='close', fastperiod=12, slowperi
        pass
    ```
 
+### Cross-Timeframe and Cross-Symbol Indicators
+
+You can calculate indicators on different timeframes and symbols than the primary strategy timeframe/symbol by specifying `timeframe` and `symbol` parameters:
+
+```python
+# Calculate SMA on 1h timeframe (strategy is on 5m)
+sma_1h = self.talib.SMA(value='close', timeperiod=20, timeframe='1h')
+
+# Calculate RSI on different symbol
+rsi_eth = self.talib.RSI(value='close', timeperiod=14, symbol='ETH/USDT:USDT')
+
+# Both different timeframe and symbol
+bb = self.talib.BBANDS(
+    value='close', 
+    timeperiod=20, 
+    nbdevup=2, 
+    nbdevdn=2,
+    symbol='ETH/USDT:USDT',
+    timeframe='15m'
+)
+```
+
+**Important restrictions:**
+- **Timeframe must be >= primary timeframe** - only higher or equal timeframes are supported (e.g., if strategy is on 5m, you can use 15m, 1h, 4h, 1d, but not 1m)
+- **Look-ahead bias prevention** - indicators on higher timeframes use only **closed bars** (the forming bar is excluded)
+- **No chart display** - indicators calculated on different symbols/timeframes are not displayed on the frontend chart (they are for internal calculations only)
+
+**How it works:**
+- For the primary timeframe: indicator includes the current bar (it's complete in backtesting)
+- For higher timeframes: indicator includes only closed bars up to (but not including) the forming bar at `current_time`
+- Quotes for different symbols/timeframes are loaded automatically and cached for the entire backtesting period
+
+**Example:**
+```python
+def on_bar(self):
+    # Strategy is on 5m timeframe
+    # Get SMA on 1h timeframe
+    sma_1h = self.talib.SMA(value='close', timeperiod=20, timeframe='1h')
+    
+    # sma_1h contains only closed 1h bars (no look-ahead bias)
+    # Length of sma_1h is the number of closed 1h bars up to current 5m bar
+    
+    if len(sma_1h) > 0 and not np.isnan(sma_1h[-1]):
+        # Use 1h SMA value
+        current_price = self.close[-1]
+        if current_price > sma_1h[-1]:
+            # Price is above 1h SMA
+            pass
+```
+
 ### Usage Examples
 
 ```python
@@ -331,6 +381,34 @@ All pyita indicators work the same way as TA-Lib indicators:
 2. **Caching** - indicators are cached, repeated calls return cached values
 3. **NaN values** - initial array elements may be NaN until enough data is available
 
+### Cross-Timeframe and Cross-Symbol Indicators (pyita)
+
+pyita indicators also support `timeframe` and `symbol` parameters:
+
+```python
+# Calculate SMA on 1h timeframe (strategy is on 5m)
+sma_1h = self.ta.sma(period=20, timeframe='1h')
+
+# Calculate RSI on different symbol
+rsi_eth = self.ta.rsi(period=14, symbol='ETH/USDT:USDT')
+
+# Both different timeframe and symbol
+bb = self.ta.bollinger_bands(
+    period=20, 
+    deviation=2.0,
+    symbol='ETH/USDT:USDT',
+    timeframe='15m'
+)
+
+# SMA on high values, different timeframe
+sma_high_1h = self.ta.sma(period=20, value='high', timeframe='1h')
+```
+
+**Same restrictions apply as TA-Lib:**
+- **Timeframe must be >= primary timeframe** - only higher or equal timeframes are supported
+- **Look-ahead bias prevention** - indicators on higher timeframes use only **closed bars**
+- **No chart display** - indicators on different symbols/timeframes are not displayed on the frontend
+
 **Example Strategy with pyita:**
 
 ```python
@@ -339,20 +417,34 @@ def on_bar(self):
     if len(self.close) < 50:
         return
     
-    # Calculate indicators
+    # Calculate indicators on primary timeframe
     sma_fast = self.ta.sma(period=20, value='close')
     sma_slow = self.ta.sma(period=50, value='close')
     rsi = self.ta.rsi(period=14)
+    
+    # Calculate indicator on higher timeframe (1h)
+    sma_1h = self.ta.sma(period=20, timeframe='1h')
     
     # Check if indicators are calculated
     if np.isnan(sma_fast[-1]) or np.isnan(sma_slow[-1]) or np.isnan(rsi[-1]):
         return
     
-    # Strategy logic
-    if sma_fast[-1] > sma_slow[-1] and rsi[-1] < 70:
-        self.buy(quantity=0.1)
-    elif sma_fast[-1] < sma_slow[-1] or rsi[-1] > 80:
-        self.sell(quantity=0.1)
+    # Check if 1h SMA is available (may be empty if not enough 1h bars closed yet)
+    if len(sma_1h) > 0 and not np.isnan(sma_1h[-1]):
+        # Use both 5m and 1h indicators
+        current_price = self.close[-1]
+        trend_1h = current_price > sma_1h[-1]  # Bullish on 1h
+        
+        if sma_fast[-1] > sma_slow[-1] and rsi[-1] < 70 and trend_1h:
+            self.buy(quantity=0.1)
+        elif sma_fast[-1] < sma_slow[-1] or rsi[-1] > 80 or not trend_1h:
+            self.sell(quantity=0.1)
+    else:
+        # Fallback to 5m only if 1h not available yet
+        if sma_fast[-1] > sma_slow[-1] and rsi[-1] < 70:
+            self.buy(quantity=0.1)
+        elif sma_fast[-1] < sma_slow[-1] or rsi[-1] > 80:
+            self.sell(quantity=0.1)
 ```
 
 For detailed documentation, see: https://github.com/hal9000cc/pyita
