@@ -3,6 +3,7 @@ import numpy as np
 import pyita as ta
 
 from app.services.tasks.broker import Broker, OrderType, OrderSide, BarStatus
+from app.services.tasks.quotes_provider import BacktestingQuotesProvider, QuotesProvider
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.timeframe import Timeframe
@@ -526,67 +527,68 @@ class BrokerBacktesting(Broker):
         # Market orders waiting for execution
         self.market_orders: List[OrderExchange] = []
         
-    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> ta.Quotes:
+    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> QuotesProvider:
         """
         Initialize quotes data for strategy execution (backtesting implementation).
         
         Args:
             history_size: Number of bars to load for strategy initialization (unused, taken from self.task.history_size)
             ta_proxies: Dictionary of TA proxies (e.g., {'talib': ta_proxy_talib(...)})
-                       Should call set_quotes() on each proxy with initial quotes data
+                       Should call set_quotes() on each proxy with quotes provider
         
         Returns:
-            Quotes object with OHLCV data
+            QuotesProvider instance for accessing quotes data
         """
-        # Get history_size from task
         history_size = self.task.history_size
         
-        # Convert timeframe string to Timeframe object
         try:
             timeframe = Timeframe.cast(self.task.timeframe)
         except Exception as e:
             raise RuntimeError(f"Failed to parse timeframe '{self.task.timeframe}': {e}") from e
         
-        # Convert date strings to datetime objects
         try:
             date_start = parse_utc_datetime(self.task.dateStart)
             date_end = parse_utc_datetime(self.task.dateEnd)
         except Exception as e:
             raise RuntimeError(f"Failed to parse dateStart/dateEnd: {e}") from e
         
-        # Calculate initial load date: dateStart - (history_size * timeframe.timedelta())
         history_start = date_start - (history_size * timeframe.timedelta())
         
-        # Get quotes data from QuotesClient
         client = QuotesClient()
         logger.debug(f"Getting quotes for {self.task.source}:{self.task.symbol}:{self.task.timeframe} from {history_start} to {date_end}")
         quotes_dict = client.get_quotes(self.task.source, self.task.symbol, timeframe, history_start, date_end)
         logger.debug(f"Quotes received: {len(quotes_dict['time'])} bars")
         
-        # Validate that we have quotes data
         if len(quotes_dict['time']) == 0:
             raise RuntimeError("No quotes data available for backtesting")
         
-        # Create Quotes object from dictionary
         quotes = ta.Quotes(**quotes_dict)
         
-        # Call set_quotes() on each TA proxy
+        quotes_provider = BacktestingQuotesProvider(
+            source=self.task.source,
+            symbol=self.task.symbol,
+            timeframe=timeframe,
+            history_start=history_start,
+            date_end=date_end,
+            primary_quotes=quotes
+        )
+        
         for proxy_name, proxy in ta_proxies.items():
             if hasattr(proxy, 'set_quotes'):
-                proxy.set_quotes(quotes)
+                proxy.set_quotes(quotes_provider)
         
-        return quotes
+        return quotes_provider
     
     def fetch_next_bar(
         self, 
-        quotes_data: ta.Quotes, 
+        quotes_provider: QuotesProvider, 
         ta_proxies: Dict[str, Any]
     ) -> Tuple[BarStatus, Optional[Tuple[ta.Quotes, np.datetime64, PRICE_TYPE]]]:
         """
         Get next bar data for strategy execution (backtesting implementation).
         
         Args:
-            quotes_data: Quotes object (from initialize_quotes)
+            quotes_provider: QuotesProvider instance (from initialize_quotes)
             ta_proxies: Dictionary of TA proxies (for backtesting, set_quotes() is not called)
         
         Returns:
@@ -594,21 +596,18 @@ class BrokerBacktesting(Broker):
             - status: BarStatus (RECEIVED, WAITING, FINISHED)
             - data_tuple: Tuple of (sliced_quotes, current_time, current_price) if status is RECEIVED, else None
         """
+        primary = quotes_provider.primary
         
-        # Check if we've reached the end of data
-        if self.i_time >= len(quotes_data.close):
+        if self.i_time >= len(primary.close):
             return (BarStatus.FINISHED, None)
         
-        # Get current time and price
-        current_time = quotes_data.time[self.i_time]
-        current_price = quotes_data.close[self.i_time]
+        current_time = primary.time[self.i_time]
+        current_price = primary.close[self.i_time]
         
-        # Update current bar high and low for stop order processing
-        self.bar_high = quotes_data.high[self.i_time]
-        self.bar_low = quotes_data.low[self.i_time]
+        self.bar_high = primary.high[self.i_time]
+        self.bar_low = primary.low[self.i_time]
         
-        # Create slice up to current index (inclusive)
-        sliced_quotes = quotes_data[:self.i_time+1]
+        sliced_quotes = primary[:self.i_time+1]
         sliced_quotes.writeable = False
         
         self.i_time += 1

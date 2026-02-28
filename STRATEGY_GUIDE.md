@@ -505,37 +505,53 @@ These values are automatically set from the broker after the broker is assigned.
 
 ### Rounding Methods
 
-The strategy provides two methods for rounding values to precision:
+The strategy provides two methods for formatting values to precision. These are proxy methods that delegate to broker's internal formatting methods.
 
-#### `round_to_precision(value: float, precision: float) -> float`
+#### `format_volume(value: VOLUME_TYPE) -> VOLUME_TYPE`
 
-Rounds value to the nearest multiple of precision.
+Formats volume by rounding down to nearest multiple of `precision_amount`. This is a proxy for `broker.format_volume()`.
 
-```python
-# Round price to nearest precision
-price = 100.123
-rounded_price = self.round_to_precision(price, self.precision_price)
-# If precision_price = 0.01, result is 100.12
-```
-
-#### `floor_to_precision(value: float, precision: float) -> float`
-
-Rounds value down to the nearest multiple of precision.
+**Note:** This method uses floor rounding (always rounds down) to ensure volumes conform to exchange precision requirements.
 
 ```python
 # Round volume down to precision
 volume = 1.234
-rounded_volume = self.floor_to_precision(volume, self.precision_amount)
-# If precision_amount = 0.01, result is 1.23
+rounded_volume = self.format_volume(volume)
+# If precision_amount = 0.1, result is 1.2 (rounded down)
+
+# Example: 1.25 with precision_amount = 0.1 -> 1.2 (not 1.3)
+volume2 = 1.25
+rounded_volume2 = self.format_volume(volume2)
+# Result: 1.2
+```
+
+#### `format_price(value: PRICE_TYPE) -> PRICE_TYPE`
+
+Formats price by rounding to nearest multiple of `precision_price`. This is a proxy for `broker.format_price()`.
+
+**Note:** This method rounds to nearest value to ensure prices conform to exchange precision requirements.
+
+```python
+# Round price to nearest precision
+price = 100.123
+rounded_price = self.format_price(price)
+# If precision_price = 0.01, result is 100.12
+
+# Example: 100.125 with precision_price = 0.01 -> 100.13 (rounded up)
+price2 = 100.125
+rounded_price2 = self.format_price(price2)
+# Result: 100.13
 ```
 
 ### Automatic Rounding
 
-All trading methods (`buy()`, `sell()`, `buy_sltp()`, `sell_sltp()`) automatically apply precision rounding:
+All trading methods (`buy()`, `sell()`, `buy_sltp()`, `sell_sltp()`) automatically apply precision rounding before placing orders:
 
-- **Volume (quantity)** - rounded down using `floor_to_precision()` with `precision_amount`
-- **Price** - rounded to nearest using `round_to_precision()` with `precision_price`
-- **Trigger price** - rounded to nearest using `round_to_precision()` with `precision_price`
+- **Volume (quantity)** - rounded down using `broker.format_volume()` (equivalent to `format_volume()`)
+- **Price** - rounded to nearest using `broker.format_price()` (equivalent to `format_price()`)
+- **Trigger price** - rounded to nearest using `broker.format_price()` (equivalent to `format_price()`)
+
+**Note**: Even if you manually round values using `format_volume()` or `format_price()` before calling trading methods, the values will be rounded again automatically. This ensures all values conform to exchange precision requirements.
 
 If a value is changed due to rounding, a warning is logged.
 
@@ -547,13 +563,13 @@ def on_bar(self):
     desired_volume = 1.2345
     
     # Round down manually if needed
-    volume = self.floor_to_precision(desired_volume, self.precision_amount)
+    volume = self.format_volume(desired_volume)
     
     # Calculate desired price
     desired_price = 100.123
     
     # Round to nearest manually if needed
-    price = self.round_to_precision(desired_price, self.precision_price)
+    price = self.format_price(desired_price)
     
     # Place order (will also be rounded automatically)
     self.buy(quantity=volume, price=price)
@@ -638,41 +654,55 @@ self.buy_sltp(enter=1.0, take_profit=[(0.3, 110.0), (0.4, 112.0), (0.3, 114.0)])
 
 #### Volume Calculation Rules for Stop Loss and Take Profit Orders
 
-**IMPORTANT**: The volumes of stop loss and take profit orders are calculated dynamically based on the following rules:
+**IMPORTANT**: The volumes of stop loss and take profit orders are calculated dynamically and recalculated whenever orders execute. The calculation rules are:
 
 1. **Stop Loss Volume Calculation**:
-   - Stop loss volumes are calculated from the **entry volume** (sum of all entry order volumes), **minus executed take profit volumes**
+   - **Target volume** = current position volume (`deal.quantity`) + sum of unexecuted entry orders volume
    - Each stop loss order's volume is calculated by applying its fraction to the target volume
+   - Volumes are rounded using `format_volume_round()` (rounds to nearest precision)
    - The last (extreme) stop loss order always closes all remaining volume
+   - **Note**: Stop loss volumes are NOT reduced by executed take profit orders. They are calculated from current position + pending entries.
 
 2. **Take Profit Volume Calculation**:
-   - Take profit volumes are calculated from the **entry volume** (sum of all entry order volumes), **minus executed stop loss volumes**
+   - **Target volume** = current position volume (`deal.quantity`) only
    - Each take profit order's volume is calculated by applying its fraction to the target volume
+   - Volumes are rounded using `format_volume_round()` (rounds to nearest precision)
    - The last (extreme) take profit order always closes all remaining volume
+   - **Note**: Take profit volumes are NOT reduced by executed stop loss orders. They are calculated from current position only.
 
 3. **Key Points**:
-   - Both stop loss and take profit volumes are always calculated from the **full entry volume**, not from the current position size
-   - When calculating stop loss volumes, executed take profits are subtracted from the entry volume
-   - When calculating take profit volumes, executed stop losses are subtracted from the entry volume
+   - Both stop loss and take profit volumes are recalculated dynamically as orders execute
+   - Stop loss volumes include unexecuted entry orders (to account for pending entries)
+   - Take profit volumes are based only on current position (already executed entries)
+   - Volumes are recalculated whenever an order executes, ensuring accurate distribution
    - The last order (extreme stop or extreme take) always closes all remaining volume to ensure the position is fully closed
 
 **Example**:
 ```python
-# Entry: 1.0 volume
+# Entry: 1.0 volume (market order)
 # Stop losses: 0.33, 0.33, 0.34 (fractions)
 # Take profits: 0.5, 0.5 (fractions)
 
-# After entry executes: entry_volume = 1.0
-# Initial stop volumes: calculated from 1.0 (no takes executed yet)
-# Initial take volumes: calculated from 1.0 (no stops executed yet)
+# After entry executes on bar 1:
+#   - Current position: 1.0
+#   - Stop loss target_volume = 1.0 + 0 (no unexecuted entries) = 1.0
+#   - Take profit target_volume = 1.0
+#   - Stop volumes: 0.33, 0.33, 0.34 (from 1.0)
+#   - Take volumes: 0.5, 0.5 (from 1.0)
 
-# After first stop executes (0.3 volume):
-#   - Remaining entry volume for takes: 1.0 - 0.3 = 0.7
-#   - Take volumes recalculated from 0.7
+# After first stop executes (0.33 volume):
+#   - Current position: 0.67
+#   - Stop loss target_volume = 0.67 + 0 = 0.67 (recalculated)
+#   - Take profit target_volume = 0.67 (recalculated)
+#   - Remaining stop volumes: 0.33, 0.34 (from 0.67)
+#   - Take volumes: 0.5, 0.5 (from 0.67)
 
-# After first take executes (0.35 volume):
-#   - Remaining entry volume for stops: 1.0 - 0.35 = 0.65
-#   - Stop volumes recalculated from 0.65
+# After first take executes (0.5 volume):
+#   - Current position: 0.17
+#   - Stop loss target_volume = 0.17 + 0 = 0.17 (recalculated)
+#   - Take profit target_volume = 0.17 (recalculated)
+#   - Remaining stop volumes: 0.33, 0.34 (from 0.17, but will be adjusted)
+#   - Remaining take volume: 0.5 (from 0.17, but will be adjusted)
 ```
 
 **Important:** 
@@ -955,10 +985,15 @@ self.logging("Warning: insufficient data", level="warning")
 self.logging("Error placing order", level="error")
 self.logging("Successful operation", level="success")
 self.logging("Debug information", level="debug")
+
+# Message can be any type - will be converted to string automatically
+self.logging(123)  # Will be converted to "123"
+self.logging(3.14)  # Will be converted to "3.14"
+self.logging({"key": "value"})  # Will be converted to string representation
 ```
 
 **Parameters:**
-- `message`: message text (required)
+- `message`: message text (required). Can be any type - will be automatically converted to string if not already a string.
 - `level`: message level (optional, default: `"info"`)
 
 **Available levels:**

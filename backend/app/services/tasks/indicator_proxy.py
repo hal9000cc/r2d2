@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict
 from app.core.logger import get_logger
 from app.core.utils import generate_random_color
 from app.services.tasks.exceptions import R2D2IndicatorNotFoundError
+from app.services.tasks.quotes_provider import QuotesProvider
+from app.services.quotes.timeframe import Timeframe
 
 logger = get_logger(__name__)
 
@@ -134,19 +136,18 @@ class ta_proxy(ABC):
             broker: Reference to broker instance
         """
         self.broker = broker
-        self.quotes_data: Optional[ta.Quotes] = None
+        self.quotes_provider: Optional[QuotesProvider] = None
         self.cache = {}
         self._indicator_metadata = self._load_indicator_metadata()
     
-    def set_quotes(self, quotes_data: ta.Quotes) -> None:
+    def set_quotes(self, quotes_provider: QuotesProvider) -> None:
         """
-        Set or update quotes data.
+        Set or update quotes provider.
         
         Args:
-            quotes_data: Quotes object with OHLCV data
+            quotes_provider: QuotesProvider instance for accessing quotes data
         """
-        self.quotes_data = quotes_data
-        # Clear cache when quotes are updated
+        self.quotes_provider = quotes_provider
         self.cache = {}
     
     @abstractmethod
@@ -467,13 +468,14 @@ class ta_proxy(ABC):
             return str_value
     
     @abstractmethod
-    def calc_indicator(self, name: str, **kwargs) -> ta.IndicatorResult:
+    def calc_indicator(self, name: str, quotes: ta.Quotes, **kwargs) -> ta.IndicatorResult:
         """
         Calculate indicator values for entire dataset.
         Must be implemented in subclasses for specific TA libraries.
         
         Args:
             name: Indicator name (e.g., 'SMA', 'EMA', 'RSI')
+            quotes: Quotes data to calculate indicator on
             **kwargs: Indicator parameters
             
         Returns:
@@ -486,45 +488,72 @@ class ta_proxy(ABC):
         Get indicator values with caching and slicing to current bar.
         Common implementation for all TA libraries.
         
+        Supports optional 'symbol' and 'timeframe' kwargs to calculate
+        indicator on a different symbol/timeframe than the primary one.
+        
         Args:
             name: Indicator name (e.g., 'SMA', 'EMA', 'RSI')
-            **kwargs: Indicator parameters (may include 'lines' for line styling)
-                lines format: {'line_name': {'visible': bool, 'color': str, 'lineWidth': int, 'lineStyle': str}, ...}
+            **kwargs: Indicator parameters. Special keys:
+                - symbol: Trading symbol (e.g., 'ETH/USDT:USDT'). Default: primary symbol.
+                - timeframe: Timeframe string (e.g., '1h', '15m'). Default: primary timeframe.
+                    Must be >= primary timeframe.
+                - lines: Line styling config (only for primary symbol/timeframe indicators).
             
         Returns:
             IndicatorResult object with indicator values sliced to current bar
         """
-        # Extract lines config from kwargs (if present)
         lines_config = kwargs.pop('lines', None)
+        req_symbol = kwargs.pop('symbol', None)
+        req_timeframe = kwargs.pop('timeframe', None)
         
-        # Create cache key from name and sorted parameters (without lines, as it doesn't affect values)
-        cache_key = (name, tuple(sorted(kwargs.items())))
+        is_custom = req_symbol is not None or req_timeframe is not None
         
-        # Check cache
+        if is_custom:
+            actual_symbol = req_symbol or self.broker.symbol
+            actual_tf = Timeframe.cast(req_timeframe) if req_timeframe else self.quotes_provider.primary_timeframe
+            
+            if actual_tf < self.quotes_provider.primary_timeframe:
+                raise ValueError(
+                    f"Requested timeframe '{req_timeframe}' is lower than "
+                    f"primary timeframe '{self.quotes_provider.primary_timeframe}'. "
+                    f"Only higher or equal timeframes are supported."
+                )
+            
+            quotes_for_calc = self.quotes_provider.get_quotes(actual_symbol, actual_tf)
+        else:
+            actual_symbol = self.broker.symbol
+            actual_tf = self.quotes_provider.primary_timeframe
+            quotes_for_calc = self.quotes_provider.primary
+        
+        cache_key = (name, actual_symbol, actual_tf, tuple(sorted(kwargs.items())))
+        
         if cache_key not in self.cache:
-            # Calculate indicator for entire dataset (returns IndicatorResult)
-            indicator_result = self.calc_indicator(name, **kwargs)
+            indicator_result = self.calc_indicator(name, quotes_for_calc, **kwargs)
             
-            # Build series info from metadata (pass kwargs for 'as_source' type determination)
-            series_info = self._build_series_info(name, lines_config, kwargs)
+            if is_custom:
+                series_info = []
+                pane_title = ''
+            else:
+                series_info = self._build_series_info(name, lines_config, kwargs)
+                pane_title = self._format_pane_title(name, kwargs)
             
-            # Format pane title
-            pane_title = self._format_pane_title(name, kwargs)
-            
-            # Store in cache as UsedIndicatorDescription
             self.cache[cache_key] = UsedIndicatorDescription(
                 values=indicator_result,
-                visible=True,
+                visible=not is_custom,
                 series_info=series_info,
                 paneTitle=pane_title
             )
         
-        # Get cached indicator description
         indicator_desc = self.cache[cache_key]
         full_result = indicator_desc.values
         
-        # Slice IndicatorResult to current bar
-        sliced_result = full_result[:self.broker.i_time + 1]
+        if is_custom:
+            slice_size = self.quotes_provider.get_slice_size(
+                quotes_for_calc, actual_tf, self.broker.current_time
+            )
+            sliced_result = full_result[:slice_size]
+        else:
+            sliced_result = full_result[:self.broker.i_time + 1]
         
         return sliced_result
     
@@ -718,119 +747,99 @@ class ta_proxy_talib(ta_proxy):
                 logger.debug(f"Could not analyze function '{name}': {e}")
                 continue
     
-    def calc_indicator(self, name: str, **kwargs) -> ta.IndicatorResult:
+    def calc_indicator(self, name: str, quotes: ta.Quotes, **kwargs) -> ta.IndicatorResult:
         """
         Calculate indicator values using TA-Lib.
         
         Args:
             name: Indicator name (e.g., 'SMA', 'EMA', 'RSI')
+            quotes: Quotes data to calculate indicator on
             **kwargs: Indicator parameters (non-positional)
             
         Returns:
             IndicatorResult object with indicator values for entire dataset
             
         Raises:
-            PyTAExceptionIndicatorNotFound: If indicator name is not found in descriptions
+            R2D2IndicatorNotFoundError: If indicator name is not found in descriptions
         """
-        # Get indicator description
         if name not in self._indicator_descriptions:
             raise R2D2IndicatorNotFoundError(f"TA-Lib indicator '{name}' is not available or has invalid parameters")
         
         description = self._indicator_descriptions[name]
         
-        # Get function from talib
         talib_function = getattr(talib, name)
         
-        # Build positional arguments from quotes_data
         args = []
-        args_names = []  # Names for positional arguments (for error formatting)
-        # Create a copy of kwargs to modify it (remove 'value' if used)
+        args_names = []
         call_kwargs = kwargs.copy()
         
         for param_name in description.values:
             if param_name == 'real':
-                # For 'real' parameter, get series name from kwargs['value']
                 if 'value' not in kwargs:
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires parameter 'real' (series name), "
                         f"but 'value' parameter is not provided in kwargs"
                     )
-                # Get series name from value parameter
                 series_name = kwargs['value']
-                # Remove 'value' from kwargs as it's not a talib parameter
                 call_kwargs.pop('value', None)
-                # Get data from quotes_data using series name
                 try:
-                    args.append(self.quotes_data[series_name])
+                    args.append(quotes[series_name])
                     args_names.append(series_name)
                 except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires series '{series_name}' "
-                        f"from 'value' parameter, but it's not available in quotes_data"
+                        f"from 'value' parameter, but it's not available in quotes data"
                     )
             elif param_name == 'real0':
-                # For 'real0' parameter, get series name from kwargs['value0']
                 if 'value0' not in kwargs:
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires parameter 'real0' (series name), "
                         f"but 'value0' parameter is not provided in kwargs"
                     )
-                # Get series name from value0 parameter
                 series_name = kwargs['value0']
-                # Remove 'value0' from kwargs as it's not a talib parameter
                 call_kwargs.pop('value0', None)
-                # Get data from quotes_data using series name
                 try:
-                    args.append(self.quotes_data[series_name])
+                    args.append(quotes[series_name])
                     args_names.append(series_name)
                 except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires series '{series_name}' "
-                        f"from 'value0' parameter, but it's not available in quotes_data"
+                        f"from 'value0' parameter, but it's not available in quotes data"
                     )
             elif param_name == 'real1':
-                # For 'real1' parameter, get series name from kwargs['value1']
                 if 'value1' not in kwargs:
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires parameter 'real1' (series name), "
                         f"but 'value1' parameter is not provided in kwargs"
                     )
-                # Get series name from value1 parameter
                 series_name = kwargs['value1']
-                # Remove 'value1' from kwargs as it's not a talib parameter
                 call_kwargs.pop('value1', None)
-                # Get data from quotes_data using series name
                 try:
-                    args.append(self.quotes_data[series_name])
+                    args.append(quotes[series_name])
                     args_names.append(series_name)
                 except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires series '{series_name}' "
-                        f"from 'value1' parameter, but it's not available in quotes_data"
+                        f"from 'value1' parameter, but it's not available in quotes data"
                     )
             elif param_name == 'periods':
-                # For 'periods' parameter, get value from kwargs['periods']
                 if 'periods' not in kwargs:
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires parameter 'periods', "
                         f"but 'periods' parameter is not provided in kwargs"
                     )
-                # Get periods value from kwargs
                 periods_value = kwargs['periods']
-                # Remove 'periods' from kwargs as it's passed as positional argument
                 call_kwargs.pop('periods', None)
-                # Add periods value as positional argument
                 args.append(periods_value)
-                args_names.append(str(periods_value))  # Show as number in error message
+                args_names.append(str(periods_value))
             else:
-                # Regular parameter - get directly from quotes_data
                 try:
-                    args.append(self.quotes_data[param_name])
+                    args.append(quotes[param_name])
                     args_names.append(param_name)
                 except (KeyError, AttributeError):
                     raise ValueError(
                         f"TA-Lib indicator '{name}' requires parameter '{param_name}', "
-                        f"but it's not available in quotes_data"
+                        f"but it's not available in quotes data"
                     )
         
         try:
@@ -938,37 +947,34 @@ class ta_proxy_pyita(ta_proxy):
         """
         super().__init__(broker)
     
-    def calc_indicator(self, name: str, **kwargs) -> ta.IndicatorResult:
+    def calc_indicator(self, name: str, quotes: ta.Quotes, **kwargs) -> ta.IndicatorResult:
         """
         Calculate indicator values using pyita.
         
         Args:
             name: Indicator name (e.g., 'sma', 'ema', 'rsi')
+            quotes: Quotes data to calculate indicator on
             **kwargs: Indicator parameters
             
         Returns:
             IndicatorResult object with indicator values for entire dataset
             
         Raises:
-            PyTAExceptionIndicatorNotFound: If indicator name is not found
+            R2D2IndicatorNotFoundError: If indicator name is not found
         """
-        # Check if indicator exists in metadata
         if name.lower() not in self._indicator_metadata:
             raise R2D2IndicatorNotFoundError(f"pyita indicator '{name}' is not available")
         
-        # Get indicator function via getattr
         try:
             indicator_func = getattr(ta, name.lower())
         except AttributeError:
             raise R2D2IndicatorNotFoundError(f"pyita indicator '{name}' is not available")
         
-        # Call indicator (quotes_data is already a Quotes object)
         try:
-            result = indicator_func(self.quotes_data, **kwargs)
+            result = indicator_func(quotes, **kwargs)
         except Exception as e:
             formatted_args = self._format_indicator_args(name, kwargs=kwargs)
             raise RuntimeError(f"Error calling pyita.{formatted_args}: {e}") from e
         
-        # Return IndicatorResult as is
         return result
 

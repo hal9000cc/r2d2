@@ -2,6 +2,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional, List, Tuple, Dict, Any, Callable, TYPE_CHECKING, Union
 import traceback
+import math
+import sys
 import numpy as np
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.tasks import Task
@@ -121,6 +123,48 @@ class Strategy(ABC):
         """Proxy for broker.lteq(a, b) - a <= b with precision tolerance."""
         assert self.broker is not None, "Broker is not set on strategy"
         return self.broker.lteq(a, b)
+
+    # ------------------------------------------------------------------
+    # Precision formatting proxies (delegate to broker)
+    # ------------------------------------------------------------------
+    
+    def format_volume(self, value: VOLUME_TYPE) -> VOLUME_TYPE:
+        """
+        Format volume by rounding down to nearest multiple of precision_amount.
+        
+        Proxy for broker.format_volume(). This method rounds volume down (floor rounding)
+        to ensure it conforms to exchange precision requirements.
+        
+        Args:
+            value: Volume value to format (must be >= 0)
+        
+        Returns:
+            Formatted volume rounded down to precision_amount
+        
+        Raises:
+            AssertionError: If broker is not set, value < 0, or precision_amount <= 0
+        """
+        assert self.broker is not None, "Broker is not set on strategy"
+        return self.broker.format_volume(value)
+    
+    def format_price(self, value: PRICE_TYPE) -> PRICE_TYPE:
+        """
+        Format price by rounding to nearest multiple of precision_price.
+        
+        Proxy for broker.format_price(). This method rounds price to nearest value
+        to ensure it conforms to exchange precision requirements.
+        
+        Args:
+            value: Price value to format (must be >= 0)
+        
+        Returns:
+            Formatted price rounded to nearest precision_price
+        
+        Raises:
+            AssertionError: If broker is not set, value < 0, or precision_price <= 0
+        """
+        assert self.broker is not None, "Broker is not set on strategy"
+        return self.broker.format_price(value)
 
     def on_start(self):
         """
@@ -965,18 +1009,23 @@ class Strategy(ABC):
             volume=volume
         )
     
-    def logging(self, message: str, level: str = "info") -> None:
+    def logging(self, message: Any, level: str = "info") -> None:
         """
         Send log message to frontend via broker.
         Proxies to broker.logging().
         
         Args:
-            message: Message text (required)
+            message: Message text (required). Can be any type - will be converted to string if not already a string.
             level: Message level (optional, default: "info")
                   Valid levels: info, warning, error, success, debug
         """
         if self.broker is None:
             raise RuntimeError("Broker not initialized. Cannot send log message.")
+        
+        # Convert message to string if it's not already a string
+        if not isinstance(message, str):
+            message = str(message)
+        
         self.broker.logging(message, level)
     
     def _log_result_errors(self, errors: List[str], method_name: str) -> None:

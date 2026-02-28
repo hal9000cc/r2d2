@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.tasks.indicator_proxy import ta_proxy_talib, ta_proxy_pyita
+from app.services.tasks.quotes_provider import QuotesProvider
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 from app.core.config import BAR_WAIT_INTERVAL, ORDER_WAIT_INTERVAL
@@ -2004,7 +2005,7 @@ class Broker(ABC):
 
     def get_next_bar(
         self,
-        quotes_data: ta.Quotes,
+        quotes_provider: QuotesProvider,
         ta_proxies: Dict[str, Any]
     ) -> Optional[Tuple[ta.Quotes, np.datetime64, PRICE_TYPE]]:
         """
@@ -2013,7 +2014,7 @@ class Broker(ABC):
         Calls fetch_next_bar() in a loop until data is received or finished.
         
         Args:
-            quotes_data: Quotes object
+            quotes_provider: QuotesProvider instance
             ta_proxies: Dictionary of TA proxies
             
         Returns:
@@ -2022,7 +2023,7 @@ class Broker(ABC):
         while True:
             self.close_deal_processing()
             self.order_processing(markets_only=True)
-            status, bar_data = self.fetch_next_bar(quotes_data, ta_proxies)
+            status, bar_data = self.fetch_next_bar(quotes_provider, ta_proxies)
             
             if status == BarStatus.FINISHED:
                 return None
@@ -2085,8 +2086,7 @@ class Broker(ABC):
             'ta': ta_proxy_pyita(broker=self)
         }
         
-        # Calls set_quotes on proxies inside
-        quotes_data = self.initialize_quotes(self.task.history_size, ta_proxies)
+        quotes_provider = self.initialize_quotes(self.task.history_size, ta_proxies)
         
         results = None
         if save_results:
@@ -2102,7 +2102,7 @@ class Broker(ABC):
         last_update_time = time.time()
         
         while True:
-            bar_data = self.get_next_bar(quotes_data, ta_proxies)
+            bar_data = self.get_next_bar(quotes_provider, ta_proxies)
             if bar_data is None:
                 break
             
@@ -2227,31 +2227,31 @@ class Broker(ABC):
         raise NotImplementedError("initialize_run must be implemented by subclass")
     
     @abstractmethod
-    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> ta.Quotes:
+    def initialize_quotes(self, history_size: int, ta_proxies: Dict[str, Any]) -> QuotesProvider:
         """
         Initialize quotes data for strategy execution.
         
         Args:
             history_size: Number of bars to load for strategy initialization
             ta_proxies: Dictionary of TA proxies (e.g., {'talib': ta_proxy_talib(...)})
-                       Should call set_quotes() on each proxy with initial quotes data
+                       Should call set_quotes() on each proxy with quotes provider
         
         Returns:
-            Quotes object with OHLCV data
+            QuotesProvider instance for accessing quotes data
         """
         raise NotImplementedError("initialize_quotes must be implemented by subclass")
     
     @abstractmethod
     def fetch_next_bar(
         self, 
-        quotes_data: ta.Quotes, 
+        quotes_provider: QuotesProvider, 
         ta_proxies: Dict[str, Any]
     ) -> Tuple[BarStatus, Optional[Tuple[ta.Quotes, np.datetime64, PRICE_TYPE]]]:
         """
         Get next bar data for strategy execution.
         
         Args:
-            quotes_data: Quotes object (from initialize_quotes)
+            quotes_provider: QuotesProvider instance (from initialize_quotes)
             ta_proxies: Dictionary of TA proxies (for real trading, should call set_quotes() on each proxy)
         
         Returns:

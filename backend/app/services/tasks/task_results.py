@@ -458,10 +458,10 @@ class TaskResults:
             return False
         
         first_proxy = next(iter(self.ta_proxies.values()))
-        if not hasattr(first_proxy, 'quotes_data') or first_proxy.quotes_data is None:
+        if not hasattr(first_proxy, 'quotes_provider') or first_proxy.quotes_provider is None:
             return False
         
-        time_array = first_proxy.quotes_data.time
+        time_array = first_proxy.quotes_provider.primary.time
         
         client_binary = self._get_redis_client_binary()
         time_key = f"{result_key_prefix}:{result_id}:time"
