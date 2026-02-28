@@ -978,3 +978,53 @@ class ta_proxy_pyita(ta_proxy):
         
         return result
 
+
+class QuotesProxy:
+    """
+    Proxy that provides access to quotes for different symbols and timeframes.
+    Used as self.quotes in strategies.
+    
+    Usage:
+        self.quotes()                                    # primary quotes
+        self.quotes(timeframe='1h')                      # higher TF, same symbol
+        self.quotes(symbol='ETH/USDT:USDT')              # different symbol, same TF
+        self.quotes(symbol='ETH/USDT:USDT', timeframe='1h')  # different symbol and TF
+    """
+    
+    def __init__(self, broker):
+        self.broker = broker
+        self.quotes_provider: Optional[QuotesProvider] = None
+    
+    def set_quotes(self, quotes_provider: QuotesProvider):
+        self.quotes_provider = quotes_provider
+    
+    def __call__(self, symbol: Optional[str] = None, timeframe: Optional[str] = None) -> ta.Quotes:
+        """
+        Return sliced quotes for the requested symbol/timeframe.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'ETH/USDT:USDT'). Default: primary symbol.
+            timeframe: Timeframe string (e.g., '1h', '1d'). Must be >= primary TF.
+            
+        Returns:
+            ta.Quotes sliced to current bar (closed bars only for higher TFs)
+        """
+        if symbol is None and timeframe is None:
+            return self.quotes_provider.primary[:self.broker.i_time]
+        
+        actual_symbol = symbol or self.broker.symbol
+        actual_tf = Timeframe.cast(timeframe) if timeframe else self.quotes_provider.primary_timeframe
+        
+        if actual_tf < self.quotes_provider.primary_timeframe:
+            raise ValueError(
+                f"Requested timeframe '{timeframe}' is lower than "
+                f"primary timeframe '{self.quotes_provider.primary_timeframe}'. "
+                f"Only higher or equal timeframes are supported."
+            )
+        
+        quotes = self.quotes_provider.get_quotes(actual_symbol, actual_tf)
+        slice_size = self.quotes_provider.get_slice_size(
+            quotes, actual_tf, self.broker.current_time
+        )
+        return quotes[:slice_size]
+

@@ -149,6 +149,53 @@ def on_bar(self):
         return  # Not enough data
 ```
 
+### Accessing Quotes for Other Symbols and Timeframes
+
+The `self.quotes` proxy allows accessing raw OHLCV quotes for different symbols and timeframes directly:
+
+```python
+# Get primary quotes (same as self.close, self.open, etc. but as a Quotes object)
+q = self.quotes()
+
+# Get quotes on a higher timeframe
+q_1h = self.quotes(timeframe='1h')
+
+# Get quotes for a different symbol
+q_eth = self.quotes(symbol='ETH/USDT:USDT')
+
+# Both different symbol and timeframe
+q_eth_1d = self.quotes(symbol='ETH/USDT:USDT', timeframe='1d')
+```
+
+The returned object is a `Quotes` object with the following arrays:
+- `q.time` - time array
+- `q.open` - open price array
+- `q.high` - high price array
+- `q.low` - low price array
+- `q.close` - close price array
+- `q.volume` - volume array
+
+**Important restrictions:**
+- **Timeframe must be >= primary timeframe** - only higher or equal timeframes are supported
+- **Look-ahead bias prevention** - for higher timeframes, only **closed bars** are returned (the forming bar is excluded)
+- Quotes for different symbols/timeframes are loaded automatically and cached
+
+**Example:**
+
+```python
+def on_bar(self):
+    # Get 1h quotes from 5m strategy
+    q_1h = self.quotes(timeframe='1h')
+    
+    if len(q_1h.close) > 0:
+        # Use 1h OHLCV data directly
+        last_1h_close = q_1h.close[-1]
+        last_1h_high = q_1h.high[-1]
+        
+        # Calculate custom metric on 1h data
+        avg_range = np.mean(q_1h.high[-10:] - q_1h.low[-10:])
+```
+
 ---
 
 ## Access to Indicators

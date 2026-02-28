@@ -1,8 +1,9 @@
 """
-Cross-timeframe indicator tests.
+Cross-timeframe indicator and quotes proxy tests.
 
 Verifies that indicators requested on a higher timeframe (1h)
 from within a 5m strategy produce correct slice sizes and values.
+Also tests QuotesProxy for accessing quotes of different timeframes/symbols.
 """
 import pytest
 import numpy as np
@@ -392,4 +393,168 @@ class TestIndicatorCrossTimeframe:
             assert r['close_size'] == expected_n, (
                 f"Bar {r['bar_count']}: close_size {r['close_size']} != {expected_n}"
             )
+
+
+# ============================================================================
+# QuotesProxy strategy and tests
+# ============================================================================
+
+class QuotesProxyStrategy(Strategy):
+    """Strategy that uses self.quotes() proxy to get quotes on different TFs."""
+
+    def __init__(self):
+        super().__init__()
+
+    def on_start(self):
+        self.results = []
+        self.bar_count = 0
+
+    def on_bar(self):
+        primary = self.quotes()
+        higher_tf = self.quotes(timeframe='1h')
+
+        self.results.append({
+            'bar_count': self.bar_count,
+            'current_time': self.broker.current_time,
+            'primary_len': len(primary.close),
+            'primary_last_close': float(primary.close[-1]),
+            'higher_len': len(higher_tf.close),
+            'higher_last_close': float(higher_tf.close[-1]) if len(higher_tf.close) > 0 else None,
+            'higher_last_high': float(higher_tf.high[-1]) if len(higher_tf.high) > 0 else None,
+            'higher_last_time': higher_tf.time[-1] if len(higher_tf.time) > 0 else None,
+        })
+        self.bar_count += 1
+
+
+def run_quotes_proxy_strategy(quotes_5m, quotes_1h, history_size, total_exec_bars,
+                              base_time_dt, mock_broker_cls, mock_provider_cls):
+    """Run strategy with QuotesProxy."""
+    mock_client = Mock()
+
+    def side_effect(source, symbol, timeframe, start, end):
+        tf = timeframe if isinstance(timeframe, Timeframe) else Timeframe.cast(timeframe)
+        if tf == Timeframe.t5m:
+            return quotes_5m
+        if tf == Timeframe.t1h:
+            return quotes_1h
+        raise ValueError(f"Unexpected timeframe: {tf}")
+
+    mock_client.get_quotes.side_effect = side_effect
+    mock_broker_cls.return_value = mock_client
+    mock_provider_cls.return_value = mock_client
+
+    task = create_mock_task(history_size, 20, total_exec_bars, base_time_dt)
+    strategy = QuotesProxyStrategy()
+    callbacks = Strategy.create_strategy_callbacks(strategy)
+    broker = BrokerBacktesting(task, result_id='test_quotes_proxy', callbacks_dict=callbacks)
+    strategy.broker = broker
+    broker.run(save_results=False)
+    return strategy
+
+
+class TestQuotesProxy:
+
+    @patch('app.services.tasks.quotes_provider.QuotesClient')
+    @patch('app.services.tasks.broker_backtesting.QuotesClient')
+    def test_primary_quotes(self, mock_broker_cls, mock_provider_cls):
+        """self.quotes() returns primary quotes sliced to current bar."""
+        history_size = 600
+        total_exec_bars = 300
+        base_time_dt = datetime(2024, 1, 1)
+        base_time_np = np.datetime64('2024-01-01T00:00:00', 'ms')
+
+        quotes_5m = generate_5m_quotes(history_size + total_exec_bars, base_time_np)
+        quotes_1h = aggregate_5m_to_1h(quotes_5m)
+
+        strategy = run_quotes_proxy_strategy(
+            quotes_5m, quotes_1h, history_size, total_exec_bars,
+            base_time_dt, mock_broker_cls, mock_provider_cls,
+        )
+
+        assert strategy.bar_count == total_exec_bars
+
+        for r in strategy.results[:5] + strategy.results[-5:]:
+            expected_len = history_size + r['bar_count'] + 1
+            assert r['primary_len'] == expected_len, (
+                f"Bar {r['bar_count']}: primary_len {r['primary_len']} != {expected_len}"
+            )
+            expected_close = float(quotes_5m['close'][history_size + r['bar_count']])
+            assert np.allclose(r['primary_last_close'], expected_close, rtol=1e-5, atol=1e-8)
+
+    @patch('app.services.tasks.quotes_provider.QuotesClient')
+    @patch('app.services.tasks.broker_backtesting.QuotesClient')
+    def test_higher_tf_quotes(self, mock_broker_cls, mock_provider_cls):
+        """self.quotes(timeframe='1h') returns closed 1h bars only."""
+        history_size = 600
+        total_exec_bars = 300
+        base_time_dt = datetime(2024, 1, 1)
+        base_time_np = np.datetime64('2024-01-01T00:00:00', 'ms')
+
+        quotes_5m = generate_5m_quotes(history_size + total_exec_bars, base_time_np)
+        quotes_1h = aggregate_5m_to_1h(quotes_5m)
+
+        strategy = run_quotes_proxy_strategy(
+            quotes_5m, quotes_1h, history_size, total_exec_bars,
+            base_time_dt, mock_broker_cls, mock_provider_cls,
+        )
+
+        assert strategy.bar_count == total_exec_bars
+
+        for r in strategy.results[:5] + strategy.results[-5:]:
+            idx_5m = history_size + r['bar_count']
+            expected_n = idx_5m // BARS_PER_HOUR
+            assert r['higher_len'] == expected_n, (
+                f"Bar {r['bar_count']}: higher_len {r['higher_len']} != {expected_n}"
+            )
+
+            if expected_n > 0:
+                expected_close = float(quotes_1h['close'][expected_n - 1])
+                assert np.allclose(r['higher_last_close'], expected_close, rtol=1e-5, atol=1e-8)
+
+                expected_high = float(quotes_1h['high'][expected_n - 1])
+                assert np.allclose(r['higher_last_high'], expected_high, rtol=1e-5, atol=1e-8)
+
+                expected_time = quotes_1h['time'][expected_n - 1]
+                assert r['higher_last_time'] == expected_time
+
+    @patch('app.services.tasks.quotes_provider.QuotesClient')
+    @patch('app.services.tasks.broker_backtesting.QuotesClient')
+    def test_lower_tf_raises(self, mock_broker_cls, mock_provider_cls):
+        """Requesting a timeframe lower than primary raises ValueError."""
+        history_size = 24
+        total_exec_bars = 12
+        base_time_dt = datetime(2024, 1, 1)
+        base_time_np = np.datetime64('2024-01-01T00:00:00', 'ms')
+
+        quotes_5m = generate_5m_quotes(history_size + total_exec_bars, base_time_np)
+        quotes_1h = aggregate_5m_to_1h(quotes_5m)
+
+        mock_client = Mock()
+        mock_client.get_quotes.return_value = quotes_5m
+        mock_broker_cls.return_value = mock_client
+        mock_provider_cls.return_value = mock_client
+
+        class LowerTfStrategy(Strategy):
+            def __init__(self):
+                super().__init__()
+
+            def on_start(self):
+                self.error = None
+
+            def on_bar(self):
+                if self.error is None:
+                    try:
+                        self.quotes(timeframe='1m')
+                    except ValueError as e:
+                        self.error = str(e)
+
+        task = create_mock_task(history_size, 20, total_exec_bars, base_time_dt)
+        strategy = LowerTfStrategy()
+        callbacks = Strategy.create_strategy_callbacks(strategy)
+        broker = BrokerBacktesting(task, result_id='test_lower_tf', callbacks_dict=callbacks)
+        strategy.broker = broker
+        broker.run(save_results=False)
+
+        assert strategy.error is not None
+        assert "lower than" in strategy.error
 

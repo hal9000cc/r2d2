@@ -9,7 +9,7 @@ import pyita as ta
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
-from app.services.tasks.indicator_proxy import ta_proxy_talib, ta_proxy_pyita
+from app.services.tasks.indicator_proxy import ta_proxy_talib, ta_proxy_pyita, QuotesProxy
 from app.services.tasks.quotes_provider import QuotesProvider
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
@@ -2083,7 +2083,8 @@ class Broker(ABC):
         
         ta_proxies = {
             'talib': ta_proxy_talib(broker=self),
-            'ta': ta_proxy_pyita(broker=self)
+            'ta': ta_proxy_pyita(broker=self),
+            'quotes': QuotesProxy(broker=self)
         }
         
         quotes_provider = self.initialize_quotes(self.task.history_size, ta_proxies)
