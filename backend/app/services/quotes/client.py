@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import redis
 import numpy as np
 import msgpack
@@ -118,23 +118,25 @@ class QuotesClient:
         metadata = response_data.get('metadata', {})
         if metadata.get('status') == 'error':
             raise R2D2QuotesExceptionDataNotReceived(symbol, history_start, history_end, metadata.get('error'))
-        
+
+        filled_indices: List[int] = metadata.get('filled_indices', [])
+
         # Extract binary data
         binary_data = response_data.get('binary_data', {})
-        
-        # Convert binary data to numpy arrays
+
         time_array = np.frombuffer(binary_data['time'], dtype=TIME_TYPE)
         open_array = np.frombuffer(binary_data['open'], dtype=np.float64)
         high_array = np.frombuffer(binary_data['high'], dtype=np.float64)
         low_array = np.frombuffer(binary_data['low'], dtype=np.float64)
         close_array = np.frombuffer(binary_data['close'], dtype=np.float64)
         volume_array = np.frombuffer(binary_data['volume'], dtype=np.float64)
-        
+
         return {
             'time': time_array,
             'open': open_array,
             'high': high_array,
             'low': low_array,
             'close': close_array,
-            'volume': volume_array
+            'volume': volume_array,
+            'filled_indices': filled_indices,
         }

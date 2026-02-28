@@ -361,27 +361,108 @@ class QuotesServer:
                 self._request_locks[key] = asyncio.Lock()
             return self._request_locks[key]
 
-    async def get_quotes(self, source: str, symbol: str, timeframe: Timeframe, history_start: datetime, history_end: Optional[datetime] = None) -> Dict[str, np.ndarray]:
+    def validate_bars(self, bars: List[list], tf: Timeframe) -> List[list]:
         """
-        Get quotes data from database, filling gaps if needed.
-        
+        Validate OHLCV bars and filter out invalid ones.
+
+        Each bar is [timestamp_ms, open, high, low, close, volume].
+
+        Filters out bars where:
+        - timestamp is not aligned to timeframe grid
+        - open <= 0 or close <= 0
+        - high < open or high < close
+        - low > open or low > close
+        - volume < 0
+        - duplicate timestamps within the batch
+
+        Args:
+            bars: List of bars from CCXT
+            tf: Timeframe object
+
+        Returns:
+            List of valid, deduplicated bars
+        """
+        if not bars:
+            return []
+
+        timeframe_ms = int(tf.value / TIME_UNITS_IN_ONE_SECOND * 1000)
+        valid_bars = []
+        invalid_count = 0
+        seen_times = set()
+        intra_dup_count = 0
+
+        for bar in bars:
+            timestamp_ms = bar[0]
+            open_price = bar[1]
+            high_price = bar[2]
+            low_price = bar[3]
+            close_price = bar[4]
+            volume = bar[5]
+
+            if timestamp_ms in seen_times:
+                intra_dup_count += 1
+                continue
+            seen_times.add(timestamp_ms)
+
+            if timestamp_ms % timeframe_ms != 0:
+                invalid_count += 1
+                continue
+
+            if open_price <= 0 or close_price <= 0:
+                invalid_count += 1
+                continue
+
+            if high_price < open_price or high_price < close_price:
+                invalid_count += 1
+                continue
+
+            if low_price > open_price or low_price > close_price:
+                invalid_count += 1
+                continue
+
+            if volume < 0:
+                invalid_count += 1
+                continue
+
+            valid_bars.append(bar)
+
+        if invalid_count > 0 or intra_dup_count > 0:
+            logger.warning(
+                "Bar validation: %d invalid, %d intra-batch duplicates filtered out of %d bars",
+                invalid_count, intra_dup_count, len(bars)
+            )
+
+        return valid_bars
+
+    async def get_quotes(self, source: str, symbol: str, timeframe: Timeframe, history_start: datetime, history_end: Optional[datetime] = None) -> Tuple[Dict[str, np.ndarray], List[int]]:
+        """
+        Get quotes data from database, filling gaps from exchange if needed.
+
+        After fetching missing data from the exchange, applies forward fill
+        to internal gaps (between first and last available bar).
+        Gaps before the first bar and after the last bar are NOT filled.
+
         Args:
             source: Data source (e.g., 'binance')
             symbol: Trading symbol (e.g., 'btc/usdt')
             timeframe: Timeframe object
             history_start: Start time for historical data
             history_end: End time for historical data (optional)
-        
+
         Returns:
-            dict with keys: 'time', 'open', 'high', 'low', 'close', 'volume'
-            Each value is a numpy array
+            Tuple of (quotes_data, filled_indices) where:
+            - quotes_data: dict with keys 'time', 'open', 'high', 'low', 'close', 'volume'
+            - filled_indices: list of bar indices that were forward-filled
+
+        Raises:
+            R2D2QuotesExceptionDataNotReceived: If no data available at all
         """
         if history_end is None:
             history_end = datetime.now(UTC)
 
         overall_start = datetime.now(UTC)
-        
-        # Step 1: Get history from database (run blocking ClickHouse query in a thread pool)
+
+        # Step 1: Get history from database
         loop = asyncio.get_running_loop()
         quotes_data = await loop.run_in_executor(
             None,
@@ -392,17 +473,15 @@ class QuotesServer:
             history_start,
             history_end,
         )
-        
+
         # Step 2: Find gaps (find_gaps handles empty arrays internally)
         gaps = self.find_gaps(quotes_data['time'], timeframe, history_start, history_end)
-        
-        # Step 3: Fill gaps by calling fetch_bar_async for each gap
+
+        # Step 3: Fill gaps by fetching from exchange
         if gaps:
-            # Create asynchronous exchange instance
             exchange_class = getattr(ccxt, source.lower())
             exchange = exchange_class()
             try:
-                # Fill each gap sequentially
                 for gap_start, gap_end in gaps:
                     logger.info(
                         "Filling gap for %s/%s/%s from %s to %s",
@@ -422,13 +501,12 @@ class QuotesServer:
                         max_bars=1000,
                     )
             finally:
-                # Properly close asynchronous exchange connection
                 try:
                     await exchange.close()
                 except Exception as e:
                     logger.warning(f"Failed to close exchange {source}: {e}", exc_info=True)
-        
-            # Step 4: Re-read history after filling gaps (run blocking ClickHouse query in a thread pool)
+
+            # Step 4: Re-read history after filling gaps
             loop = asyncio.get_running_loop()
             quotes_data = await loop.run_in_executor(
                 None,
@@ -440,110 +518,199 @@ class QuotesServer:
                 history_end,
             )
 
+        # Step 5: Check that we have data
+        if len(quotes_data['time']) == 0:
+            raise R2D2QuotesExceptionDataNotReceived(symbol, history_start, history_end)
+
+        # Step 6: Fill internal gaps with forward fill
+        quotes_data, filled_indices = self.fill_gaps_forward(quotes_data, timeframe)
+
         overall_duration = (datetime.now(UTC) - overall_start).total_seconds()
         logger.info(
-            "get_quotes finished for %s/%s/%s in %.3f s (bars: %d)",
+            "get_quotes finished for %s/%s/%s in %.3f s (bars: %d, filled: %d)",
             source,
             symbol,
             timeframe,
             overall_duration,
             len(quotes_data['time']),
+            len(filled_indices),
         )
-        return quotes_data
+        return quotes_data, filled_indices
 
-    def save_bars(self, exchange_name: str, symbol: str, tf: Timeframe, bars: List[list], check_data: bool = True):
+    def save_bars(self, exchange_name: str, symbol: str, tf: Timeframe, bars: List[list]):
         """
-        Save bars to ClickHouse database
-        
+        Save bars to ClickHouse database.
+
+        Validates bars (filters invalid OHLCV), deduplicates against existing
+        data in the database, and inserts only new valid bars.
+
         Args:
             exchange_name: Exchange name (e.g., 'binance')
             symbol: Trading symbol (e.g., 'BTC/USDT')
             tf: Timeframe object
             bars: List of bars, each bar is [timestamp, open, high, low, close, volume]
-            check_data: If True, check for duplicates and gaps before saving
         """
         if not bars:
             return
-        
-        # Create local client to avoid concurrent query issues
+
+        valid_bars = self.validate_bars(bars, tf)
+        if not valid_bars:
+            logger.info("No valid bars to save for %s/%s/%s", exchange_name, symbol, tf)
+            return
+
         client = self.connect_database(database=self.clickhouse_database)
-        
         tf_str = str(tf)
-        temp_table = 'temp_save_bars'
-        
+
         try:
-            # Create temporary table
-            client.command(f"""
-                CREATE TABLE IF NOT EXISTS {temp_table}
-                (
-                    source String,
-                    symbol String,
-                    timeframe String,
-                    time DateTime64(3, 'UTC'),
-                    open Float64,
-                    high Float64,
-                    low Float64,
-                    close Float64,
-                    volume Float64
-                )
-                ENGINE = Memory
+            min_time_ms = min(bar[0] for bar in valid_bars)
+            max_time_ms = max(bar[0] for bar in valid_bars)
+            min_time = datetime.fromtimestamp(min_time_ms / 1000.0, UTC)
+            max_time = datetime.fromtimestamp(max_time_ms / 1000.0, UTC)
+            min_time_str = min_time.strftime('%Y-%m-%d %H:%M:%S')
+            max_time_str = max_time.strftime('%Y-%m-%d %H:%M:%S')
+
+            esc_source = exchange_name.replace("'", "''")
+            esc_symbol = symbol.replace("'", "''")
+            esc_tf = tf_str.replace("'", "''")
+
+            # Get existing timestamps in this range to skip duplicates
+            existing_result = client.query(f"""
+                SELECT time FROM quotes
+                WHERE source = '{esc_source}'
+                  AND symbol = '{esc_symbol}'
+                  AND timeframe = '{esc_tf}'
+                  AND time >= '{min_time_str}'
+                  AND time <= '{max_time_str}'
             """)
-            
-            client.command(f"TRUNCATE TABLE {temp_table}")
-            
-            # Prepare data for insertion
+
+            existing_times_ms = set()
+            for row in existing_result.result_rows:
+                existing_times_ms.add(int(row[0].replace(tzinfo=UTC).timestamp() * 1000))
+
+            new_bars = [bar for bar in valid_bars if bar[0] not in existing_times_ms]
+            duplicate_count = len(valid_bars) - len(new_bars)
+
+            if not new_bars:
+                if duplicate_count > 0:
+                    logger.info(
+                        "All %d bars are duplicates, nothing to save (%s/%s/%s)",
+                        duplicate_count, exchange_name, symbol, tf_str
+                    )
+                return
+
             data = [
-                [exchange_name, symbol, tf_str, datetime.fromtimestamp(bar[0] / 1000.0, UTC), bar[1], bar[2], bar[3], bar[4], bar[5]]
-                for bar in bars
+                [exchange_name, symbol, tf_str,
+                 datetime.fromtimestamp(bar[0] / 1000.0, UTC),
+                 bar[1], bar[2], bar[3], bar[4], bar[5]]
+                for bar in new_bars
             ]
-            
+
             client.insert(
-                temp_table,
+                'quotes',
                 data,
                 column_names=['source', 'symbol', 'timeframe', 'time', 'open', 'high', 'low', 'close', 'volume']
             )
-            
-            # Check for duplicates and gaps if requested
-            if check_data:
 
-                query = f"""
-                    SELECT 
-                        (SELECT COUNT(*) FROM {temp_table} t
-                         INNER JOIN quotes q ON t.source = q.source 
-                             AND t.symbol = q.symbol 
-                             AND t.timeframe = q.timeframe 
-                             AND t.time = q.time) as duplicate_count,
-                        (SELECT MAX(time) FROM quotes
-                         WHERE source = '{exchange_name.replace("'", "''")}' 
-                           AND symbol = '{symbol.replace("'", "''")}' 
-                           AND timeframe = '{tf_str.replace("'", "''")}') as last_time
-                """
-                result = client.query(query)
-                
-                if result.result_rows:
-                    duplicate_count = result.result_rows[0][0] or 0
-                    last_time = result.result_rows[0][1]
-                    
-                    if last_time:
-                        last_time = last_time.replace(tzinfo=UTC)
-                    
-                    if duplicate_count > 0:
-                        raise ValueError(f"Found {duplicate_count} duplicate bars for {exchange_name}/{symbol}/{tf_str}")
-            
-            # Insert from temp table to main table
-            # Convert timestamp (milliseconds) to DateTime64 with UTC timezone
-            client.command(f"""
-                INSERT INTO quotes
-                SELECT source, symbol, timeframe, time, open, high, low, close, volume
-                FROM {temp_table}
-            """)
-            
-            client.command(f"TRUNCATE TABLE {temp_table}")
-            logger.info(f"Saved {len(bars)} bars to database ({exchange_name}/{symbol}/{tf_str})")
-            
+            if duplicate_count > 0:
+                logger.info(
+                    "Saved %d new bars, skipped %d duplicates (%s/%s/%s)",
+                    len(new_bars), duplicate_count, exchange_name, symbol, tf_str
+                )
+            else:
+                logger.info("Saved %d bars (%s/%s/%s)", len(new_bars), exchange_name, symbol, tf_str)
+
         except Exception as e:
             logger.error(f"Error saving bars to database: {e}", exc_info=True)
             raise
+
+    def fill_gaps_forward(self, quotes_data: Dict[str, np.ndarray], timeframe: Timeframe) -> Tuple[Dict[str, np.ndarray], List[int]]:
+        """
+        Fill internal gaps in quotes data using forward fill.
+
+        Generates an ideal time grid from first to last bar. Gaps between
+        existing bars are filled with the previous bar's close price
+        (open=high=low=close=prev_close, volume=0).
+
+        Gaps before the first bar and after the last bar are NOT filled.
+
+        Args:
+            quotes_data: Dictionary with numpy arrays (time, open, high, low, close, volume)
+            timeframe: Timeframe object
+
+        Returns:
+            Tuple of (filled_data, filled_indices) where:
+            - filled_data: Dictionary with continuous time grid and filled values
+            - filled_indices: List of indices in the output that were forward-filled
+        """
+        time_array = quotes_data['time']
+
+        if len(time_array) <= 1:
+            return quotes_data, []
+
+        first_time_int = time_array[0].astype(np.int64)
+        last_time_int = time_array[-1].astype(np.int64)
+        tf_value = np.int64(timeframe.value)
+
+        n_expected = int((last_time_int - first_time_int) // tf_value) + 1
+
+        if len(time_array) == n_expected:
+            return quotes_data, []
+
+        # Generate ideal time grid
+        tf_delta = np.timedelta64(timeframe.value, TIME_TYPE_UNIT)
+        time_grid = time_array[0] + np.arange(n_expected, dtype=np.int64) * tf_delta
+
+        open_out = np.empty(n_expected, dtype=np.float64)
+        high_out = np.empty(n_expected, dtype=np.float64)
+        low_out = np.empty(n_expected, dtype=np.float64)
+        close_out = np.empty(n_expected, dtype=np.float64)
+        volume_out = np.zeros(n_expected, dtype=np.float64)
+
+        # Map existing bars to grid positions via integer arithmetic
+        time_ints = time_array.astype(np.int64)
+        indices = ((time_ints - first_time_int) // tf_value).astype(np.int64)
+
+        has_data = np.zeros(n_expected, dtype=bool)
+        has_data[indices] = True
+
+        open_out[indices] = quotes_data['open']
+        high_out[indices] = quotes_data['high']
+        low_out[indices] = quotes_data['low']
+        close_out[indices] = quotes_data['close']
+        volume_out[indices] = quotes_data['volume']
+
+        # Forward fill (vectorized)
+        data_positions = np.where(has_data)[0]
+        gap_positions = np.where(~has_data)[0]
+
+        filled_indices: List[int] = []
+
+        if len(gap_positions) > 0:
+            # For each gap position find the nearest previous bar with data
+            insert_pos = np.searchsorted(data_positions, gap_positions, side='right') - 1
+            source_positions = data_positions[insert_pos]
+
+            prev_close = close_out[source_positions]
+            open_out[gap_positions] = prev_close
+            high_out[gap_positions] = prev_close
+            low_out[gap_positions] = prev_close
+            close_out[gap_positions] = prev_close
+
+            filled_indices = gap_positions.tolist()
+
+        result = {
+            'time': time_grid,
+            'open': open_out,
+            'high': high_out,
+            'low': low_out,
+            'close': close_out,
+            'volume': volume_out,
+        }
+
+        if filled_indices:
+            logger.info("Forward-filled %d gaps in %d total bars", len(filled_indices), n_expected)
+
+        return result, filled_indices
 
     async def fetch_bar_async(self, exchange: ccxt.Exchange, exchange_name: str, symbol: str, tf: Timeframe, time_start: datetime, time_end: Optional[datetime] = None, max_bars: int = 1000, retry_delay: int = 1) -> tuple:
         """
@@ -650,14 +817,13 @@ async def process_request_async(
         
         # Process request with lock - ensures only one request per (source, symbol, timeframe) at a time
         async with lock:
-            # Get quotes data (async function)
-            quotes_data = await server.get_quotes(source, symbol, timeframe, history_start, history_end)
-            
-            # Prepare response with binary data
+            quotes_data, filled_indices = await server.get_quotes(source, symbol, timeframe, history_start, history_end)
+
             response_data = {
                 'metadata': {
                     'request_id': request_id,
                     'status': 'success',
+                    'filled_indices': filled_indices,
                     'array_sizes': {
                         'time': len(quotes_data['time']),
                         'open': len(quotes_data['open']),
