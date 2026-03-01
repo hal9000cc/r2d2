@@ -6,9 +6,11 @@
         ref="navFormRef" 
         :disabled="buttonDisabled"
         :is-running="isBacktestingRunning"
+        :deploy-disabled="!currentTaskId"
         :add-message="addLocalMessage"
         @start="handleStart"
         @stop="handleStop"
+        @deploy="handleDeploy"
         @form-data-changed="handleFormDataChanged"
       />
     </Teleport>
@@ -466,6 +468,7 @@ import CodeMirrorEditor from '../components/CodeMirrorEditor.vue'
 import BacktestingTaskList from '../components/BacktestingTaskList.vue'
 import { strategiesApi } from '../services/strategiesApi'
 import { backtestingApi } from '../services/backtestingApi'
+import { tradingApi } from '../services/tradingApi'
 import { useBacktesting } from '../composables/useBacktesting'
 import { useBacktestingResults } from '../composables/useBacktestingResults'
 import { useAlert } from '../composables/useAlert'
@@ -2595,6 +2598,34 @@ async function handleStop() {
     })
   }
 }
+
+async function handleDeploy() {
+  if (!currentTaskId.value) {
+    showAlert('error', 'No task selected. Cannot deploy.')
+    return
+  }
+  
+  try {
+    const tradingTask = await tradingApi.cloneFromBacktesting(currentTaskId.value)
+    addLocalMessage({
+      level: 'info',
+      message: `Trading task #${tradingTask.id} created from backtesting task #${currentTaskId.value} (${tradingTask.name})`
+    })
+    // TODO: Navigate to trading page and select the created task
+    addLocalMessage({
+      level: 'info',
+      message: 'TODO: Navigate to Trading page and select task'
+    })
+  } catch (error) {
+    console.error('Failed to deploy trading task:', error)
+    const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'
+    addLocalMessage({
+      level: 'error',
+      message: `Failed to deploy: ${errorMessage}`
+    })
+  }
+}
+
 async function handleUpdateParameters() {
   // Update parameters description from strategy
   if (!currentStrategyName.value || !isStrategyLoaded.value) {

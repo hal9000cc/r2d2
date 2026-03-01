@@ -4,7 +4,7 @@ This module contains initialization logic that runs when the backend starts.
 """
 
 from app.core.logger import setup_logging, get_logger
-from app.services.tasks.tasks import TaskList, BacktestingTaskList
+from app.services.tasks.tasks import TaskList, BacktestingTaskList, TradingTaskList
 from app.core.config import (
     REDIS_QUOTE_REQUEST_LIST, REDIS_QUOTE_RESPONSE_PREFIX,
     CLICKHOUSE_HOST, CLICKHOUSE_PORT, CLICKHOUSE_USERNAME,
@@ -89,6 +89,10 @@ def startup():
     backtesting_task_list = BacktestingTaskList(redis_params=params)
     backtesting_task_list.startup()
     
+    # Initialize TradingTaskList (connects to Redis)
+    trading_task_list = TradingTaskList(redis_params=params)
+    trading_task_list.startup()
+    
     # Initialize quotes client with configuration
     QuotesClient(
         redis_params=params,
@@ -122,6 +126,10 @@ def shutdown():
     # Shutdown BacktestingTaskList
     backtesting_task_list = BacktestingTaskList()
     backtesting_task_list.shutdown()
+    
+    # Shutdown TradingTaskList
+    trading_task_list = TradingTaskList()
+    trading_task_list.shutdown()
     
     logger.info("Shutdown complete")
 

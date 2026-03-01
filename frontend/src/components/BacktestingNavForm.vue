@@ -82,6 +82,15 @@
         <StopIcon v-else class="btn-icon" />
         {{ isRunning ? 'Stop' : 'Start' }}
       </button>
+      <button 
+        class="action-btn deploy-btn"
+        :disabled="deployDisabled"
+        @click="handleDeploy"
+        title="Create a trading task from this strategy"
+      >
+        <RocketLaunchIcon class="btn-icon" />
+        Deploy
+      </button>
     </div>
     
     <!-- Second row: feeTaker, feeMaker, precisionAmount, precisionPrice, priceStep, refresh-btn, slippageInSteps -->
@@ -262,7 +271,7 @@
 import { inject, computed, Teleport, Transition } from 'vue'
 import SourceInput from './SourceInput.vue'
 import SymbolInput from './SymbolInput.vue'
-import { PlayIcon, StopIcon, InformationCircleIcon, XMarkIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
+import { PlayIcon, StopIcon, InformationCircleIcon, XMarkIcon, ArrowPathIcon, RocketLaunchIcon } from '@heroicons/vue/24/outline'
 
 export default {
   name: 'BacktestingNavForm',
@@ -274,10 +283,11 @@ export default {
     InformationCircleIcon,
     XMarkIcon,
     ArrowPathIcon,
+    RocketLaunchIcon,
     Teleport,
     Transition
   },
-  emits: ['start', 'stop', 'form-data-changed'],
+  emits: ['start', 'stop', 'deploy', 'form-data-changed'],
   props: {
     disabled: {
       type: Boolean,
@@ -290,6 +300,10 @@ export default {
     addMessage: {
       type: Function,
       default: null
+    },
+    deployDisabled: {
+      type: Boolean,
+      default: true
     }
   },
   setup() {
@@ -393,6 +407,9 @@ export default {
       } else {
         this.$emit('start', { ...this.formData })
       }
+    },
+    handleDeploy() {
+      this.$emit('deploy')
     },
     async refreshSymbolInfo() {
       if (!this.formData.source || !this.formData.symbol || this.isLoadingSymbolInfo) {
@@ -646,6 +663,19 @@ export default {
 .action-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.deploy-btn {
+  background-color: var(--color-success, #22c55e);
+  color: var(--text-inverse);
+}
+
+.deploy-btn:hover:not(:disabled) {
+  background-color: var(--color-success-hover, #16a34a);
+}
+
+.deploy-btn:active:not(:disabled) {
+  background-color: var(--color-success-active, #15803d);
 }
 
 .form-separator {
