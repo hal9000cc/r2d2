@@ -562,7 +562,7 @@ class BrokerBacktesting(Broker):
         if len(quotes_dict['time']) == 0:
             raise RuntimeError("No quotes data available for backtesting")
         
-        quotes = ta.Quotes(**quotes_dict)
+        quotes = ta.Quotes(**{k: quotes_dict[k] for k in ('time', 'open', 'high', 'low', 'close', 'volume')})
         
         quotes_provider = BacktestingQuotesProvider(
             source=self.task.source,

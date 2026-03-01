@@ -186,18 +186,18 @@ def validate_python_syntax(text: str) -> List[str]:
 
 def create_strategy(name: str, file_path: Optional[str] = None) -> Tuple[str, str]:
     """
-    Create a new strategy file with given name and file path
+    Create a new strategy file with given name and file path, or return existing file if it already exists
     
     Args:
-        name: Strategy name (used for class name, can contain any characters)
+        name: Strategy name (used for class name in new files, can contain any characters)
         file_path: Relative file path from STRATEGIES_DIR (with .py extension).
                    Must be provided - name cannot be used for file path.
         
     Returns:
-        Tuple of (relative_path, text) - relative path (with .py extension) and empty text
+        Tuple of (relative_path, text) - relative path (with .py extension) and file content
         
     Raises:
-        R2D2StrategyFileError: If file_path is not provided, file already exists or creation fails
+        R2D2StrategyFileError: If file_path is not provided, file exists but cannot be read, or creation fails
     """
     # Check that name is not empty
     if not name or not name.strip():
@@ -222,8 +222,13 @@ def create_strategy(name: str, file_path: Optional[str] = None) -> Tuple[str, st
     
     strategy_identifier = relative_path
     
+    # If file already exists, return its content without modification
     if strategy_file_path.exists():
-        raise R2D2StrategyFileError(f"Strategy file already exists: {strategy_file_path}")
+        try:
+            existing_text = strategy_file_path.read_text(encoding='utf-8')
+            return (strategy_identifier, existing_text)
+        except Exception as e:
+            raise R2D2StrategyFileError(f"Strategy file exists but cannot be read: {str(e)}")
     
     # Ensure parent directories exist
     strategy_file_path.parent.mkdir(parents=True, exist_ok=True)

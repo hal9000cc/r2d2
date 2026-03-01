@@ -40,7 +40,7 @@ export const strategiesApi = {
 
   // Load strategy by name
   async loadStrategy(name) {
-    return request(`/api/v1/strategies/load/${name}`)
+    return request(`/api/v1/strategies/load/${encodeURIComponent(name)}`)
   },
 
   // Save strategy

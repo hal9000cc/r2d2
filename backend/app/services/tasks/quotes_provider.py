@@ -167,7 +167,7 @@ class BacktestingQuotesProvider(QuotesProvider):
                     f"No quotes data available for {symbol}:{timeframe}"
                 )
 
-            self._cache[key] = ta.Quotes(**quotes_dict)
+            self._cache[key] = ta.Quotes(**{k: quotes_dict[k] for k in ('time', 'open', 'high', 'low', 'close', 'volume')})
             logger.debug(f"Additional quotes loaded: {len(quotes_dict['time'])} bars")
 
         return self._cache[key]

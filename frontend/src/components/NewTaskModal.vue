@@ -212,9 +212,13 @@ export default {
         relativePath = relativePath.replace(/^\/+|\/+$/g, '')
         
         // Determine strategy file path (with .py extension):
+        // - If path contains directory separator (/), always use the relative path (supports nested directories)
         // - If path was manually edited (not synced) and is different from strategyName, use the relative path
         // - Otherwise construct path from strategyName
-        let strategyFilePath = (!this.isSynced && relativePath && relativePath !== `${strategyName}.py`) ? relativePath : `${strategyName}.py`
+        const hasDirectory = relativePath.includes('/')
+        let strategyFilePath = (hasDirectory || (!this.isSynced && relativePath && relativePath !== `${strategyName}.py`)) 
+          ? relativePath 
+          : `${strategyName}.py`
         
         // 1. Check if strategy file exists, create only if it doesn't
         let strategyExists = false

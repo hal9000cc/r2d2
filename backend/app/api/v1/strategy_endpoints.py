@@ -234,7 +234,7 @@ async def save_strategy(strategy: StrategySaveRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/load/{name}", response_model=StrategyModel)
+@router.get("/load/{name:path}", response_model=StrategyModel)
 async def load_strategy(name: str):
     """
     Load strategy from file by relative path
