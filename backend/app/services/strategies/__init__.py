@@ -333,12 +333,28 @@ def load_strategy(file_path: str) -> Tuple[str, str, str]:
     return (strategy_name, file_path, text)
 
 
+def get_strategy_module_name(file_path: str, prefix: str = "strategy") -> str:
+    """
+    Generate unique module name from strategy file path.
+    
+    Args:
+        file_path: Relative path to strategy file (with .py extension)
+        prefix: Prefix for module name (default: "strategy")
+        
+    Returns:
+        Unique module name safe for Python import system
+    """
+    # Replace path separators and dots with underscores for valid module name
+    path_for_module = file_path.replace('\\', '/').replace('/', '_').replace('.', '_')
+    return f"{prefix}_{path_for_module}"
+
+
 def get_strategy_parameters_description(name: str, text: str) -> Tuple[Optional[Dict[str, Tuple[Any, str, str]]], List[str]]:
     """
     Get parameters description from strategy class by dynamically loading it
     
     Args:
-        name: Strategy name
+        name: Strategy file path (relative path from STRATEGIES_DIR, with .py extension) or strategy name
         text: Strategy Python code
         
     Returns:
@@ -355,8 +371,8 @@ def get_strategy_parameters_description(name: str, text: str) -> Tuple[Optional[
     errors = []
     
     try:
-        # Create a temporary module name
-        module_name = f"strategy_{name}"
+        # Create a unique module name using file path to avoid conflicts
+        module_name = get_strategy_module_name(name, "strategy")
         
         # Remove module from cache if it exists
         if module_name in sys.modules:

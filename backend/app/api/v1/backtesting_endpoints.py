@@ -13,10 +13,10 @@ from app.services.tasks.strategy import Strategy
 from app.services.tasks.broker_backtesting import BrokerBacktesting
 from app.services.tasks.task_results import TaskResults
 from app.core.datetime_utils import parse_utc_datetime64
-from app.services.strategies import validate_relative_path, load_strategy
+from app.services.strategies import validate_relative_path, load_strategy, get_strategy_module_name
 from app.services.strategies.exceptions import R2D2StrategyFileError, R2D2StrategyNotFoundError
 from app.services.quotes.client import QuotesClient
-from app.core.config import redis_params
+from app.core.config import redis_params, STRATEGIES_DIR
 from app.core.logger import get_logger, setup_logging
 from app.core.objects2redis import MessageType
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
@@ -199,8 +199,8 @@ def load_strategy_class(file_path: str):
         # Re-raise as-is (these are already proper exceptions)
         raise
     
-    # Create a unique module name
-    module_name = f"strategy_backtest_{strategy_name.replace('/', '_').replace('.', '_')}"
+    # Create a unique module name using full file path to avoid conflicts
+    module_name = get_strategy_module_name(file_path, "strategy_backtest")
     
     # Remove module from cache if it exists
     if module_name in sys.modules:
@@ -673,6 +673,10 @@ def process_backtesting_task(task: Task, result_id: str) -> None:
             logger.error(f"{error_msg}. Error: {e}")
             raise ValueError(error_msg) from e
         raise
+    
+    # Set strategy file path (absolute path)
+    strategy_file_path = (STRATEGIES_DIR / task.file_name).resolve()
+    strategy.strategy_file = str(strategy_file_path)
     
     message = f"Backtesting for task {task.id} started"
     task.message(message)

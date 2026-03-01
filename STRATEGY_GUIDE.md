@@ -50,11 +50,18 @@ def on_start(self):
     self.position = None
     self.ma_fast_period = self.parameters['ma_fast']
     self.ma_slow_period = self.parameters['ma_slow']
+    
+    # Access strategy file path if needed
+    # self.strategy_file contains absolute path, e.g.:
+    # /home/user/.local/share/r2d2/strategies/example_strategy/example_strategy.py
+    if self.strategy_file:
+        self.logging(f"Strategy file: {self.strategy_file}")
 ```
 
 **Important:** At the time `on_start()` is called, the following are already available:
 - `self.parameters` - strategy parameters
 - `self.talib` - object for working with indicators
+- `self.strategy_file` - absolute path to the strategy file (e.g., `/home/user/.local/share/r2d2/strategies/example_strategy/example_strategy.py`)
 
 ### `on_bar()`
 
@@ -78,6 +85,7 @@ def on_bar(self):
 - All quote arrays (`self.close`, `self.open`, `self.high`, `self.low`, `self.volume`)
 - Current position (`self.equity_symbol`, `self.equity_usd`)
 - Indicators via `self.talib`
+- `self.strategy_file` - absolute path to the strategy file
 
 ### `on_finish()`
 
@@ -889,34 +897,55 @@ if result.error:
 - If an order is already executed or canceled, it is returned in the result without status change
 - The `volume` field contains the position volume for the deal to which the canceled orders belong (`deal.quantity`)
 
-### `deal_orders(deal_id)`
+### `deal_info(deal_id)`
 
-Gets all orders associated with the specified deal.
+Gets information about a deal by its ID, including all associated orders and trades.
 
 ```python
-# Get all orders for deal with ID 5
-result = self.deal_orders(deal_id=5)
+# Get deal information for deal with ID 5
+deal = self.deal_info(deal_id=5)
 
-# Check result
-if result.error_messages:
+if deal is None:
     # Deal not found
-    self.logging(f"Error: {result.error_messages[0]}", level="error")
+    self.logging(f"Deal {5} not found", level="error")
 else:
-    # Process orders
-    for order in result.orders:
-        self.logging(f"Order {order.order_id}: {order.status}")
+    # Access deal information
+    self.logging(f"Deal {deal.deal_id}: type={deal.type}, quantity={deal.quantity}")
+    self.logging(f"Average buy price: {deal.avg_buy_price}, sell price: {deal.avg_sell_price}")
+    self.logging(f"Profit: {deal.profit}, fee: {deal.fee}")
+    
+    # Access all orders associated with this deal
+    for order in deal.orders:
+        self.logging(f"Order {order.order_id}: {order.status}, side={order.side}")
+    
+    # Access all trades in this deal
+    for trade in deal.trades:
+        self.logging(f"Trade: {trade.quantity} @ {trade.price}")
 ```
 
 **Parameters:**
-- `deal_id`: deal ID
+- `deal_id`: ID of the deal to get information about
 
-**Returns:** `OrderOperationResult` with all orders of the specified deal, categorized by status.
+**Returns:** `Deal` object (deep copy) with all deal information, or `None` if deal with specified `deal_id` does not exist.
+
+**Deal object contains:**
+- `deal_id` - deal ID
+- `type` - deal type (`LONG` or `SHORT`)
+- `orders` - list of all orders (entry and exit) associated with this deal
+- `trades` - list of all trades in this deal
+- `quantity` - current position volume (becomes 0 when fully closed)
+- `avg_buy_price` - average buy price across all buy trades
+- `avg_sell_price` - average sell price across all sell trades
+- `profit` - realized profit for the deal
+- `fee` - total fees for the deal
+- `is_closed` - whether the deal is closed
+- `date_open` - deal open date
+- `date_close` - deal close date (if closed)
+- `errors` - list of error messages for the deal
 
 **Features:**
-- If `deal_id` is not found, returns empty result with error in `error_messages`
-- In the result, `deal_id` equals the passed value
-- Orders are categorized by status: `active`, `executed`, `canceled`, `error`
-- The `volume` field contains the current position volume for the specified deal (`deal.quantity`)
+- Returns `None` if deal with specified `deal_id` does not exist (no exception is raised)
+- Returns a deep copy of the deal, so modifications to the returned object do not affect the original
 
 ### `modify_deal(deal_id, enter, stop_loss, take_profit)`
 

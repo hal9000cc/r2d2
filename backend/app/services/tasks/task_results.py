@@ -129,14 +129,16 @@ class TaskResults:
         Serialize cache key (tuple) to JSON string for use in Redis key.
         
         Args:
-            cache_key: Tuple (name, tuple(sorted(kwargs.items())))
+            cache_key: Tuple (name, actual_symbol, actual_tf, tuple(sorted(kwargs.items())))
             
         Returns:
             str: JSON-serialized string representation of the cache key
         """
-        name, kwargs_tuple = cache_key
+        assert len(cache_key) == 4, f"Expected cache_key with 4 elements, got {len(cache_key)}: {cache_key}"
+        name, actual_symbol, actual_tf, kwargs_tuple = cache_key
         kwargs_dict = dict(kwargs_tuple)
-        return json.dumps([name, kwargs_dict], sort_keys=True)
+        timeframe_str = str(actual_tf)
+        return json.dumps([name, actual_symbol, timeframe_str, kwargs_dict], sort_keys=True)
     
     def _serialize_array(self, arr: np.ndarray) -> bytes:
         """
@@ -1008,18 +1010,22 @@ class TaskResults:
             ValueError: If key format is invalid
         """
         parts = indicator_key.split(':', 1)
-        if len(parts) != 2:
-            raise ValueError(f"Invalid indicator key format: {indicator_key}")
+        assert len(parts) == 2, f"Invalid indicator key format: {indicator_key}"
         
         proxy_name = parts[0]
         serialized_cache_key = parts[1]
         
         cache_key_data = json.loads(serialized_cache_key)
-        if not isinstance(cache_key_data, list) or len(cache_key_data) != 2:
-            raise ValueError(f"Invalid cache key format: {serialized_cache_key}")
+        assert isinstance(cache_key_data, list), f"Invalid cache key format: {serialized_cache_key}"
+        assert len(cache_key_data) == 4, f"Expected cache key with 4 elements, got {len(cache_key_data)}: {serialized_cache_key}"
         
         indicator_name = cache_key_data[0]
-        parameters = cache_key_data[1]
+        actual_symbol = cache_key_data[1]
+        timeframe_str = cache_key_data[2]
+        parameters = cache_key_data[3]
+        
+        # Note: actual_symbol and timeframe_str are ignored as they are always primary
+        # for visible indicators (cross-timeframe/cross-symbol indicators are not saved)
         
         return proxy_name, indicator_name, parameters
     

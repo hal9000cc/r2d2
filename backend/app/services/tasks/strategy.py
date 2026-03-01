@@ -59,6 +59,9 @@ class Strategy(ABC):
 
         # TA proxy will be set when callbacks are created
         self.talib: Optional[ta_proxy] = None
+        
+        # Strategy file path (absolute path) will be set when strategy is loaded
+        self.strategy_file: Optional[str] = None
     
     def _create_error_result(self, errors: List[str], operation: str) -> OrderOperationResult:
         """Create OrderOperationResult with validation errors.

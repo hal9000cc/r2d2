@@ -82,6 +82,10 @@ def setup_logging():
     ccxt_logger = logging.getLogger('ccxt')
     ccxt_logger.setLevel(logging.INFO)
     
+    # Set logging level for numba library to WARNING (to avoid debug messages)
+    numba_logger = logging.getLogger('numba')
+    numba_logger.setLevel(logging.WARNING)
+    
     # Log initialization
     logger.info(f"Log level: {LOG_LEVEL}")
     logger.info(f"Log file: {log_file}")
