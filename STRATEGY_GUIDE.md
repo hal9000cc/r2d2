@@ -232,6 +232,8 @@ macd, signal, histogram = self.talib.MACD(value='close', fastperiod=12, slowperi
 
 - `value` - name of data array: `'close'`, `'open'`, `'high'`, `'low'`, `'volume'`
 - `timeperiod` - indicator period (for most indicators)
+- `lines` - optional dictionary for configuring line visualization (color, width, style, visibility per series)
+- `visible` - optional boolean (default: `True` for primary indicators, `False` for cross-timeframe/cross-symbol). If `False`, indicator will not be displayed on chart
 - Other parameters depend on the specific indicator (see TA-Lib documentation)
 
 ### Return Values
@@ -244,6 +246,9 @@ macd, signal, histogram = self.talib.MACD(value='close', fastperiod=12, slowperi
 1. **Indicators return data only up to current bar** - indicator array has length `self.broker.i_time + 1`
 
 2. **Caching** - indicators are cached, repeated calls with the same parameters return cached values
+   - **Important:** Visualization parameters (`lines` and `visible`) are applied only on the first call to the indicator
+   - Subsequent calls with different `lines` or `visible` values will use the cached visualization settings from the first call
+   - To change visualization, you need to clear the cache or use different indicator parameters (which creates a new cache entry)
 
 3. **NaN values** - at the beginning of the indicator array there may be NaN values until enough data is available:
    ```python
@@ -315,6 +320,9 @@ def on_bar(self):
     # Calculate indicators
     sma_fast = self.talib.SMA(value='close', timeperiod=20)
     sma_slow = self.talib.SMA(value='close', timeperiod=50)
+    
+    # Calculate indicator but hide it from chart
+    vol_sma = self.talib.SMA(value='volume', timeperiod=20, visible=False)
     
     # Check if indicators are calculated
     if np.isnan(sma_fast[-1]) or np.isnan(sma_slow[-1]):
@@ -434,6 +442,9 @@ All pyita indicators work the same way as TA-Lib indicators:
 
 1. **Return data only up to current bar** - arrays have length `self.broker.i_time + 1`
 2. **Caching** - indicators are cached, repeated calls return cached values
+   - **Important:** Visualization parameters (`lines` and `visible`) are applied only on the first call to the indicator
+   - Subsequent calls with different `lines` or `visible` values will use the cached visualization settings from the first call
+   - To change visualization, you need to clear the cache or use different indicator parameters (which creates a new cache entry)
 3. **NaN values** - initial array elements may be NaN until enough data is available
 
 ### Cross-Timeframe and Cross-Symbol Indicators (pyita)
@@ -476,6 +487,9 @@ def on_bar(self):
     sma_fast = self.ta.sma(period=20, value='close')
     sma_slow = self.ta.sma(period=50, value='close')
     rsi = self.ta.rsi(period=14)
+    
+    # Calculate indicator but hide it from chart
+    vol_sma = self.ta.ma(period=20, value='volume', ma_type='ema0', visible=False)
     
     # Calculate indicator on higher timeframe (1h)
     sma_1h = self.ta.sma(period=20, timeframe='1h')

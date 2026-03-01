@@ -498,6 +498,7 @@ class ta_proxy(ABC):
                 - timeframe: Timeframe string (e.g., '1h', '15m'). Default: primary timeframe.
                     Must be >= primary timeframe.
                 - lines: Line styling config (only for primary symbol/timeframe indicators).
+                - visible: bool - If False, indicator will not be displayed on chart (default: True for primary indicators, False for cross-timeframe/cross-symbol).
             
         Returns:
             IndicatorResult object with indicator values sliced to current bar
@@ -505,6 +506,7 @@ class ta_proxy(ABC):
         lines_config = kwargs.pop('lines', None)
         req_symbol = kwargs.pop('symbol', None)
         req_timeframe = kwargs.pop('timeframe', None)
+        visible_override = kwargs.pop('visible', None)
         
         is_custom = req_symbol is not None or req_timeframe is not None
         
@@ -537,9 +539,15 @@ class ta_proxy(ABC):
                 series_info = self._build_series_info(name, lines_config, kwargs)
                 pane_title = self._format_pane_title(name, kwargs)
             
+            # Determine visibility: use explicit override if provided, otherwise use default logic
+            if visible_override is not None:
+                indicator_visible = visible_override
+            else:
+                indicator_visible = not is_custom
+            
             self.cache[cache_key] = UsedIndicatorDescription(
                 values=indicator_result,
-                visible=not is_custom,
+                visible=indicator_visible,
                 series_info=series_info,
                 paneTitle=pane_title
             )
