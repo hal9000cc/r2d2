@@ -1,15 +1,637 @@
 <template>
-  <MainLayout />
+  <div class="trading-view">
+    <!-- Teleport form to navbar -->
+    <Teleport to="#navbar-content-slot">
+      <TradingNavForm 
+        ref="navFormRef" 
+        :disabled="!hasSelectedTask"
+        :is-running="isRunning"
+        @start="handleStart"
+        @stop="handleStop"
+        @form-data-changed="handleFormDataChanged"
+      />
+    </Teleport>
+
+    <div class="trading-layout">
+      <!-- Left side: Chart and Bottom Tabs -->
+      <div class="left-panel">
+        <ResizablePanel
+          v-if="chartHeight !== null"
+          direction="vertical"
+          :min-size="150"
+          :max-size="chartMaxHeight"
+          :default-size="chartHeight"
+          storage-key="trading-chart-panel-height"
+          @resize="handleChartResize"
+        >
+          <ChartPanel 
+            ref="chartPanelRef"
+            :source="currentSource"
+            :symbol="currentSymbol"
+            :timeframe="currentTimeframe"
+          />
+        </ResizablePanel>
+        <Tabs
+          :tabs="tabsWithBadge"
+          default-tab="deals"
+          @tab-change="handleTabChange"
+        >
+          <template #header-actions>
+            <div v-if="activeTab === 'messages'" class="header-actions">
+              <button 
+                class="header-btn clear-btn" 
+                @click="clearMessages"
+                :disabled="messages.length === 0"
+                title="Clear messages"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                Clear
+              </button>
+            </div>
+            <div v-if="activeTab === 'orders'" class="header-actions">
+              <label class="checkbox-label">
+                <input 
+                  type="checkbox" 
+                  v-model="hideCanceledOrders"
+                  class="checkbox-input"
+                />
+                <span>Hide inactive/untraded orders</span>
+              </label>
+            </div>
+          </template>
+          <template #deals>
+            <DataTable 
+              :columns="dealsColumns"
+              :data="[]"
+              row-key="deal_id"
+              empty-message="No deals yet"
+              :enabled="activeTab === 'deals'"
+            />
+          </template>
+          <template #trades>
+            <DataTable 
+              :columns="tradesColumns"
+              :data="[]"
+              row-key="trade_id"
+              empty-message="No trades yet"
+              :enabled="activeTab === 'trades'"
+            />
+          </template>
+          <template #orders>
+            <DataTable 
+              :columns="ordersColumns"
+              :data="[]"
+              row-key="order_id"
+              empty-message="No orders yet"
+              :enabled="activeTab === 'orders'"
+            />
+          </template>
+          <template #messages>
+            <MessagesPanel :messages="messages" />
+          </template>
+        </Tabs>
+      </div>
+      
+      <!-- Right side: Tasks and Stats -->
+      <ResizablePanel
+        direction="horizontal"
+        handle-side="left"
+        :min-size="200"
+        :max-size="rightPanelMaxWidth"
+        :default-size="rightPanelWidth"
+        storage-key="trading-right-panel-width"
+        @resize="handleRightPanelResize"
+      >
+        <div class="right-panel">
+          <div class="tasks-panel">
+            <div class="panel-header">
+              <h3>Tasks</h3>
+            </div>
+            <div class="tasks-content">
+              <div class="empty-state">
+                <p>No trading tasks</p>
+              </div>
+            </div>
+          </div>
+          <div class="stats-panel">
+            <TradingStats :stats="stats">
+              <template #default="{ formatFee }">
+                <div class="stats-separator"></div>
+                <div class="stats-section-title">Trade parameters</div>
+                <div class="stats-row">
+                  <span class="stats-label">Fee Maker:</span>
+                  <span class="stats-value">{{ formatFee(stats?.fee_maker) }}</span>
+                </div>
+                <div class="stats-row">
+                  <span class="stats-label">Fee Taker:</span>
+                  <span class="stats-value">{{ formatFee(stats?.fee_taker) }}</span>
+                </div>
+              </template>
+            </TradingStats>
+          </div>
+        </div>
+      </ResizablePanel>
+    </div>
+  </div>
 </template>
 
-<script>
-import MainLayout from '../components/MainLayout.vue'
+<script setup>
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import ResizablePanel from '../components/ResizablePanel.vue'
+import ChartPanel from '../components/ChartPanel.vue'
+import MessagesPanel from '../components/MessagesPanel.vue'
+import DataTable from '../components/DataTable.vue'
+import TradingNavForm from '../components/TradingNavForm.vue'
+import TradingStats from '../components/TradingStats.vue'
+import Tabs from '../components/Tabs.vue'
 
-export default {
-  name: 'TradingView',
-  components: {
-    MainLayout
+// Layout state
+const chartHeight = ref(null)
+const chartMaxHeight = ref(null)
+const rightPanelWidth = ref(250)
+const rightPanelMaxWidth = ref(null)
+
+// Bottom tabs
+const tabs = [
+  { id: 'deals', label: 'Deals' },
+  { id: 'trades', label: 'Trades' },
+  { id: 'orders', label: 'Orders' },
+  { id: 'messages', label: 'Messages' }
+]
+const activeTab = ref('deals')
+
+// Messages
+const messages = ref([])
+const unreadImportantMessagesCount = ref(0)
+
+// Task state
+const hasSelectedTask = ref(false)
+const isRunning = ref(false)
+const stats = ref(null)
+const hideCanceledOrders = ref(false)
+
+// Current task data for chart
+const currentSource = ref(null)
+const currentSymbol = ref(null)
+const currentTimeframe = ref(null)
+
+// Component refs
+const navFormRef = ref(null)
+const chartPanelRef = ref(null)
+
+// Tabs with badge for unread messages
+const tabsWithBadge = computed(() => {
+  return tabs.map(tab => {
+    if (tab.id === 'messages' && unreadImportantMessagesCount.value > 0) {
+      return { ...tab, badge: unreadImportantMessagesCount.value }
+    }
+    return tab
+  })
+})
+
+// Table column definitions
+const tradesColumns = [
+  { key: 'trade_id', label: 'Trade ID', width: '80px' },
+  { key: 'deal_id', label: 'Deal ID', width: '80px' },
+  { key: 'order_id', label: 'Order ID', width: '80px' },
+  { 
+    key: 'time', 
+    label: 'Time',
+    format: (value) => {
+      if (!value) return '—'
+      const date = new Date(value)
+      return date.toISOString().replace('T', ' ').substring(0, 19)
+    }
+  },
+  { 
+    key: 'side', 
+    label: 'Side',
+    width: '60px',
+    format: (value) => value ? value.toUpperCase() : '—'
+  },
+  { 
+    key: 'price', 
+    label: 'Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'quantity', 
+    label: 'Quantity',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'fee', 
+    label: 'Fee',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'sum', 
+    label: 'Sum',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  }
+]
+
+const dealsColumns = [
+  { key: 'deal_id', label: 'Deal ID', width: '80px' },
+  { 
+    key: 'date_open', 
+    label: 'Date Open', 
+    width: '160px',
+    format: (value) => value ? new Date(value).toISOString().replace('T', ' ').substring(0, 19) : '—'
+  },
+  { 
+    key: 'date_close', 
+    label: 'Date Close', 
+    width: '160px',
+    format: (value) => value ? new Date(value).toISOString().replace('T', ' ').substring(0, 19) : '—'
+  },
+  { 
+    key: 'type', 
+    label: 'Type', 
+    width: '100px',
+    format: (value) => value ? value.toUpperCase() : '—'
+  },
+  { 
+    key: 'avg_buy_price', 
+    label: 'Avg Buy Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'avg_sell_price', 
+    label: 'Avg Sell Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'quantity', 
+    label: 'Quantity',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'profit_net', 
+    label: 'Profit gross',
+    class: 'align-right',
+    format: (value, row) => {
+      const profit = row.profit ? parseFloat(row.profit) : 0
+      const fee = row.fee ? parseFloat(row.fee) : 0
+      const profitNet = profit + fee
+      return profitNet.toFixed(8)
+    }
+  },
+  { 
+    key: 'fee', 
+    label: 'Fee',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'profit', 
+    label: 'Profit',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'is_closed', 
+    label: 'Status',
+    width: '80px',
+    class: (row) => row.is_closed ? 'status-closed' : 'status-open',
+    format: (value) => value ? 'Closed' : 'Open'
+  },
+  { 
+    key: 'close_type', 
+    label: 'Close Type',
+    width: '120px',
+    format: (value) => {
+      if (!value || value === 0) return '—'
+      if (value === 1) return 'Stop Loss'
+      if (value === 2) return 'Take Profit'
+      return '—'
+    }
+  }
+]
+
+const ordersColumns = [
+  { key: 'order_id', label: 'Order ID', width: '80px' },
+  { key: 'exchange_order_id', label: 'Exchange Order ID', width: '150px' },
+  { key: 'deal_id', label: 'Deal ID', width: '80px' },
+  { 
+    key: 'order_type', 
+    label: 'Type',
+    width: '80px',
+    format: (value) => value ? value.toUpperCase() : '—'
+  },
+  { 
+    key: 'order_group', 
+    label: 'Group',
+    width: '100px',
+    format: (value) => {
+      const groupMap = {
+        0: 'None',
+        1: 'Stop Loss',
+        2: 'Take Profit'
+      }
+      return groupMap[value] !== undefined ? groupMap[value] : '—'
+    }
+  },
+  { 
+    key: 'create_time', 
+    label: 'Create Time',
+    format: (value) => {
+      if (!value) return '—'
+      const date = new Date(value)
+      return date.toISOString().replace('T', ' ').substring(0, 19)
+    }
+  },
+  { 
+    key: 'modify_time', 
+    label: 'Modify Time',
+    format: (value) => {
+      if (!value) return '—'
+      const date = new Date(value)
+      return date.toISOString().replace('T', ' ').substring(0, 19)
+    }
+  },
+  { 
+    key: 'side', 
+    label: 'Side',
+    width: '60px',
+    format: (value) => value ? value.toUpperCase() : '—'
+  },
+  { 
+    key: 'price', 
+    label: 'Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'trigger_price', 
+    label: 'Trigger Price',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'fraction', 
+    label: 'Fraction',
+    width: '100px',
+    class: 'align-right',
+    format: (value) => value !== null && value !== undefined ? parseFloat(value).toFixed(4) : '—'
+  },
+  { 
+    key: 'volume', 
+    label: 'Volume',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'filled_volume', 
+    label: 'Filled Volume',
+    class: 'align-right',
+    format: (value) => value ? parseFloat(value).toFixed(8) : '—'
+  },
+  { 
+    key: 'status', 
+    label: 'Status',
+    width: '100px',
+    format: (value) => {
+      const statusMap = {
+        0: 'New',
+        1: 'Active',
+        2: 'Executed',
+        3: 'Canceled',
+        4: 'Error'
+      }
+      return statusMap[value] || 'Unknown'
+    }
+  }
+]
+
+// Layout calculations
+function calculateSizes() {
+  const viewportHeight = window.innerHeight
+  const navbarHeight = 60
+  const messagesMinHeight = 100
+  const availableHeight = viewportHeight - navbarHeight
+  
+  chartMaxHeight.value = availableHeight - messagesMinHeight
+  rightPanelMaxWidth.value = Math.floor(window.innerWidth * 0.5)
+  
+  if (chartHeight.value === null) {
+    const savedChartHeight = localStorage.getItem('trading-chart-panel-height')
+    if (savedChartHeight) {
+      const savedHeight = parseInt(savedChartHeight, 10)
+      chartHeight.value = Math.min(savedHeight, chartMaxHeight.value)
+    } else {
+      chartHeight.value = Math.floor(availableHeight * 0.65)
+    }
+  } else {
+    if (chartHeight.value > chartMaxHeight.value) {
+      chartHeight.value = chartMaxHeight.value
+    }
+  }
+  
+  if (rightPanelWidth.value === 250) {
+    const savedWidth = localStorage.getItem('trading-right-panel-width')
+    if (savedWidth) {
+      const parsed = parseInt(savedWidth, 10)
+      rightPanelWidth.value = Math.min(parsed, rightPanelMaxWidth.value)
+    } else {
+      rightPanelWidth.value = Math.floor(window.innerWidth * 0.2)
+    }
+  } else {
+    if (rightPanelWidth.value > rightPanelMaxWidth.value) {
+      rightPanelWidth.value = rightPanelMaxWidth.value
+    }
   }
 }
+
+// Event handlers
+function handleTabChange(tab) {
+  activeTab.value = tab
+  if (tab === 'messages') {
+    unreadImportantMessagesCount.value = 0
+  }
+}
+
+function handleChartResize(size) {
+  chartHeight.value = size
+}
+
+function handleRightPanelResize(size) {
+  rightPanelWidth.value = size
+}
+
+function handleStart(formData) {
+  // Placeholder — will be connected to backend later
+  console.log('Trading start requested:', formData)
+}
+
+function handleStop() {
+  // Placeholder — will be connected to backend later
+  console.log('Trading stop requested')
+}
+
+function handleFormDataChanged() {
+  // Placeholder — will handle form data changes
+}
+
+function clearMessages() {
+  messages.value = []
+  unreadImportantMessagesCount.value = 0
+}
+
+// Lifecycle
+onMounted(() => {
+  calculateSizes()
+  window.addEventListener('resize', calculateSizes)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', calculateSizes)
+})
 </script>
 
+<style scoped>
+.trading-view {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.trading-layout {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.left-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  height: 100%;
+}
+
+.right-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.tasks-panel {
+  flex: 1;
+  min-height: 100px;
+  padding: var(--spacing-sm);
+  border-bottom: 1px solid var(--border-color-dark);
+  background-color: var(--bg-secondary);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-sm);
+  flex-shrink: 0;
+}
+
+.panel-header h3 {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.tasks-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.stats-panel {
+  flex: 1;
+  overflow: hidden;
+  min-height: 150px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin-left: auto;
+  margin-right: var(--spacing-sm);
+}
+
+.header-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.header-btn:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--color-primary);
+}
+
+.header-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.header-btn .icon {
+  width: var(--font-size-sm);
+  height: var(--font-size-sm);
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--color-primary);
+}
+</style>

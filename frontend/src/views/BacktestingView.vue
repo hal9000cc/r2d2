@@ -407,7 +407,44 @@
             />
           </ResizablePanel>
           <div class="stats-panel">
-            <BacktestingStats :stats="stats" />
+            <TradingStats :stats="stats">
+              <template #default="{ formatFee, formatSlippage, formatDate }">
+                <div class="stats-separator"></div>
+                <div class="stats-section-title">Testing parameters</div>
+                <div v-if="stats?.source" class="stats-row">
+                  <span class="stats-label">Source:</span>
+                  <span class="stats-value">{{ stats.source }}</span>
+                </div>
+                <div v-if="stats?.symbol" class="stats-row">
+                  <span class="stats-label">Symbol:</span>
+                  <span class="stats-value">{{ stats.symbol }}</span>
+                </div>
+                <div v-if="stats?.timeframe" class="stats-row">
+                  <span class="stats-label">Timeframe:</span>
+                  <span class="stats-value">{{ stats.timeframe }}</span>
+                </div>
+                <div v-if="stats?.date_start" class="stats-row">
+                  <span class="stats-label">Date From:</span>
+                  <span class="stats-value">{{ formatDate(stats.date_start) }}</span>
+                </div>
+                <div v-if="stats?.date_end" class="stats-row">
+                  <span class="stats-label">Date To:</span>
+                  <span class="stats-value">{{ formatDate(stats.date_end) }}</span>
+                </div>
+                <div class="stats-row">
+                  <span class="stats-label">Fee Maker:</span>
+                  <span class="stats-value">{{ formatFee(stats.fee_maker) }}</span>
+                </div>
+                <div class="stats-row">
+                  <span class="stats-label">Fee Taker:</span>
+                  <span class="stats-value">{{ formatFee(stats.fee_taker) }}</span>
+                </div>
+                <div class="stats-row">
+                  <span class="stats-label">Slippage:</span>
+                  <span class="stats-value">{{ formatSlippage(stats.slippage, stats.price_step) }}</span>
+                </div>
+              </template>
+            </TradingStats>
           </div>
         </div>
       </ResizablePanel>
@@ -423,7 +460,7 @@ import MessagesPanel from '../components/MessagesPanel.vue'
 import DataTable from '../components/DataTable.vue'
 import BacktestingNavForm from '../components/BacktestingNavForm.vue'
 import StrategyParameters from '../components/StrategyParameters.vue'
-import BacktestingStats from '../components/BacktestingStats.vue'
+import TradingStats from '../components/TradingStats.vue'
 import Tabs from '../components/Tabs.vue'
 import CodeMirrorEditor from '../components/CodeMirrorEditor.vue'
 import BacktestingTaskList from '../components/BacktestingTaskList.vue'
