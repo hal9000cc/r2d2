@@ -5,7 +5,7 @@
         v-model="formData.source"
         input-id="trading-source"
         :required="true"
-        :disabled="disabled"
+        :disabled="disabled || readonly"
         @valid="isSourceValid = $event"
         title="Exchange or data source"
       />
@@ -15,7 +15,7 @@
         :is-source-valid="isSourceValid"
         input-id="trading-symbol"
         :required="true"
-        :disabled="disabled"
+        :disabled="disabled || readonly"
       />
       <div class="form-group">
         <label for="trading-timeframe">
@@ -30,7 +30,7 @@
           :class="{ 'invalid': formData.timeframe && timeframes.length > 0 && !isTimeframeValid }"
           :list="timeframeDatalistId"
           placeholder="Timeframe..."
-          :disabled="disabled"
+          :disabled="disabled || readonly"
           :required="true"
           autocomplete="off"
           title="Trading timeframe (e.g., 1h, 1d, 5m)"
@@ -73,6 +73,10 @@ export default {
       default: false
     },
     isRunning: {
+      type: Boolean,
+      default: false
+    },
+    readonly: {
       type: Boolean,
       default: false
     }

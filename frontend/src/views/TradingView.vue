@@ -4,8 +4,9 @@
     <Teleport to="#navbar-content-slot">
       <TradingNavForm 
         ref="navFormRef" 
-        :disabled="!hasSelectedTask"
+        :disabled="!currentTaskId"
         :is-running="isRunning"
+        :readonly="isReadonly"
         @start="handleStart"
         @stop="handleStop"
         @form-data-changed="handleFormDataChanged"
@@ -106,14 +107,12 @@
       >
         <div class="right-panel">
           <div class="tasks-panel">
-            <div class="panel-header">
-              <h3>Tasks</h3>
-            </div>
-            <div class="tasks-content">
-              <div class="empty-state">
-                <p>No trading tasks</p>
-              </div>
-            </div>
+            <TradingTaskList
+              ref="taskListRef"
+              :selected-task-id="currentTaskId"
+              @task-selected="handleTaskSelected"
+              @task-deleted="handleTaskDeleted"
+            />
           </div>
           <div class="stats-panel">
             <TradingStats :stats="stats">
@@ -138,14 +137,19 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import ResizablePanel from '../components/ResizablePanel.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import MessagesPanel from '../components/MessagesPanel.vue'
 import DataTable from '../components/DataTable.vue'
 import TradingNavForm from '../components/TradingNavForm.vue'
+import TradingTaskList from '../components/TradingTaskList.vue'
 import TradingStats from '../components/TradingStats.vue'
 import Tabs from '../components/Tabs.vue'
+
+const route = useRoute()
+const router = useRouter()
 
 // Layout state
 const chartHeight = ref(null)
@@ -167,8 +171,10 @@ const messages = ref([])
 const unreadImportantMessagesCount = ref(0)
 
 // Task state
-const hasSelectedTask = ref(false)
+const currentTaskId = ref(null)
+const currentTask = ref(null)
 const isRunning = ref(false)
+const isReadonly = ref(true)
 const stats = ref(null)
 const hideCanceledOrders = ref(false)
 
@@ -180,6 +186,7 @@ const currentTimeframe = ref(null)
 // Component refs
 const navFormRef = ref(null)
 const chartPanelRef = ref(null)
+const taskListRef = ref(null)
 
 // Tabs with badge for unread messages
 const tabsWithBadge = computed(() => {
@@ -482,15 +489,72 @@ function handleFormDataChanged() {
   // Placeholder — will handle form data changes
 }
 
+function handleTaskSelected(task) {
+  currentTaskId.value = task.id
+  currentTask.value = task
+  isRunning.value = task.isRunning || false
+  isReadonly.value = true
+
+  currentSource.value = task.source || null
+  currentSymbol.value = task.symbol || null
+  currentTimeframe.value = task.timeframe || null
+
+  if (navFormRef.value) {
+    navFormRef.value.setFormData({
+      source: task.source || '',
+      symbol: task.symbol || '',
+      timeframe: task.timeframe || ''
+    })
+  }
+}
+
+function handleTaskDeleted(taskId) {
+  if (currentTaskId.value === taskId) {
+    currentTaskId.value = null
+    currentTask.value = null
+    isRunning.value = false
+    stats.value = null
+    currentSource.value = null
+    currentSymbol.value = null
+    currentTimeframe.value = null
+    if (navFormRef.value) {
+      navFormRef.value.setFormData({ source: '', symbol: '', timeframe: '' })
+    }
+  }
+}
+
 function clearMessages() {
   messages.value = []
   unreadImportantMessagesCount.value = 0
+}
+
+// Auto-select task from query parameter (e.g. after Deploy from Backtesting)
+async function selectTaskFromQuery() {
+  const taskId = Number(route.query.taskId)
+  if (!taskId) return
+
+  // Remove query param to avoid re-selecting on refresh
+  router.replace({ query: {} })
+
+  // Wait for TradingTaskList to finish loading
+  await nextTick()
+  
+  // Retry a few times — loadTasks may still be in progress
+  for (let i = 0; i < 10; i++) {
+    const task = taskListRef.value?.getTaskById(taskId)
+    if (task) {
+      handleTaskSelected(task)
+      return
+    }
+    await new Promise(r => setTimeout(r, 200))
+  }
 }
 
 // Lifecycle
 onMounted(() => {
   calculateSizes()
   window.addEventListener('resize', calculateSizes)
+  selectTaskFromQuery()
 })
 
 onBeforeUnmount(() => {

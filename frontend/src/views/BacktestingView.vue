@@ -456,6 +456,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, provide, inject } from 'vue'
+import { useRouter } from 'vue-router'
 import ResizablePanel from '../components/ResizablePanel.vue'
 import ChartPanel from '../components/ChartPanel.vue'
 import MessagesPanel from '../components/MessagesPanel.vue'
@@ -610,6 +611,8 @@ provide('backtestingResults', backtestingResults)
 
 // Use alert system
 const { showAlert } = useAlert()
+
+const router = useRouter()
 
 // Table columns definitions
 const tradesColumns = [
@@ -2611,11 +2614,7 @@ async function handleDeploy() {
       level: 'info',
       message: `Trading task #${tradingTask.id} created from backtesting task #${currentTaskId.value} (${tradingTask.name})`
     })
-    // TODO: Navigate to trading page and select the created task
-    addLocalMessage({
-      level: 'info',
-      message: 'TODO: Navigate to Trading page and select task'
-    })
+    router.push({ name: 'Trading', query: { taskId: tradingTask.id } })
   } catch (error) {
     console.error('Failed to deploy trading task:', error)
     const errorMessage = error.response?.data?.detail || error.message || 'Unknown error'

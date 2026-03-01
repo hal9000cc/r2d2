@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
-from typing import Dict, Any
+from typing import Dict, Any, List
+from collections import defaultdict
 from app.services.tasks.tasks import BacktestingTaskList, TradingTaskList
 from app.services.strategies import load_strategy
 from app.services.strategies.exceptions import R2D2StrategyFileError, R2D2StrategyNotFoundError
@@ -18,6 +19,53 @@ CLONE_FIELDS = [
     "precision_amount", "precision_price",
     "parameters", "history_size",
 ]
+
+
+@router.get("/tasks", response_model=Dict[str, Any])
+async def get_trading_tasks():
+    """
+    Get all trading tasks grouped by group_id.
+    
+    Returns dict with:
+    - tasks: flat list of all trading tasks
+    - groups: dict mapping group_id -> {name, count} for groups with >1 task
+    """
+    tasks = trading_task_list.list()
+    task_dicts = [t.model_dump(exclude_unset=False) for t in tasks]
+
+    group_counts: Dict[int, int] = defaultdict(int)
+    for t in tasks:
+        if t.group_id > 0:
+            group_counts[t.group_id] += 1
+
+    groups: Dict[str, Dict[str, Any]] = {}
+    for gid, count in group_counts.items():
+        if count > 1:
+            source = backtesting_task_list.load(gid)
+            groups[str(gid)] = {
+                "name": source.name if source else f"Task #{gid}",
+                "count": count,
+            }
+
+    return {"tasks": task_dicts, "groups": groups}
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_trading_task(task_id: int):
+    """
+    Delete a trading task. Cannot delete a running task.
+    """
+    task = trading_task_list.load(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Trading task {task_id} not found")
+
+    if task.isRunning:
+        raise HTTPException(status_code=400, detail="Cannot delete a running task. Stop it first.")
+
+    trading_task_list.clear_result(task_id)
+    trading_task_list.delete(task_id)
+    logger.info(f"Deleted trading task {task_id}")
+    return {"ok": True}
 
 
 @router.post("/tasks/clone/{backtesting_task_id}", response_model=Dict[str, Any])
