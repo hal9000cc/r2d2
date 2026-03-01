@@ -37,6 +37,8 @@ class Task(Objects2Redis):
     slippage_in_steps: float = 1.0  # Slippage in price steps (e.g., 1.0 means 1 step)
     parameters: Dict[str, Any] = Field(default_factory=dict)
     history_size: int = 1000  # Number of bars to load for strategy initialization
+    strategy_snapshot: str = ""  # Frozen strategy source code (used by live trading tasks)
+    group_id: int = 0  # ID of the source backtesting task (links trading tasks to their origin)
     
     def get_key(self) -> str:
         """
@@ -248,5 +250,57 @@ class BacktestingTaskList(Objects2RedisList[Task]):
             logger.debug(f"Cleared backtesting result stream at key {key}, deleted={deleted}")
         except Exception as e:
             msg = f"Failed to clear backtesting result stream for task {task_id} at key {key}: {e}"
+            logger.error(msg)
+            raise RuntimeError(msg)
+
+
+class TradingTaskList(Objects2RedisList[Task]):
+    """
+    Singleton class for managing live trading tasks in Redis.
+    Uses the same Task class but with a separate Redis key prefix.
+    """
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(TradingTaskList, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self, redis_params: Optional[dict] = None):
+        if TradingTaskList._initialized:
+            return
+        if redis_params is not None:
+            super().__init__(redis_params)
+            TradingTaskList._initialized = True
+
+    def list_key(self) -> str:
+        return "trading_tasks"
+
+    def object_class(self) -> Type[Task]:
+        return Task
+
+    # --- Trading results helpers ---
+
+    def get_result_key(self, task_id: int) -> str:
+        """
+        Get Redis key for trading results stream for a given task.
+        """
+        return f"{self.list_key()}:result:{task_id}"
+
+    def clear_result(self, task_id: int) -> None:
+        """
+        Clear Redis stream with trading results for the given task.
+
+        Raises:
+            RuntimeError: On any Redis error during deletion.
+        """
+        key = self.get_result_key(task_id)
+        redis_client = self._get_redis_client()
+        try:
+            deleted = redis_client.delete(key)
+            logger.debug(f"Cleared trading result stream at key {key}, deleted={deleted}")
+        except Exception as e:
+            msg = f"Failed to clear trading result stream for task {task_id} at key {key}: {e}"
             logger.error(msg)
             raise RuntimeError(msg)
