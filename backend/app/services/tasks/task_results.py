@@ -9,6 +9,7 @@ import numpy as np
 import msgpack
 import redis
 from app.services.tasks.tasks import Task
+from app.services.tasks.error_registry import ErrorRegistry, ErrorEntry
 from app.core.logger import get_logger
 from app.core.datetime_utils import datetime64_to_iso
 
@@ -444,6 +445,113 @@ class TaskResults:
         
         return (stats_key, stats_json)
     
+    def _prepare_errors_data(self, broker, result_key_prefix: str, result_id: str):
+        """
+        Prepare new errors from broker.error_registry for saving to Redis.
+
+        Only errors not yet flushed to Redis are prepared (incremental).
+        Score is the sequential error_id so the Sorted Set is always sorted
+        by error order and duplicates are naturally deduplicated by score.
+
+        Args:
+            broker: Broker instance with error_registry attribute
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+
+        Returns:
+            tuple: (errors_key, errors_to_save) or None if no new errors
+        """
+        registry: ErrorRegistry = broker.error_registry
+        new_errors = registry.get_new_errors()
+
+        if not new_errors:
+            return None
+
+        errors_key = f"{result_key_prefix}:{result_id}:errors"
+        errors_to_save = {
+            ErrorRegistry.serialize_entry(entry): entry.id
+            for entry in new_errors
+        }
+
+        return (errors_key, errors_to_save)
+
+    def _load_errors(
+        self,
+        client,
+        result_key_prefix: str,
+        result_id: str,
+        min_id: int = 0,
+        deal_id: Optional[int] = None,
+    ) -> List[Dict]:
+        """
+        Load errors from Redis Sorted Set.
+
+        Args:
+            client: Redis client
+            result_key_prefix: Redis key prefix for results
+            result_id: Result ID
+            min_id: Minimum error_id to load (0 = all)
+            deal_id: If given, filter by deal_id
+
+        Returns:
+            List of error dictionaries with keys:
+            id, timestamp, broker_time, level, category, message, deal_id, order_id
+        """
+        errors_key = f"{result_key_prefix}:{result_id}:errors"
+        try:
+            raw_members = client.zrangebyscore(errors_key, min_id, '+inf', withscores=False)
+        except Exception as e:
+            logger.warning("Failed to load errors from %s: %s", errors_key, e)
+            return []
+
+        results = []
+        for raw in raw_members:
+            entry = ErrorRegistry.deserialize_entry(raw)
+            if entry is None:
+                continue
+            if deal_id is not None and entry.deal_id != deal_id:
+                continue
+            results.append({
+                'id': entry.id,
+                'timestamp': entry.timestamp,
+                'broker_time': entry.broker_time,
+                'level': entry.level.value,
+                'category': entry.category.value,
+                'message': entry.message,
+                'deal_id': entry.deal_id,
+                'order_id': entry.order_id,
+            })
+
+        return results
+
+    def get_errors(
+        self,
+        result_id: str,
+        min_id: int = 0,
+        deal_id: Optional[int] = None,
+    ) -> List[Dict]:
+        """
+        Get errors from Redis for the given result.
+
+        Args:
+            result_id: Result ID
+            min_id: Minimum error_id to load (0 = all, useful for pagination)
+            deal_id: If given, return only errors associated with this deal
+
+        Returns:
+            List of error dicts sorted by id ascending.
+
+        Raises:
+            RuntimeError: If Redis operation fails
+        """
+        try:
+            client = self._get_redis_client()
+            result_key_prefix = self.task.get_result_key()
+            return self._load_errors(client, result_key_prefix, result_id, min_id=min_id, deal_id=deal_id)
+        except Exception as e:
+            logger.error("Failed to get errors: %s", e)
+            raise RuntimeError(f"Failed to get errors: {e}") from e
+
     def _save_quotes_time(self, result_key_prefix: str, result_id: str):
         """
         Save quotes time series to Redis (only on first call).
@@ -576,24 +684,37 @@ class TaskResults:
                 orders_hash_key, orders_index_key, orders_hash_data, orders_index_data = orders_data
             
             stats_key, stats_json = self._prepare_stats_data(broker, result_key_prefix, result_id, is_finish)
-            
+
+            errors_data = self._prepare_errors_data(broker, result_key_prefix, result_id)
+            errors_key = None
+            errors_to_save = {}
+            if errors_data is not None:
+                errors_key, errors_to_save = errors_data
+
             pipeline = client.pipeline()
-            
+
             if trades_to_save:
                 pipeline.zadd(trades_key, trades_to_save)
-            
+
             if deals_to_save:
                 pipeline.zadd(deals_key, deals_to_save)
-            
+
             if orders_hash_data:
                 pipeline.hset(orders_hash_key, mapping=orders_hash_data)
             if orders_index_data:
                 pipeline.zadd(orders_index_key, orders_index_data)
-            
+
             if stats_json:
                 pipeline.set(stats_key, stats_json)
-            
+
+            if errors_to_save:
+                pipeline.zadd(errors_key, errors_to_save)
+
             pipeline.execute()
+
+            # Mark errors as flushed only after successful pipeline execution
+            if errors_to_save:
+                broker.error_registry.mark_flushed()
             
             if trades_data is not None:
                 self._trades_start_index = current_trades_size

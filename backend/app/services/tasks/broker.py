@@ -25,6 +25,7 @@ from app.services.tasks.enums import (
     BarStatus
 )
 from app.services.tasks.trading_stats import TradingStats
+from app.services.tasks.error_registry import ErrorRegistry, ErrorCategory, ErrorEntry
 
 if TYPE_CHECKING:
     from app.services.tasks.tasks import Task
@@ -259,20 +260,19 @@ class Deal(BaseModel):
     date_open: Optional[np.datetime64] = None
     date_close: Optional[np.datetime64] = None
     
-    # Emergency close flag (set to True if errors occurred during order cancellation when closing deal)
-    need_emergency_close: bool = False
-    
     # Pending close flag (set to True when deal should be closed)
     pending_close: bool = False
-    
-    # List of error messages for the deal
-    errors: List[str] = Field(default_factory=list)
     
     # Type of deal closure (copied from last exit order's order_group, or NONE if closed via regular buy/sell)
     close_type: Optional[OrderGroup] = None
     
     # Automatic deal flag (for buy/sell methods)
     auto: bool = False
+
+    # Emergency close flag: set to True when deal requires immediate closure
+    # (e.g. order placement timeout exceeded). Preserved after close as a marker
+    # of abnormal deal termination.
+    emergency_close: bool = False
     
     # Internal accumulators for efficient incremental updates
     buy_quantity: VOLUME_TYPE = 0.0
@@ -694,6 +694,21 @@ class Deal(BaseModel):
             last_order._set_sync_field('status', OrderStatus.ACTIVE)
 
 
+class DealInfo(Deal):
+    """
+    Read-only snapshot of a Deal enriched with its associated errors.
+
+    Returned by Strategy.deal_info() and Strategy.close_deal() so that
+    strategy code can inspect deal state and its error history without
+    mutating the live Deal object.
+
+    The `errors` field is populated from broker.error_registry at the
+    moment of the call; it is a point-in-time copy.
+    """
+
+    errors: List[ErrorEntry] = Field(default_factory=list)
+
+
 class Broker(ABC):
     """
     Generic broker base class.
@@ -760,7 +775,10 @@ class Broker(ABC):
         
         # Live trading flag (subclasses set to True)
         self.is_live: bool = False
-        
+
+        # Centralized error registry (stores error/critical events for persistence in Redis)
+        self.error_registry: ErrorRegistry = ErrorRegistry()
+
         self.stats = TradingStats(
             initial_equity_usd=0.0,
             fee_taker=task.fee_taker if task.fee_taker > 0 else 0.001,
@@ -1491,7 +1509,8 @@ class Broker(ABC):
                 self.logging(
                     f"Deal {deal.deal_id} failed to close: quantity={deal.quantity}",
                     level="error",
-                    deal_id=deal.deal_id
+                    category=ErrorCategory.TRADING,
+                    deal_id=deal.deal_id,
                 )
                 deal.cancel_orders(self)
 
@@ -1541,17 +1560,29 @@ class Broker(ABC):
         
         return canceled_order_ids, not_canceled_order_ids, error_messages
     
-    def logging(self, message: str, level: str = "info", deal_id: Optional[int] = None) -> None:
+    def logging(
+        self,
+        message: str,
+        level: str = "info",
+        deal_id: Optional[int] = None,
+        category: Optional[ErrorCategory] = None,
+        order_id: Optional[int] = None,
+    ) -> None:
         """
-        Send log message to frontend via task.
-        
+        Send log message to frontend via task and register errors in ErrorRegistry.
+
+        For level 'error' or 'critical', the error is additionally stored in
+        self.error_registry for persistence in Redis. If no category is given,
+        ErrorCategory.TRADING is used as a safe default.
+
         Args:
             message: Message text (required)
-            level: Message level (optional, default: "info")
-                  Valid levels: info, warning, error, critical, success, debug
-            deal_id: Deal ID associated with the message (optional, processing to be implemented later)
+            level: Severity level (default: "info").
+                   Valid: info, warning, error, critical, success, debug
+            deal_id: Associated deal ID (optional)
+            category: ErrorCategory for errors/criticals. Defaults to TRADING if None.
+            order_id: Associated order ID (optional, stored in registry only)
         """
-        # Log to system logger
         if level == "critical":
             logger.critical(message)
         elif level == "error":
@@ -1562,12 +1593,24 @@ class Broker(ABC):
             logger.debug(message)
         else:
             logger.info(message)
-        
-        # Convert broker time to ISO format if available
+
         broker_time_iso = None
         if self.current_time is not None:
             broker_time_iso = datetime64_to_iso(self.current_time)
+
+        # Persist error/critical events in the registry
+        if level in ("error", "critical"):
+            effective_category = category if category is not None else ErrorCategory.TRADING
+            entry = self.error_registry.register_error(
+                level=level,
+                category=effective_category,
+                message=message,
+                deal_id=deal_id,
+                order_id=order_id,
+                broker_time=broker_time_iso,
+            )
             
+
         self.task.message(message, level, broker_time=broker_time_iso)
     
     def update_state(self, results: Optional['TaskResults'], is_finish: bool = False) -> None:
@@ -1988,7 +2031,13 @@ class Broker(ABC):
                         order.update_modify_time(self)
                         updated_count += 1
                     else:
-                        self.logging(f"Failed to place order {order.order_id}: {create_result}", level="error", deal_id=order.deal_id)
+                        self.logging(
+                            f"Failed to place order {order.order_id}: {create_result}",
+                            level="error",
+                            category=ErrorCategory.EXCHANGE,
+                            deal_id=order.deal_id,
+                            order_id=order.order_id,
+                        )
                 
                 # Handle CANCELED or EXECUTED orders (need to remove from exchange if present)
                 elif order.status in (OrderStatus.CANCELED, OrderStatus.EXECUTED):
@@ -2129,15 +2178,15 @@ class Broker(ABC):
         
         for deal_id in affected_deal_ids:
             deal = self.get_deal(deal_id)
-            if not deal.is_closed and not deal.need_emergency_close:
-                deal.need_emergency_close = True
+            if not deal.is_closed and not deal.emergency_close:
+                deal.emergency_close = True
                 self.logging(
                     f"Deal {deal_id}: order placement timeout ({self.order_placement_timeout}s) exceeded, "
                     f"marked for emergency close",
                     level="error",
-                    deal_id=deal_id
+                    category=ErrorCategory.EXCHANGE,
+                    deal_id=deal_id,
                 )
-                # TODO: save exchange error details for each unplaced order
                 # TODO: implement emergency close processing
 
             
@@ -2220,7 +2269,8 @@ class Broker(ABC):
                     unclosed_ids = [d.deal_id for d in unclosed]
                     self.logging(
                         f"Deals still open after close attempt: {unclosed_ids}",
-                        level="error"
+                        level="error",
+                        category=ErrorCategory.TRADING,
                     )
         else:
             self.close_deals()

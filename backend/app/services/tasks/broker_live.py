@@ -12,6 +12,7 @@ import numpy as np
 import pyita as ta
 
 from app.services.tasks.broker import Broker, OrderType, OrderSide, BarStatus
+from app.services.tasks.error_registry import ErrorCategory
 from app.services.tasks.quotes_provider import RealTimeQuotesProvider, QuotesProvider
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.quotes.client import QuotesClient
@@ -191,10 +192,10 @@ class BrokerLive(Broker):
                 timeout=self.bar_wait_interval,
             )
         except RuntimeError as e:
-            self.logging(f"Bar subscription error: {e}", level="error")
+            self.logging(f"Bar subscription error: {e}", level="error", category=ErrorCategory.DATA)
             return (BarStatus.FINISHED, None)
         except Exception as e:
-            self.logging(f"Error waiting for bar: {e}", level="error")
+            self.logging(f"Error waiting for bar: {e}", level="error", category=ErrorCategory.DATA)
             return (BarStatus.WAITING, None)
 
         if bar_data is None:
@@ -265,7 +266,11 @@ class BrokerLive(Broker):
                     params={"stopPrice": price},
                 )
             else:
-                self.logging(f"Unsupported order type: {order_type}", level="error")
+                self.logging(
+                    f"Unsupported order type: {order_type}",
+                    level="error",
+                    category=ErrorCategory.EXCHANGE,
+                )
                 return {}
 
             return {
@@ -280,11 +285,11 @@ class BrokerLive(Broker):
             }
 
         except Exception as e:
-            # TODO: persist exchange error for diagnostics
             self.logging(
                 f"exchange_create_order failed: {order_type.value} {side.value} "
                 f"{amount} @ {price}: {e}",
                 level="error",
+                category=ErrorCategory.EXCHANGE,
             )
             return {}
 
@@ -302,6 +307,7 @@ class BrokerLive(Broker):
             self.logging(
                 f"exchange_cancel_order failed for {exchange_order_id}: {e}",
                 level="error",
+                category=ErrorCategory.EXCHANGE,
             )
             return {"id": exchange_order_id, "status": "error"}
 
@@ -317,7 +323,11 @@ class BrokerLive(Broker):
         try:
             raw_trades = self.exchange.fetch_my_trades(symbol, since=since)
         except Exception as e:
-            self.logging(f"exchange_fetch_my_trades failed: {e}", level="error")
+            self.logging(
+                f"exchange_fetch_my_trades failed: {e}",
+                level="error",
+                category=ErrorCategory.EXCHANGE,
+            )
             return []
 
         normalised: List[Dict] = []

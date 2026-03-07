@@ -13,8 +13,8 @@ from app.core.logger import get_logger
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
 
-# Import Order and Deal for runtime use (needed for OrderOperationResult and close_deal)
-from app.services.tasks.broker import Order, Deal
+# Import Order, Deal and DealInfo for runtime use
+from app.services.tasks.broker import Order, Deal, DealInfo
 
 if TYPE_CHECKING:
     from app.services.tasks.broker_backtesting import BrokerBacktesting as Broker, ta_proxy
@@ -1072,39 +1072,37 @@ class Strategy(ABC):
             volume=0.0
         )
     
-    def close_deal(self, deal_id: int) -> Deal:
+    def close_deal(self, deal_id: int) -> DealInfo:
         """
         Close a specific deal by canceling all active orders and closing position.
-        
+
         Args:
             deal_id: ID of the deal to close
-        
+
         Returns:
-            Deal: Deep copy of the closed deal
-        
+            DealInfo: Snapshot of the closed deal enriched with its error history.
+
         Raises:
             IndexError: If deal with specified deal_id does not exist
         """
-        # Call broker's close_deal method
         self.broker.close_deal(deal_id)
-        
-        # Get deal and return deep copy
         deal = self.broker.get_deal(deal_id)
-        return deal.model_copy(deep=True)
-    
-    def deal_info(self, deal_id: int) -> Optional[Deal]:
+        deal_copy = DealInfo(**deal.model_dump(), errors=self.broker.error_registry.get_deal_errors(deal_id))
+        return deal_copy
+
+    def deal_info(self, deal_id: int) -> Optional[DealInfo]:
         """
-        Get information about a deal by its ID.
-        
+        Get information about a deal by its ID, including its error history.
+
         Args:
-            deal_id: ID of the deal to get information about
-        
+            deal_id: ID of the deal
+
         Returns:
-            Deal: Deep copy of the deal, or None if deal with specified deal_id does not exist
+            DealInfo: Snapshot of the deal with errors, or None if not found.
         """
         try:
             deal = self.broker.get_deal(deal_id)
-            return deal.model_copy(deep=True)
+            return DealInfo(**deal.model_dump(), errors=self.broker.error_registry.get_deal_errors(deal_id))
         except IndexError:
             return None
     
