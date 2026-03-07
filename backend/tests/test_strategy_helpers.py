@@ -37,6 +37,8 @@ from tests.test_broker_backtesting import (
 # ============================================================================
 
 class TestStrategy(Strategy):
+    __test__ = False  # Prevent pytest from collecting this as a test class
+
     """
     Universal test strategy that executes actions based on a protocol.
     

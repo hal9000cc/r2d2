@@ -65,6 +65,7 @@ QUOTES_FETCH_RETRY_DELAY=1
 # Broker settings
 BAR_WAIT_INTERVAL=60.0
 ORDER_WAIT_INTERVAL=1.0
+ORDER_PLACEMENT_TIMEOUT=60.0
 
 # Symbols cache TTL (time-to-live) in seconds
 SYMBOLS_CACHE_TTL_SECONDS=600
@@ -173,6 +174,7 @@ SYMBOLS_CACHE_TTL_SECONDS = int(os.getenv("SYMBOLS_CACHE_TTL_SECONDS", "3600"))
 # Broker settings
 BAR_WAIT_INTERVAL = float(os.getenv("BAR_WAIT_INTERVAL", "60.0"))
 ORDER_WAIT_INTERVAL = float(os.getenv("ORDER_WAIT_INTERVAL", "1.0"))
+ORDER_PLACEMENT_TIMEOUT = float(os.getenv("ORDER_PLACEMENT_TIMEOUT", "60.0"))
 
 # API keys and secrets cache (lazy loading)
 _api_keys_cache: Dict[str, Optional[str]] = {}

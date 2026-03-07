@@ -13,7 +13,7 @@ from app.services.tasks.indicator_proxy import ta_proxy_talib, ta_proxy_pyita, Q
 from app.services.tasks.quotes_provider import QuotesProvider
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
 from app.core.objects2redis import MessageType
-from app.core.config import BAR_WAIT_INTERVAL, ORDER_WAIT_INTERVAL
+from app.core.config import BAR_WAIT_INTERVAL, ORDER_WAIT_INTERVAL, ORDER_PLACEMENT_TIMEOUT
 from app.core.logger import get_logger
 from app.core.datetime_utils import datetime64_to_iso
 from app.services.tasks.enums import (
@@ -751,6 +751,15 @@ class Broker(ABC):
         # Wait intervals for order processing and bar fetching
         self.bar_wait_interval: float = BAR_WAIT_INTERVAL
         self.order_wait_interval: float = ORDER_WAIT_INTERVAL
+        
+        # Order placement timeout (seconds). 0 = no limit (backtesting).
+        # Measures total time from first place_orders() call after on_bar().
+        # If exceeded, unplaced orders' deals are marked for emergency close.
+        self.order_placement_timeout: float = 0.0
+        self._placement_round_start: Optional[float] = None
+        
+        # Live trading flag (subclasses set to True)
+        self.is_live: bool = False
         
         self.stats = TradingStats(
             initial_equity_usd=0.0,
@@ -2045,9 +2054,18 @@ class Broker(ABC):
         Process orders cycle: fetch updates and place pending orders.
         Repeats if orders were placed to handle immediate updates/fills.
         
+        When order_placement_timeout > 0, tracks total elapsed time since the
+        first call in this placement round.  If the timeout is exceeded and
+        there are still unplaced orders, their deals are marked with
+        need_emergency_close and the loop is broken.
+        
         Args:
             markets_only: If True, only process market orders (skip stop and limit order checks)
         """
+        # Start placement round timer on non-markets_only calls
+        if not markets_only and self.order_placement_timeout > 0:
+            if self._placement_round_start is None:
+                self._placement_round_start = time.monotonic()
         
         while True:
 
@@ -2062,10 +2080,65 @@ class Broker(ABC):
             placed_count = self.place_orders()
             
             if placed_count == 0:
+                # Check for unplaced orders that exceeded timeout
+                if self.order_placement_timeout > 0 and self._placement_round_start is not None:
+                    elapsed = time.monotonic() - self._placement_round_start
+                    if elapsed > self.order_placement_timeout:
+                        self._handle_placement_timeout()
                 break
                 
             if self.order_wait_interval > 0:
                 time.sleep(self.order_wait_interval)
+            
+            # Check placement timeout mid-cycle
+            if self.order_placement_timeout > 0 and self._placement_round_start is not None:
+                elapsed = time.monotonic() - self._placement_round_start
+                if elapsed > self.order_placement_timeout:
+                    self._handle_placement_timeout()
+                    break
+        
+        # Reset placement round timer after non-markets_only processing
+        if not markets_only:
+            self._placement_round_start = None
+    
+    def _handle_placement_timeout(self) -> None:
+        """
+        Handle order placement timeout: mark deals with unplaced orders
+        for emergency close.
+        
+        Called when order_placement_timeout is exceeded and there are still
+        orders with actual=False.
+        """
+        unplaced_orders = [
+            order for order in self.orders
+            if not order.actual
+            and order.status == OrderStatus.ACTIVE
+        ]
+        
+        if not unplaced_orders:
+            return
+        
+        # Collect unique deal_ids for affected deals
+        affected_deal_ids: Set[int] = set()
+        for order in unplaced_orders:
+            deal_id = order.deal_id
+            if deal_id > 0:
+                affected_deal_ids.add(deal_id)
+            elif deal_id == 0 and self._current_auto_deal_id is not None:
+                affected_deal_ids.add(self._current_auto_deal_id)
+        
+        for deal_id in affected_deal_ids:
+            deal = self.get_deal(deal_id)
+            if not deal.is_closed and not deal.need_emergency_close:
+                deal.need_emergency_close = True
+                self.logging(
+                    f"Deal {deal_id}: order placement timeout ({self.order_placement_timeout}s) exceeded, "
+                    f"marked for emergency close",
+                    level="error",
+                    deal_id=deal_id
+                )
+                # TODO: save exchange error details for each unplaced order
+                # TODO: implement emergency close processing
 
             
 
@@ -2137,20 +2210,36 @@ class Broker(ABC):
             
             #self.i_time += 1
         
-        self.close_deals()
+        if self.is_live:
+            # Live trading: close deals only if task.close_deals_on_stop is True
+            if self.task.close_deals_on_stop:
+                self.close_deals()
+                # Check for unclosed deals after close_deals attempt
+                unclosed = [d for d in self.deals if not d.is_closed and d.quantity != 0]
+                if unclosed:
+                    unclosed_ids = [d.deal_id for d in unclosed]
+                    self.logging(
+                        f"Deals still open after close attempt: {unclosed_ids}",
+                        level="error"
+                    )
+        else:
+            self.close_deals()
         
         if __debug__:
             errors = self.check_trading_results()
             if errors:
                 error_message = f"Trading results validation failed:\n" + "\n".join(errors)
-                if hasattr(self, 'task') and hasattr(self.task, 'backtesting_error'):
-                    self.task.backtesting_error(error_message)
-                raise RuntimeError(error_message)
+                if self.is_live:
+                    self.logging(error_message, level="error")
+                else:
+                    if hasattr(self.task, 'backtesting_error'):
+                        self.task.backtesting_error(error_message)
+                    raise RuntimeError(error_message)
         
-        if hasattr(self, 'callbacks') and 'on_finish' in self.callbacks:
+        if 'on_finish' in self.callbacks:
             self.callbacks['on_finish']()
         
-        if hasattr(self, 'update_state') and hasattr(self, 'date_end'):
+        if hasattr(self, 'date_end') and self.date_end is not None:
             self.current_time = self.date_end
             self.update_state(results, is_finish=True)
     

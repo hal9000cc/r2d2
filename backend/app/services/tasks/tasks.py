@@ -39,6 +39,7 @@ class Task(Objects2Redis):
     history_size: int = 1000  # Number of bars to load for strategy initialization
     strategy_snapshot: str = ""  # Frozen strategy source code (used by live trading tasks)
     group_id: int = 0  # ID of the source backtesting task (links trading tasks to their origin)
+    close_deals_on_stop: bool = False  # If True, close all open deals when live trading is stopped
     
     def get_key(self) -> str:
         """
