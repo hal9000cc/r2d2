@@ -8,10 +8,23 @@ import multiprocessing
 from pathlib import Path
 import clickhouse_connect
 import ccxt.async_support as ccxt
+import ccxt.pro as ccxt_pro  # WebSocket support (watch_ohlcv)
 import asyncio
 from .timeframe import Timeframe
 from .exceptions import R2D2QuotesException, R2D2QuotesExceptionDataNotReceived
-from .constants import TIME_TYPE, TIME_TYPE_UNIT, TIME_UNITS_IN_ONE_SECOND
+from .constants import (
+    TIME_TYPE,
+    TIME_TYPE_UNIT,
+    TIME_UNITS_IN_ONE_SECOND,
+    SUB_MSG_BAR,
+    SUB_MSG_ERROR,
+    SUB_MSG_SHUTDOWN,
+    SUB_ACTION_SUBSCRIBE,
+    SUB_ACTION_UNSUBSCRIBE,
+    WS_RECONNECT_DELAY,
+    WS_RECONNECT_MAX_DELAY,
+)
+from .serialization import encode_bar_message, build_bar_channel
 from app.core.config import QUOTES_FETCH_RETRY_ATTEMPTS, QUOTES_FETCH_RETRY_DELAY
 
 T = TypeVar('T')
@@ -114,7 +127,10 @@ class QuotesServer:
             # Note: Locks are never removed from this dictionary to avoid race conditions
             self._request_locks: Dict[Tuple[str, str, str], asyncio.Lock] = {}
             self._locks_lock = asyncio.Lock()  # For thread-safe access to _request_locks
-            
+
+            # Subscription manager (lazily initialized on first subscribe request)
+            self.subscription_manager: Optional['SubscriptionManager'] = None
+
             QuotesServer._initialized = True
 
     def connect_database(self, database: Optional[str] = None):
@@ -712,30 +728,24 @@ class QuotesServer:
 
         return result, filled_indices
 
-    async def fetch_bar_async(self, exchange: ccxt.Exchange, exchange_name: str, symbol: str, tf: Timeframe, time_start: datetime, time_end: Optional[datetime] = None, max_bars: int = 1000, retry_delay: int = 1) -> tuple:
+    async def fetch_bar_async(self, exchange: ccxt.Exchange, exchange_name: str, symbol: str, tf: Timeframe, time_start: datetime, time_end: datetime, max_bars: int = 1000) -> tuple:
         """
-        Asynchronously fetch bars from exchange
-        
+        Asynchronously fetch historical bars from exchange and save them to ClickHouse.
+
         Args:
             exchange: CCXT exchange instance
             exchange_name: Name of the exchange (for logging)
             symbol: Trading pair symbol
             tf: Timeframe object
-            time_start: Start time as datetime
-            time_end: End time as datetime (optional, if None, fetch until no more data)
-            realtime: If True, realtime mode - retry until we get a new bar
-            max_bars: Maximum number of bars per request
-            retry_delay: Delay in seconds before retry in realtime mode (default: 1)
-            
+            time_start: Start time as datetime (required)
+            time_end: End time as datetime (required)
+            max_bars: Maximum number of bars per REST request
+
         Returns:
-            Tuple (exchange_name, symbol, tf, bars) where:
-            - In historical mode: bars is empty list (bars are saved during fetch)
-            - In realtime mode: bars contains only the last complete bar [timestamp, open, high, low, close, volume]
+            Tuple (exchange_name, symbol, tf, []) — bars are saved to ClickHouse during fetch,
+            the returned list is always empty.
         """
         tf_str = str(tf)
-        realtime = time_end is None
-        if realtime:
-            raise ValueError(f"Not released realtime mode for {exchange_name}/{symbol}/{tf_str}")
         current_since = int(time_start.replace(tzinfo=UTC).timestamp() * 1000)
         time_end_ms = int(time_end.replace(tzinfo=UTC).timestamp() * 1000.0) if time_end else None
         prev_bars = []
@@ -781,6 +791,301 @@ class QuotesServer:
         return exchange_name, symbol, tf, []
 
 
+class SubscriptionManager:
+    """
+    Manages WebSocket bar subscriptions with reference counting.
+
+    Each unique (source, symbol, timeframe) gets exactly one watch_ohlcv asyncio task.
+    Multiple clients can subscribe to the same key; the WebSocket is shared and
+    only torn down when the last subscriber unsubscribes.
+    """
+
+    def __init__(self, server: QuotesServer):
+        self._server = server
+        # Key: (source, symbol, timeframe_str)
+        # Value: dict {task: asyncio.Task, ref_count: int, exchange: ccxt.Exchange}
+        self._subscriptions: Dict[Tuple[str, str, str], dict] = {}
+        self._lock = asyncio.Lock()
+
+    async def subscribe(self, source: str, symbol: str, timeframe_str: str) -> None:
+        """Add a subscriber. If the first one, start the watch_ohlcv task."""
+        key = (source, symbol, timeframe_str)
+        async with self._lock:
+            if key in self._subscriptions:
+                self._subscriptions[key]["ref_count"] += 1
+                logger.info(
+                    "Subscription %s: ref_count incremented to %d",
+                    key, self._subscriptions[key]["ref_count"],
+                )
+                return
+
+            exchange_class = getattr(ccxt_pro, source.lower())
+            exchange = exchange_class()
+
+            task = asyncio.create_task(
+                self._watch_ohlcv_loop(source, symbol, timeframe_str, exchange)
+            )
+            self._subscriptions[key] = {
+                "task": task,
+                "ref_count": 1,
+                "exchange": exchange,
+            }
+            logger.info("Subscription %s: created (ref_count=1)", key)
+
+    async def unsubscribe(self, source: str, symbol: str, timeframe_str: str) -> None:
+        """Remove a subscriber. If the last one, stop the watch_ohlcv task."""
+        key = (source, symbol, timeframe_str)
+        async with self._lock:
+            if key not in self._subscriptions:
+                logger.warning("Subscription %s: not found for unsubscribe", key)
+                return
+
+            self._subscriptions[key]["ref_count"] -= 1
+
+            if self._subscriptions[key]["ref_count"] <= 0:
+                self._subscriptions[key]["task"].cancel()
+                try:
+                    await self._subscriptions[key]["exchange"].close()
+                except Exception as exc:
+                    logger.warning("Failed to close exchange for %s: %s", key, exc)
+                del self._subscriptions[key]
+                logger.info("Subscription %s: removed (ref_count=0)", key)
+            else:
+                logger.info(
+                    "Subscription %s: ref_count decremented to %d",
+                    key, self._subscriptions[key]["ref_count"],
+                )
+
+    async def shutdown_all(self) -> None:
+        """
+        Graceful shutdown: publish shutdown message to every channel,
+        cancel all tasks, close all exchange connections.
+        Called by run_quotes_service on exit.
+        """
+        async with self._lock:
+            for key, sub_info in self._subscriptions.items():
+                source, symbol, timeframe_str = key
+                channel = build_bar_channel(source, symbol, timeframe_str)
+                shutdown_msg = encode_bar_message(SUB_MSG_SHUTDOWN)
+                try:
+                    await self._server.redis_client.publish(channel, shutdown_msg)
+                except Exception as exc:
+                    logger.warning("Failed to publish shutdown for %s: %s", key, exc)
+
+                sub_info["task"].cancel()
+                try:
+                    await sub_info["exchange"].close()
+                except Exception:
+                    pass
+
+            self._subscriptions.clear()
+            logger.info("All subscriptions shut down")
+
+    def _detect_completed_bar(
+        self,
+        candles: list,
+        last_bar_timestamp: Optional[int],
+        last_forming_candle: Optional[list] = None,
+    ) -> Tuple[Optional[list], int, Optional[list]]:
+        """
+        Determine whether a bar has just completed given a new batch of candles.
+
+        In watch_ohlcv the *last* candle is the currently forming bar.
+        A bar is considered completed when its timestamp changes to a new value.
+
+        The completed bar is taken from our OWN cache (last_forming_candle),
+        not from the exchange's candle list.  This is critical because many
+        exchanges (e.g. Binance) only include the current forming bar in their
+        watch_ohlcv response and immediately evict the just-closed bar.
+
+        Args:
+            candles: Raw candle list from watch_ohlcv.
+            last_bar_timestamp: Timestamp of the forming bar seen in the
+                                previous call, or None on the very first call.
+            last_forming_candle: Our cached copy of the forming bar from the
+                                 previous call.
+
+        Returns:
+            Tuple (completed_bar, new_last_timestamp, new_last_forming_candle):
+            - completed_bar: The just-completed candle (our cached copy), or
+                             None if no bar completed yet.
+            - new_last_timestamp: Updated forming-bar timestamp.
+            - new_last_forming_candle: Updated forming-bar candle to cache.
+        """
+        current_candle = candles[-1]
+        current_timestamp: int = current_candle[0]
+
+        if last_bar_timestamp is None or current_timestamp == last_bar_timestamp:
+            # First update or bar still forming — update our cached copy and continue
+            return None, current_timestamp, current_candle
+
+        # Timestamp changed: last_forming_candle is the completed bar
+        return last_forming_candle, current_timestamp, current_candle
+
+    async def _process_completed_bar(
+        self,
+        source: str,
+        symbol: str,
+        timeframe_str: str,
+        tf: Timeframe,
+        channel: str,
+        completed_bar: list,
+    ) -> None:
+        """
+        Validate, persist, and publish a single completed bar.
+
+        Steps:
+        1. Validate OHLCV values via QuotesServer.validate_bars().
+        2. Save to ClickHouse in a thread-pool executor (non-blocking).
+        3. Publish a SUB_MSG_BAR message to the Redis Pub/Sub channel.
+
+        Args:
+            source: Exchange name.
+            symbol: Trading pair symbol.
+            timeframe_str: Timeframe string (e.g., '15m').
+            tf: Timeframe object.
+            channel: Redis Pub/Sub channel name.
+            completed_bar: Raw candle [timestamp_ms, o, h, l, c, v].
+        """
+        valid_bars = self._server.validate_bars([completed_bar], tf)
+        if not valid_bars:
+            logger.warning(
+                "Completed bar failed validation for %s:%s:%s at %d",
+                source, symbol, timeframe_str, completed_bar[0],
+            )
+            return
+
+        # Persist to ClickHouse without blocking the event loop
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            self._server.save_bars,
+            source, symbol, tf, valid_bars,
+        )
+
+        # Build 1-element numpy arrays and publish
+        bar = valid_bars[0]
+        bar_data = {
+            "time": np.array([np.datetime64(int(bar[0]), "ms")], dtype=TIME_TYPE),
+            "open": np.array([bar[1]], dtype=np.float64),
+            "high": np.array([bar[2]], dtype=np.float64),
+            "low": np.array([bar[3]], dtype=np.float64),
+            "close": np.array([bar[4]], dtype=np.float64),
+            "volume": np.array([bar[5]], dtype=np.float64),
+        }
+        msg = encode_bar_message(SUB_MSG_BAR, bar_data=bar_data)
+        await self._server.redis_client.publish(channel, msg)
+
+        logger.debug(
+            "Published completed bar for %s:%s:%s at %d",
+            source, symbol, timeframe_str, bar[0],
+        )
+
+    async def _watch_ohlcv_loop(
+        self,
+        source: str,
+        symbol: str,
+        timeframe_str: str,
+        exchange: ccxt.Exchange,
+    ) -> None:
+        """
+        Outer WebSocket loop for a single subscription.
+
+        Drives the connection lifecycle: polls watch_ohlcv, delegates bar
+        detection to _detect_completed_bar() and processing to
+        _process_completed_bar().  On any exception the loop publishes an
+        error message to subscribers and reconnects with exponential backoff.
+        """
+        channel = build_bar_channel(source, symbol, timeframe_str)
+        tf = Timeframe.cast(timeframe_str)
+        last_bar_timestamp: Optional[int] = None
+        last_forming_candle: Optional[list] = None
+        reconnect_delay = WS_RECONNECT_DELAY
+
+        while True:
+            try:
+                candles = await exchange.watch_ohlcv(symbol, timeframe_str)
+                reconnect_delay = WS_RECONNECT_DELAY  # reset on successful response
+
+                if not candles:
+                    continue
+
+                completed_bar, last_bar_timestamp, last_forming_candle = self._detect_completed_bar(
+                    candles, last_bar_timestamp, last_forming_candle,
+                )
+
+                if completed_bar is None:
+                    # Bar still forming or first call
+                    continue
+
+                await self._process_completed_bar(
+                    source, symbol, timeframe_str, tf, channel, completed_bar
+                )
+
+            except asyncio.CancelledError:
+                logger.info(
+                    "watch_ohlcv task cancelled for %s:%s:%s",
+                    source, symbol, timeframe_str,
+                )
+                break
+            except Exception as exc:
+                logger.error(
+                    "watch_ohlcv error for %s:%s:%s: %s",
+                    source, symbol, timeframe_str, exc,
+                    exc_info=True,
+                )
+                await self._handle_reconnect(
+                    source, symbol, timeframe_str, channel, exchange, exc, reconnect_delay
+                )
+                reconnect_delay = min(reconnect_delay * 2, WS_RECONNECT_MAX_DELAY)
+
+                # Replace exchange instance after reconnect (use ccxt.pro for WebSocket)
+                exchange_class = getattr(ccxt_pro, source.lower())
+                exchange = exchange_class()
+                key = (source, symbol, timeframe_str)
+                async with self._lock:
+                    if key in self._subscriptions:
+                        self._subscriptions[key]["exchange"] = exchange
+
+    async def _handle_reconnect(
+        self,
+        source: str,
+        symbol: str,
+        timeframe_str: str,
+        channel: str,
+        exchange: ccxt.Exchange,
+        exc: Exception,
+        reconnect_delay: float,
+    ) -> None:
+        """
+        Publish an error notification and wait before reconnecting.
+
+        Args:
+            source: Exchange name.
+            symbol: Trading pair symbol.
+            timeframe_str: Timeframe string.
+            channel: Redis Pub/Sub channel name.
+            exchange: Current (broken) exchange instance to close.
+            exc: The exception that triggered the reconnect.
+            reconnect_delay: Seconds to sleep before the caller retries.
+        """
+        error_msg = encode_bar_message(
+            SUB_MSG_ERROR,
+            error=f"WebSocket error: {exc}. Reconnecting in {reconnect_delay}s...",
+        )
+        try:
+            await self._server.redis_client.publish(channel, error_msg)
+        except Exception as pub_exc:
+            logger.error("Failed to publish error message: %s", pub_exc)
+
+        await asyncio.sleep(reconnect_delay)
+
+        try:
+            await exchange.close()
+        except Exception:
+            pass
+
+
 async def process_request_async(
     server: QuotesServer,
     request_data: Dict,
@@ -798,10 +1103,38 @@ async def process_request_async(
         response_prefix: Prefix for response list names
         response_ttl: TTL for response lists in seconds
     """
+    async def _send_response(status: str, **extra) -> None:
+        """Helper to push a msgpack response and set TTL."""
+        resp = {"metadata": {"request_id": request_id, "status": status, **extra}}
+        resp_bytes = msgpack.packb(resp, use_bin_type=True)
+        key = f"{response_prefix}:{request_id}"
+        await server.redis_client.lpush(key, resp_bytes)
+        await server.redis_client.expire(key, response_ttl)
+
     try:
+        action = request_data.get("action", "get_quotes")
         source = request_data.get('source')
         symbol = request_data.get('symbol')
         timeframe_str = request_data.get('timeframe')
+
+        # --- subscribe ---
+        if action == SUB_ACTION_SUBSCRIBE:
+            if server.subscription_manager is None:
+                server.subscription_manager = SubscriptionManager(server)
+            await server.subscription_manager.subscribe(source, symbol, timeframe_str)
+            await _send_response("success", action="subscribed")
+            logger.info("Subscribed %s:%s:%s (request %s)", source, symbol, timeframe_str, request_id)
+            return
+
+        # --- unsubscribe ---
+        if action == SUB_ACTION_UNSUBSCRIBE:
+            if server.subscription_manager is not None:
+                await server.subscription_manager.unsubscribe(source, symbol, timeframe_str)
+            await _send_response("success", action="unsubscribed")
+            logger.info("Unsubscribed %s:%s:%s (request %s)", source, symbol, timeframe_str, request_id)
+            return
+
+        # --- get_quotes (default) ---
         history_start_str = request_data.get('history_start')
         history_end_str = request_data.get('history_end')
         
@@ -1016,6 +1349,11 @@ async def run_quotes_service(
         logger.error(f"Quotes service crashed with exception: {e}", exc_info=True)
         raise  # Re-raise to ensure process exits
     finally:
+        if server.subscription_manager is not None:
+            try:
+                await server.subscription_manager.shutdown_all()
+            except Exception as exc:
+                logger.error("Error during subscription manager shutdown: %s", exc)
         if stop_event:
             stop_event.clear()
         logger.info("Quotes service finished")

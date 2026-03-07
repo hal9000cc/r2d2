@@ -4,6 +4,8 @@ Utility functions for datetime handling.
 from datetime import datetime, timezone
 import numpy as np
 
+UTC = timezone.utc
+
 
 def parse_utc_datetime(date_str: str) -> datetime:
     """
@@ -52,6 +54,20 @@ def parse_utc_datetime64(date_str: str) -> np.datetime64:
     # Use parse_utc_datetime and convert to numpy datetime64
     date_dt = parse_utc_datetime(date_str)
     return np.datetime64(date_dt, 'ns')
+
+
+def datetime64_to_datetime(dt64: np.datetime64) -> datetime:
+    """
+    Convert numpy datetime64 to Python datetime with UTC timezone.
+
+    Args:
+        dt64: numpy datetime64 object
+
+    Returns:
+        datetime object in UTC (timezone-aware)
+    """
+    timestamp_ms = int(dt64.astype("datetime64[ms]").astype(np.int64))
+    return datetime.fromtimestamp(timestamp_ms / 1000.0, tz=UTC)
 
 
 def datetime64_to_iso(dt64: np.datetime64) -> str:
