@@ -371,7 +371,6 @@ class Objects2RedisList(ABC, Generic[T]):
                         logger.error(f"Failed to decode object from key {key}")
                         continue
             
-            logger.debug(f"Listed {len(objects)} objects")
             return objects
         except Exception as e:
             logger.error(f"Failed to list objects: {str(e)}")

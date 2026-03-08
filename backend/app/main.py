@@ -211,7 +211,7 @@ class Supervisor:
 
     def _get_task_list(self) -> TradingTaskList:
         if self._trading_task_list is None:
-            self._trading_task_list = TradingTaskList()
+            self._trading_task_list = TradingTaskList(redis_params=self._params)
         return self._trading_task_list
 
     # ------------------------------------------------------------------
