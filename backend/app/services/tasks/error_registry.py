@@ -24,6 +24,7 @@ class ErrorCategory(str, Enum):
     TRADING = "trading"             # Trade processing, deal closure, integrity checks, emergency close
     DATA = "data"                   # Bar subscription errors, data feed issues
     INFRASTRUCTURE = "infrastructure"  # Redis, serialization, result saving failures
+    STRATEGY = "strategy"           # Unhandled exceptions in strategy code (on_bar, on_start, on_finish)
 
 
 class ErrorLevel(str, Enum):

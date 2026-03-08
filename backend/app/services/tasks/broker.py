@@ -2154,6 +2154,34 @@ class Broker(ABC):
         if not markets_only:
             self._placement_round_start = None
     
+    def _invoke_callback(self, name: str, *args, **kwargs) -> None:
+        """
+        Invoke strategy callback by name with error handling.
+
+        In live trading mode: catches all exceptions, logs as critical with
+        STRATEGY category, and returns normally so the main loop continues.
+        In backtesting mode: re-raises the exception immediately so the run
+        fails fast (existing behaviour preserved).
+
+        Args:
+            name: Callback name (e.g. 'on_bar', 'on_start', 'on_finish')
+            *args: Positional arguments forwarded to the callback
+            **kwargs: Keyword arguments forwarded to the callback
+        """
+        callback = self.callbacks.get(name)
+        if callback is None:
+            return
+        try:
+            callback(*args, **kwargs)
+        except Exception as e:
+            if not self.is_live:
+                raise
+            self.logging(
+                f"Strategy {name}() raised {e.__class__.__name__}: {e}",
+                level="critical",
+                category=ErrorCategory.STRATEGY,
+            )
+
     def _handle_placement_timeout(self) -> None:
         """
         Handle order placement timeout: mark deals with unplaced orders
@@ -2222,8 +2250,7 @@ class Broker(ABC):
         
         self.i_time = self.task.history_size
         
-        if hasattr(self, 'callbacks') and 'on_start' in self.callbacks:
-            self.callbacks['on_start'](self.task.parameters, ta_proxies, self._strategy_state)
+        self._invoke_callback('on_start', self.task.parameters, ta_proxies, self._strategy_state)
         
         state_update_period = 1.0
         last_update_time = time.time()
@@ -2238,21 +2265,21 @@ class Broker(ABC):
             if hasattr(self, 'price'):
                 self.price = current_price
             
-            if hasattr(self, 'callbacks') and 'on_bar' in self.callbacks:
-                equity_usd = getattr(self, 'equity_usd', 0.0)
-                equity_symbol = getattr(self, 'equity_symbol', 0.0)
-                self.callbacks['on_bar'](
-                    current_price,
-                    self.current_time,
-                    sliced_quotes.time,
-                    sliced_quotes.open,
-                    sliced_quotes.high,
-                    sliced_quotes.low,
-                    sliced_quotes.close,
-                    sliced_quotes.volume,
-                    equity_usd,
-                    equity_symbol
-                )
+            equity_usd = getattr(self, 'equity_usd', 0.0)
+            equity_symbol = getattr(self, 'equity_symbol', 0.0)
+            self._invoke_callback(
+                'on_bar',
+                current_price,
+                self.current_time,
+                sliced_quotes.time,
+                sliced_quotes.open,
+                sliced_quotes.high,
+                sliced_quotes.low,
+                sliced_quotes.close,
+                sliced_quotes.volume,
+                equity_usd,
+                equity_symbol
+            )
             
             current_time_real = time.time()
             if hasattr(self, 'results_save_period'):
@@ -2290,8 +2317,7 @@ class Broker(ABC):
                         self.task.backtesting_error(error_message)
                     raise RuntimeError(error_message)
         
-        if 'on_finish' in self.callbacks:
-            self.callbacks['on_finish']()
+        self._invoke_callback('on_finish')
         
         if hasattr(self, 'date_end') and self.date_end is not None:
             self.current_time = self.date_end

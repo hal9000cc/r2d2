@@ -133,6 +133,21 @@
         </div>
       </ResizablePanel>
     </div>
+
+    <!-- Stop confirmation dialog -->
+    <div v-if="showStopDialog" class="confirm-overlay" @click.self="showStopDialog = false">
+      <div class="confirm-dialog">
+        <p>Stop trading task <strong>{{ currentTask?.name }}</strong>?</p>
+        <label class="checkbox-label">
+          <input type="checkbox" v-model="closeDealsOnStop" class="checkbox-input" />
+          <span>Close all open deals on stop</span>
+        </label>
+        <div class="confirm-actions">
+          <button class="btn btn-cancel" @click="showStopDialog = false">Cancel</button>
+          <button class="btn btn-danger" @click="confirmStop">Stop</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -147,6 +162,7 @@ import TradingNavForm from '../components/TradingNavForm.vue'
 import TradingTaskList from '../components/TradingTaskList.vue'
 import TradingStats from '../components/TradingStats.vue'
 import Tabs from '../components/Tabs.vue'
+import { tradingApi } from '../services/tradingApi'
 
 const route = useRoute()
 const router = useRouter()
@@ -173,10 +189,18 @@ const unreadImportantMessagesCount = ref(0)
 // Task state
 const currentTaskId = ref(null)
 const currentTask = ref(null)
+const currentResultId = ref(null)
 const isRunning = ref(false)
 const isReadonly = ref(true)
 const stats = ref(null)
 const hideCanceledOrders = ref(false)
+
+// Stop confirmation dialog
+const showStopDialog = ref(false)
+const closeDealsOnStop = ref(false)
+
+// WebSocket for messages
+let messagesWs = null
 
 // Current task data for chart
 const currentSource = ref(null)
@@ -459,6 +483,43 @@ function calculateSizes() {
   }
 }
 
+// WebSocket helpers
+function connectMessagesWs(taskId) {
+  disconnectMessagesWs()
+  messagesWs = tradingApi.createMessagesWebSocket(taskId)
+  messagesWs.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      if (data.type === 'message' || data.level) {
+        messages.value.push(data)
+        if (data.level === 'error' || data.level === 'warning') {
+          if (activeTab.value !== 'messages') {
+            unreadImportantMessagesCount.value++
+          }
+        }
+      } else if (data.type === 'event') {
+        if (data.event === 'trading_stopped') {
+          isRunning.value = false
+          currentTask.value && (currentTask.value.isRunning = false)
+          taskListRef.value?.loadTasks()
+        }
+      }
+    } catch (e) {
+      // Non-JSON message
+    }
+  }
+  messagesWs.onerror = (err) => {
+    console.error('Trading messages WebSocket error:', err)
+  }
+}
+
+function disconnectMessagesWs() {
+  if (messagesWs) {
+    try { messagesWs.close() } catch (e) {}
+    messagesWs = null
+  }
+}
+
 // Event handlers
 function handleTabChange(tab) {
   activeTab.value = tab
@@ -475,14 +536,41 @@ function handleRightPanelResize(size) {
   rightPanelWidth.value = size
 }
 
-function handleStart(formData) {
-  // Placeholder — will be connected to backend later
-  console.log('Trading start requested:', formData)
+async function handleStart() {
+  if (!currentTaskId.value) return
+  try {
+    const result = await tradingApi.startTask(currentTaskId.value)
+    if (result.success) {
+      isRunning.value = true
+      currentResultId.value = result.result_id
+      if (currentTask.value) currentTask.value.isRunning = true
+      taskListRef.value?.loadTasks()
+      connectMessagesWs(currentTaskId.value)
+    }
+  } catch (err) {
+    const detail = err.response?.data?.detail || err.message
+    console.error('Failed to start trading task:', detail)
+    messages.value.push({ level: 'error', message: `Start failed: ${detail}` })
+  }
 }
 
 function handleStop() {
-  // Placeholder — will be connected to backend later
-  console.log('Trading stop requested')
+  showStopDialog.value = true
+}
+
+async function confirmStop() {
+  showStopDialog.value = false
+  if (!currentTaskId.value) return
+  try {
+    await tradingApi.stopTask(currentTaskId.value, closeDealsOnStop.value)
+    isRunning.value = false
+    if (currentTask.value) currentTask.value.isRunning = false
+    taskListRef.value?.loadTasks()
+  } catch (err) {
+    const detail = err.response?.data?.detail || err.message
+    console.error('Failed to stop trading task:', detail)
+    messages.value.push({ level: 'error', message: `Stop failed: ${detail}` })
+  }
 }
 
 function handleFormDataChanged() {
@@ -492,6 +580,7 @@ function handleFormDataChanged() {
 function handleTaskSelected(task) {
   currentTaskId.value = task.id
   currentTask.value = task
+  currentResultId.value = task.result_id || null
   isRunning.value = task.isRunning || false
   isReadonly.value = true
 
@@ -506,17 +595,25 @@ function handleTaskSelected(task) {
       timeframe: task.timeframe || ''
     })
   }
+
+  if (task.isRunning) {
+    connectMessagesWs(task.id)
+  } else {
+    disconnectMessagesWs()
+  }
 }
 
 function handleTaskDeleted(taskId) {
   if (currentTaskId.value === taskId) {
     currentTaskId.value = null
     currentTask.value = null
+    currentResultId.value = null
     isRunning.value = false
     stats.value = null
     currentSource.value = null
     currentSymbol.value = null
     currentTimeframe.value = null
+    disconnectMessagesWs()
     if (navFormRef.value) {
       navFormRef.value.setFormData({ source: '', symbol: '', timeframe: '' })
     }
@@ -559,6 +656,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', calculateSizes)
+  disconnectMessagesWs()
 })
 </script>
 
@@ -697,5 +795,70 @@ onBeforeUnmount(() => {
   height: 16px;
   cursor: pointer;
   accent-color: var(--color-primary);
+}
+
+/* Stop confirmation dialog */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.confirm-dialog {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--spacing-lg);
+  min-width: 300px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.confirm-dialog p {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+}
+
+.btn {
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.btn-cancel {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.btn-cancel:hover {
+  background-color: var(--bg-hover);
+}
+
+.btn-danger {
+  background-color: var(--color-danger);
+  color: white;
+  border-color: var(--color-danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: var(--color-danger-hover);
 }
 </style>
