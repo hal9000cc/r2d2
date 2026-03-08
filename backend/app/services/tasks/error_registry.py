@@ -25,6 +25,7 @@ class ErrorCategory(str, Enum):
     DATA = "data"                   # Bar subscription errors, data feed issues
     INFRASTRUCTURE = "infrastructure"  # Redis, serialization, result saving failures
     STRATEGY = "strategy"           # Unhandled exceptions in strategy code (on_bar, on_start, on_finish)
+    SUPERVISOR = "supervisor"       # Supervisor actions: crash detection, force kill, instance protection
 
 
 class ErrorLevel(str, Enum):

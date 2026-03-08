@@ -70,6 +70,12 @@ ORDER_PLACEMENT_TIMEOUT=60.0
 # Symbols cache TTL (time-to-live) in seconds
 SYMBOLS_CACHE_TTL_SECONDS=600
 
+# Supervisor settings
+SUPERVISOR_POLL_INTERVAL=3.0
+SUPERVISOR_MAX_RESTARTS=3
+SUPERVISOR_CRASH_INTERVAL=60.0
+SUPERVISOR_FORCE_KILL_TIMEOUT=300.0
+
 # Exchange API keys and secrets
 # Format: api_key_<source> and api_secret_<source>
 # Example:
@@ -175,6 +181,12 @@ SYMBOLS_CACHE_TTL_SECONDS = int(os.getenv("SYMBOLS_CACHE_TTL_SECONDS", "3600"))
 BAR_WAIT_INTERVAL = float(os.getenv("BAR_WAIT_INTERVAL", "60.0"))
 ORDER_WAIT_INTERVAL = float(os.getenv("ORDER_WAIT_INTERVAL", "1.0"))
 ORDER_PLACEMENT_TIMEOUT = float(os.getenv("ORDER_PLACEMENT_TIMEOUT", "60.0"))
+
+# Supervisor settings
+SUPERVISOR_POLL_INTERVAL = float(os.getenv("SUPERVISOR_POLL_INTERVAL", "3.0"))
+SUPERVISOR_MAX_RESTARTS = int(os.getenv("SUPERVISOR_MAX_RESTARTS", "3"))
+SUPERVISOR_CRASH_INTERVAL = float(os.getenv("SUPERVISOR_CRASH_INTERVAL", "60.0"))
+SUPERVISOR_FORCE_KILL_TIMEOUT = float(os.getenv("SUPERVISOR_FORCE_KILL_TIMEOUT", "300.0"))
 
 # API keys and secrets cache (lazy loading)
 _api_keys_cache: Dict[str, Optional[str]] = {}

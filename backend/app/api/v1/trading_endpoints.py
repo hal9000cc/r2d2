@@ -3,7 +3,6 @@ from typing import Dict, Any, List, Optional
 from collections import defaultdict
 from pydantic import BaseModel
 import asyncio
-import uuid
 import json
 from datetime import datetime, timezone
 import redis.asyncio as redis_async
@@ -166,16 +165,15 @@ async def start_trading_task(task_id: int):
     if task.precision_price == 0.0:
         raise HTTPException(status_code=400, detail="Precision Price must be greater than 0")
 
-    result_id = str(uuid.uuid4())
-    task.result_id = result_id
+    task.result_id = "0"
     task.isRunning = True
     task.save()
 
-    logger.info(f"Trading task {task_id} start requested: isRunning=True, result_id={result_id}")
+    logger.info(f"Trading task {task_id} start requested: isRunning=True")
     return {
         "success": True,
         "task_id": task_id,
-        "result_id": result_id,
+        "result_id": "0",
     }
 
 
