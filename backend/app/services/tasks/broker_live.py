@@ -4,6 +4,7 @@ Live trading broker implementation.
 Uses ccxt for exchange interaction and QuotesClient for real-time bar data.
 Supports any exchange supported by ccxt.
 """
+import json
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Tuple, Callable
 
@@ -11,8 +12,16 @@ import ccxt
 import numpy as np
 import pyita as ta
 
-from app.services.tasks.broker import Broker, OrderType, OrderSide, BarStatus
-from app.services.tasks.error_registry import ErrorCategory
+from app.services.tasks.broker import (
+    Broker, OrderType, OrderSide, BarStatus,
+    Deal, Order, Trade,
+)
+from app.services.tasks.broker_snapshot import BrokerSnapshot
+from app.services.tasks.enums import (
+    OrderType as OT, OrderSide as OS, OrderStatus, OrderGroup, DealType,
+)
+from app.services.tasks.error_registry import ErrorCategory, ErrorEntry, ErrorLevel, ErrorRegistry
+from app.services.tasks.trading_stats import TradingStats
 from app.services.tasks.quotes_provider import RealTimeQuotesProvider, QuotesProvider
 from app.services.quotes.constants import PRICE_TYPE, VOLUME_TYPE
 from app.services.quotes.client import QuotesClient
@@ -25,7 +34,7 @@ from app.core.config import (
     get_api_key,
     get_api_secret,
 )
-from app.core.datetime_utils import parse_utc_datetime
+from app.core.datetime_utils import parse_utc_datetime, datetime64_to_iso
 from app.core.logger import get_logger
 from app.services.tasks.tasks import Task
 
@@ -63,6 +72,10 @@ class BrokerLive(Broker):
         self._timeframe: Optional[Timeframe] = None
         self._quotes_client: Optional[QuotesClient] = None
         self._subscribed: bool = False
+
+        # Set to True after restore_from_snapshot() so the first update_state()
+        # forces re-save of all restored trades/orders to Redis.
+        self._first_update_after_restore: bool = False
 
     # ------------------------------------------------------------------
     # Abstract method implementations
@@ -369,6 +382,365 @@ class BrokerLive(Broker):
         except Exception:
             return False
 
+    # ------------------------------------------------------------------
+    # Snapshot: serialization helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _dt64(iso: Optional[str]) -> Optional[np.datetime64]:
+        """Convert ISO string → np.datetime64[ms], or None."""
+        if not iso:
+            return None
+        return np.datetime64(parse_utc_datetime(iso), "ms")
+
+    @staticmethod
+    def _serialize_trade(t: Trade) -> Dict[str, Any]:
+        return {
+            "trade_id": t.trade_id,
+            "exchange_trade_id": t.exchange_trade_id,
+            "deal_id": t.deal_id,
+            "order_id": t.order_id,
+            "time": datetime64_to_iso(t.time),
+            "side": t.side.value,
+            "price": float(t.price),
+            "quantity": float(t.quantity),
+            "fee": float(t.fee),
+            "sum": float(t.sum),
+        }
+
+    @staticmethod
+    def _deserialize_trade(d: Dict[str, Any]) -> Trade:
+        return Trade(
+            trade_id=d["trade_id"],
+            exchange_trade_id=d["exchange_trade_id"],
+            deal_id=d["deal_id"],
+            order_id=d["order_id"],
+            time=np.datetime64(parse_utc_datetime(d["time"]), "ms"),
+            side=OrderSide(d["side"]),
+            price=d["price"],
+            quantity=d["quantity"],
+            fee=d["fee"],
+            sum=d["sum"],
+        )
+
+    @staticmethod
+    def _serialize_order(o: Order) -> Dict[str, Any]:
+        return {
+            "order_id": o.order_id,
+            "deal_id": o.deal_id,
+            "order_type": o.order_type.value,
+            "create_time": datetime64_to_iso(o.create_time),
+            "side": o.side.value,
+            "price": float(o.price) if o.price is not None else None,
+            "trigger_price": float(o.trigger_price) if o.trigger_price is not None else None,
+            "modify_time": datetime64_to_iso(o.modify_time),
+            "volume": float(o.volume),
+            "filled_volume": float(o.filled_volume),
+            "status": o.status.value,
+            "order_group": o.order_group.value,
+            "fraction": o.fraction,
+            "fraction_remain": o.fraction_remain,
+            "exchange_order_id": str(o.exchange_order_id) if o.exchange_order_id is not None else None,
+            "actual": o.actual,
+        }
+
+    @staticmethod
+    def _deserialize_order(d: Dict[str, Any]) -> Order:
+        ts = lambda s: np.datetime64(parse_utc_datetime(s), "ms")
+        return Order(
+            order_id=d["order_id"],
+            deal_id=d["deal_id"],
+            order_type=OT(d["order_type"]),
+            create_time=ts(d["create_time"]),
+            side=OS(d["side"]),
+            price=d.get("price"),
+            trigger_price=d.get("trigger_price"),
+            modify_time=ts(d["modify_time"]),
+            volume=d["volume"],
+            filled_volume=d["filled_volume"],
+            status=OrderStatus(d["status"]),
+            order_group=OrderGroup(d["order_group"]),
+            fraction=d.get("fraction"),
+            fraction_remain=d.get("fraction_remain"),
+            exchange_order_id=d.get("exchange_order_id"),
+            actual=d.get("actual", False),
+        )
+
+    @staticmethod
+    def _serialize_deal(deal: Deal) -> Dict[str, Any]:
+        """Serialize a Deal to a JSON-safe dict (without nested orders/trades)."""
+        return {
+            "deal_id": deal.deal_id,
+            "type": deal.type.value if deal.type is not None else None,
+            "avg_buy_price": float(deal.avg_buy_price) if deal.avg_buy_price is not None else None,
+            "avg_sell_price": float(deal.avg_sell_price) if deal.avg_sell_price is not None else None,
+            "quantity": float(deal.quantity),
+            "fee": float(deal.fee),
+            "profit": float(deal.profit) if deal.profit is not None else None,
+            "is_closed": deal.is_closed,
+            "date_open": datetime64_to_iso(deal.date_open) if deal.date_open is not None else None,
+            "date_close": datetime64_to_iso(deal.date_close) if deal.date_close is not None else None,
+            "pending_close": deal.pending_close,
+            "close_type": deal.close_type.value if deal.close_type is not None else None,
+            "auto": deal.auto,
+            "emergency_close": deal.emergency_close,
+            "buy_quantity": float(deal.buy_quantity),
+            "buy_cost": float(deal.buy_cost),
+            "sell_quantity": float(deal.sell_quantity),
+            "sell_proceeds": float(deal.sell_proceeds),
+            # Keep order/trade IDs for reference reconstruction
+            "order_ids": [o.order_id for o in deal.orders],
+            "trade_ids": [t.trade_id for t in deal.trades],
+        }
+
+    # ------------------------------------------------------------------
+    # Snapshot: save / load / restore
+    # ------------------------------------------------------------------
+
+    def _get_snapshot_key(self) -> str:
+        """Redis key for broker snapshot (shared across result_id restarts)."""
+        return f"{self.task.get_result_key()}:snapshot"
+
+    def save_snapshot(self, results: Optional[Any] = None) -> None:
+        """
+        Persist current broker state to Redis as a JSON snapshot.
+
+        Called periodically from update_state() and (optionally) at shutdown.
+
+        Args:
+            results: Optional TaskResults instance; if provided, its incremental
+                     indices (trades_start_index, last_orders_save_time) are stored
+                     so they can be restored after restart.
+        """
+        # Collect strategy state via 'save_state' callback (added in create_strategy_callbacks)
+        strategy_state: Optional[Dict[str, Any]] = None
+        save_state_fn = self.callbacks.get("save_state")
+        if save_state_fn is not None:
+            try:
+                strategy_state = save_state_fn()
+            except Exception as e:
+                self.logging(f"save_state() raised an exception: {e}", level="error")
+                strategy_state = {}
+
+        # Exchange order map: exchange_order_id (str) → order_id (int)
+        exchange_order_map: Dict[str, int] = {
+            eid: order.order_id
+            for eid, order in self._exchange_order_map.items()
+        }
+
+        # Serialize TaskResults indices when available
+        trades_start_index = 0
+        last_orders_save_time_iso: Optional[str] = None
+        if results is not None:
+            trades_start_index = results._trades_start_index
+            if results._last_orders_save_time is not None:
+                last_orders_save_time_iso = datetime64_to_iso(results._last_orders_save_time)
+
+        # Serialize stats
+        stats_dict: Dict[str, Any] = {}
+        if self.stats is not None:
+            try:
+                stats_dict = self.stats.model_dump()
+            except Exception:
+                pass
+
+        # Serialize error registry
+        error_entries = [
+            {
+                "id": e.id,
+                "timestamp": e.timestamp,
+                "broker_time": e.broker_time,
+                "level": e.level.value,
+                "category": e.category.value,
+                "message": e.message,
+                "deal_id": e.deal_id,
+                "order_id": e.order_id,
+            }
+            for e in self.error_registry._errors
+        ]
+
+        snapshot = BrokerSnapshot(
+            deals=[self._serialize_deal(d) for d in self.deals],
+            orders=[self._serialize_order(o) for o in self.orders],
+            trades=[self._serialize_trade(t) for t in self.trades],
+            exchange_order_map=exchange_order_map,
+            processed_trade_ids=list(self._processed_trade_ids),
+            last_trade_time=self._last_trade_time,
+            current_auto_deal_id=self._current_auto_deal_id,
+            active_deals=list(self.active_deals),
+            current_time=datetime64_to_iso(self.current_time) if self.current_time is not None else None,
+            date_start=datetime64_to_iso(self.date_start) if self.date_start is not None else None,
+            trades_start_index=trades_start_index,
+            last_orders_save_time=last_orders_save_time_iso,
+            stats=stats_dict,
+            error_registry_errors=error_entries,
+            error_registry_next_id=self.error_registry._next_id,
+            error_registry_flush_index=self.error_registry._flush_index,
+            strategy_state=strategy_state,
+        )
+
+        try:
+            client = self.task.get_redis_client()
+            client.set(self._get_snapshot_key(), snapshot.model_dump_json())
+            logger.debug("Broker snapshot saved (%d deals, %d orders, %d trades)",
+                         len(self.deals), len(self.orders), len(self.trades))
+        except Exception as e:
+            self.logging(f"Failed to save broker snapshot: {e}", level="error",
+                         category=ErrorCategory.INFRASTRUCTURE)
+
+    def load_snapshot(self) -> Optional[BrokerSnapshot]:
+        """
+        Load broker snapshot from Redis.
+
+        Returns:
+            BrokerSnapshot if found and valid, None otherwise.
+        """
+        if self.task._list is None:
+            return None
+        try:
+            client = self.task.get_redis_client()
+            raw = client.get(self._get_snapshot_key())
+            if raw is None:
+                return None
+            snapshot = BrokerSnapshot.model_validate_json(raw)
+            logger.info(
+                "Broker snapshot loaded: %d deals, %d orders, %d trades",
+                len(snapshot.deals), len(snapshot.orders), len(snapshot.trades),
+            )
+            return snapshot
+        except Exception as e:
+            logger.warning("Failed to load broker snapshot (will start fresh): %s", e)
+            return None
+
+    def restore_from_snapshot(self, snapshot: BrokerSnapshot) -> None:
+        """
+        Restore broker state from a previously saved snapshot.
+
+        Recreates deals, orders, trades and auxiliary tracking structures.
+        Called in run() before super().run() so that TaskResults initialization
+        sees the correct trade count.
+        """
+        # 1. Restore trades (flat list)
+        self.trades = [self._deserialize_trade(d) for d in snapshot.trades]
+
+        # 2. Restore orders (flat list)
+        self.orders = [self._deserialize_order(d) for d in snapshot.orders]
+
+        # Build order_id → Order lookup for deal reconstruction
+        order_by_id: Dict[int, Order] = {o.order_id: o for o in self.orders}
+        trade_by_id: Dict[int, Trade] = {t.trade_id: t for t in self.trades}
+
+        # 3. Restore deals (scalar fields + reconnect orders/trades)
+        restored_deals: List[Deal] = []
+        for d in snapshot.deals:
+            deal = Deal(
+                deal_id=d["deal_id"],
+                type=DealType(d["type"]) if d.get("type") else None,
+                avg_buy_price=d.get("avg_buy_price"),
+                avg_sell_price=d.get("avg_sell_price"),
+                quantity=d["quantity"],
+                fee=d["fee"],
+                profit=d.get("profit"),
+                is_closed=d["is_closed"],
+                date_open=self._dt64(d.get("date_open")),
+                date_close=self._dt64(d.get("date_close")),
+                pending_close=d.get("pending_close", False),
+                close_type=OrderGroup(d["close_type"]) if d.get("close_type") is not None else None,
+                auto=d.get("auto", False),
+                emergency_close=d.get("emergency_close", False),
+                buy_quantity=d.get("buy_quantity", 0.0),
+                buy_cost=d.get("buy_cost", 0.0),
+                sell_quantity=d.get("sell_quantity", 0.0),
+                sell_proceeds=d.get("sell_proceeds", 0.0),
+            )
+            # Reconnect orders
+            for oid in d.get("order_ids", []):
+                order = order_by_id.get(oid)
+                if order is not None:
+                    deal.orders.append(order)
+            # Reconnect trades
+            for tid in d.get("trade_ids", []):
+                trade = trade_by_id.get(tid)
+                if trade is not None:
+                    deal.trades.append(trade)
+            restored_deals.append(deal)
+        self.deals = restored_deals
+
+        # 4. Restore exchange tracking structures
+        self._exchange_order_map = {}
+        for eid, oid in snapshot.exchange_order_map.items():
+            order = order_by_id.get(oid)
+            if order is not None:
+                self._exchange_order_map[eid] = order
+
+        self._processed_trade_ids = set(snapshot.processed_trade_ids)
+        self._last_trade_time = snapshot.last_trade_time
+
+        # 5. Restore auto-deal context
+        self._current_auto_deal_id = snapshot.current_auto_deal_id
+        self.active_deals = set(snapshot.active_deals)
+
+        # 6. Restore time tracking
+        self.current_time = self._dt64(snapshot.current_time)
+        if snapshot.date_start:
+            # Keep the original session start for progress events
+            self.date_start = self._dt64(snapshot.date_start)
+
+        # 7. Restore stats
+        if snapshot.stats:
+            try:
+                self.stats = TradingStats.model_validate(snapshot.stats)
+            except Exception as e:
+                logger.warning("Failed to restore TradingStats from snapshot: %s", e)
+
+        # 8. Restore error registry
+        if snapshot.error_registry_errors:
+            entries = []
+            for e in snapshot.error_registry_errors:
+                try:
+                    entry = ErrorEntry(
+                        id=e["id"],
+                        timestamp=e["timestamp"],
+                        broker_time=e.get("broker_time"),
+                        level=ErrorLevel(e["level"]),
+                        category=ErrorCategory(e["category"]),
+                        message=e["message"],
+                        deal_id=e.get("deal_id"),
+                        order_id=e.get("order_id"),
+                    )
+                    entries.append(entry)
+                except Exception as exc:
+                    logger.warning("Failed to restore error entry: %s", exc)
+            self.error_registry._errors = entries
+        self.error_registry._next_id = snapshot.error_registry_next_id
+        self.error_registry._flush_index = snapshot.error_registry_flush_index
+
+        logger.info(
+            "Broker state restored from snapshot: %d deals, %d orders, %d trades",
+            len(self.deals), len(self.orders), len(self.trades),
+        )
+
+    # ------------------------------------------------------------------
+    # Override update_state to periodically save snapshot
+    # ------------------------------------------------------------------
+
+    def update_state(self, results: Optional[Any], is_finish: bool = False) -> None:
+        """
+        Override to reset TaskResults indices on first call after restore,
+        then save a snapshot after each successful state update.
+        """
+        # On first call after snapshot restore, force re-save of all restored data
+        if self._first_update_after_restore and results is not None:
+            results._trades_start_index = 0
+            results._last_orders_save_time = None
+            self._first_update_after_restore = False
+
+        # Parent may raise RuntimeError if task was stopped
+        super().update_state(results, is_finish)
+
+        # Periodically persist broker state
+        self.save_snapshot(results)
+
     def cleanup(self) -> None:
         """Unsubscribe from bars and close exchange connection."""
         if self._subscribed and self._quotes_client is not None:
@@ -389,7 +761,23 @@ class BrokerLive(Broker):
             self.exchange = None
 
     def run(self, save_results: bool = True):
-        """Override run() to ensure cleanup is called."""
+        """
+        Override run() to:
+        1. Load snapshot from Redis and restore broker state (if exists).
+        2. Pass the strategy state to on_start() via _strategy_state.
+        3. Ensure cleanup is called on exit.
+        """
+        # Load snapshot BEFORE super().run() creates TaskResults
+        # (TaskResults.__init__ deletes all Redis result keys, including the snapshot,
+        #  so the data must be in memory before that happens).
+        snapshot = self.load_snapshot()
+        if snapshot is not None:
+            self.restore_from_snapshot(snapshot)
+            # Strategy state will be passed to on_start() in super().run()
+            self._strategy_state = snapshot.strategy_state
+            # Force re-save of all restored trades/orders to Redis on first update_state()
+            self._first_update_after_restore = True
+
         try:
             super().run(save_results=save_results)
         finally:

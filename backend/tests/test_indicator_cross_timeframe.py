@@ -31,7 +31,7 @@ class CrossTimeframeStrategy(Strategy):
     def __init__(self):
         super().__init__()
 
-    def on_start(self):
+    def on_start(self, state=None):
         self.sma_period = self.parameters['sma_period']
         self.results = []
         self.bar_count = 0
@@ -405,7 +405,7 @@ class QuotesProxyStrategy(Strategy):
     def __init__(self):
         super().__init__()
 
-    def on_start(self):
+    def on_start(self, state=None):
         self.results = []
         self.bar_count = 0
 
@@ -538,7 +538,7 @@ class TestQuotesProxy:
             def __init__(self):
                 super().__init__()
 
-            def on_start(self):
+            def on_start(self, state=None):
                 self.error = None
 
             def on_bar(self):

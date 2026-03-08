@@ -6,14 +6,15 @@ This guide describes the API for developing trading strategies in the backtestin
 
 1. [Strategy Structure](#strategy-structure)
 2. [Strategy Events](#strategy-events)
-3. [Access to Quotes](#access-to-quotes)
-4. [Access to Indicators](#access-to-indicators)
-5. [Strategy Parameters](#strategy-parameters)
-6. [Position Tracking](#position-tracking)
-7. [Precision and Rounding](#precision-and-rounding)
-8. [Order Placement](#order-placement)
-9. [Order Management](#order-management)
-10. [Logging](#logging)
+3. [Live Trading State Persistence](#live-trading-state-persistence)
+4. [Access to Quotes](#access-to-quotes)
+5. [Access to Indicators](#access-to-indicators)
+6. [Strategy Parameters](#strategy-parameters)
+7. [Position Tracking](#position-tracking)
+8. [Precision and Rounding](#precision-and-rounding)
+9. [Order Placement](#order-placement)
+10. [Order Management](#order-management)
+11. [Logging](#logging)
 
 ---
 
@@ -40,20 +41,33 @@ class MyStrategy(Strategy):
 
 The strategy has three main events that are called during backtesting:
 
-### `on_start()`
+### `on_start(state=None)`
 
-Called once before the backtesting loop starts. Used to initialize strategy-specific variables.
+Called once before the trading/backtesting loop starts. Used to initialize strategy-specific variables.
+
+**In backtesting:** `state` is always `None`.
+
+**In live trading:** `state` contains the strategy state saved from the previous run via `save_state()`.
+- `None` — first start (no previous run exists in Redis)
+- `{}` — restart after a run where `save_state()` was not overridden (default empty dict)
+- `{...}` — restart with state previously returned by `save_state()`
 
 ```python
-def on_start(self):
-    # Initialize variables
-    self.position = None
+def on_start(self, state=None):
+    # Initialize variables (always needed)
     self.ma_fast_period = self.parameters['ma_fast']
     self.ma_slow_period = self.parameters['ma_slow']
+
+    if state is None:
+        # First start — initialize from scratch
+        self.position = None
+        self.logging("Strategy started for the first time")
+    else:
+        # Restart after crash/stop — state is restored automatically
+        # by load_state() which is called right after on_start()
+        self.logging("Strategy restarted, restoring state...")
     
     # Access strategy file path if needed
-    # self.strategy_file contains absolute path, e.g.:
-    # /home/user/.local/share/r2d2/strategies/example_strategy/example_strategy.py
     if self.strategy_file:
         self.logging(f"Strategy file: {self.strategy_file}")
 ```
@@ -100,6 +114,130 @@ def on_finish(self):
         total_capital = self.equity_usd + self.equity_symbol * current_price
         self.logging(f"Total capital: {total_capital} USD")
 ```
+
+---
+
+## Live Trading State Persistence
+
+When a live trading strategy is stopped or crashes, it can automatically restore its custom state on the next start. This is done through three optional methods: `save_state()`, `load_state()`, and the `state` parameter of `on_start()`.
+
+### How It Works
+
+1. **`save_state()`** is called automatically after each bar during live trading. The returned dict is saved to Redis as part of the broker snapshot.
+2. On next start, `on_start(state)` is called with the previously saved state dict.
+3. **`load_state()`** is called automatically right after `on_start()` with the same state dict — this is where you restore your variables.
+
+> **Backtesting**: `state` is always `None`, `save_state()` and `load_state()` are never called.
+
+### `save_state() → Dict[str, Any]`
+
+Return a JSON-serializable dictionary with the variables you want to preserve across restarts.
+
+```python
+def save_state(self) -> dict:
+    return {
+        'position': self.position,
+        'deal_id': self.deal_id,
+        'entry_price': self.entry_price,
+    }
+```
+
+**Requirements:**
+- Return value must be JSON-serializable (plain Python types: `int`, `float`, `str`, `bool`, `list`, `dict`, `None`)
+- Do NOT store numpy arrays, custom objects, etc.
+- Default implementation returns `{}` (empty dict)
+
+### `load_state(state: Dict[str, Any])`
+
+Restore variables from a previously saved state. Called automatically after `on_start()`.
+
+```python
+def load_state(self, state: dict) -> None:
+    self.position = state.get('position')
+    self.deal_id = state.get('deal_id')
+    self.entry_price = state.get('entry_price')
+```
+
+**Notes:**
+- Use `.get()` with defaults to handle missing keys from older versions of your strategy
+- Do not raise exceptions here — if restoration fails, the strategy will continue from a clean state
+
+### Complete Example with State Persistence
+
+```python
+from app.services.tasks.strategy import Strategy
+from typing import Dict, Any, Optional
+
+class StatefulStrategy(Strategy):
+    """
+    Strategy with state persistence across live trading restarts.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.position: Optional[str] = None   # 'long', 'short', or None
+        self.deal_id: int = 0
+        self.entry_price: float = 0.0
+
+    def on_start(self, state=None):
+        self.fast = self.parameters['fast']
+        self.slow = self.parameters['slow']
+
+        if state is None:
+            # First start: initialize from scratch
+            self.position = None
+            self.deal_id = 0
+            self.entry_price = 0.0
+            self.logging("First start, no previous state")
+        else:
+            # Restart: variables will be restored by load_state()
+            self.logging("Restarting, restoring state...")
+
+    def save_state(self) -> Dict[str, Any]:
+        return {
+            'position': self.position,
+            'deal_id': self.deal_id,
+            'entry_price': self.entry_price,
+        }
+
+    def load_state(self, state: Dict[str, Any]) -> None:
+        self.position = state.get('position')
+        self.deal_id = state.get('deal_id', 0)
+        self.entry_price = state.get('entry_price', 0.0)
+        self.logging(f"State restored: position={self.position}, deal_id={self.deal_id}")
+
+    def on_bar(self):
+        # Strategy logic using self.position, self.deal_id, etc.
+        pass
+
+    @staticmethod
+    def get_parameters_description():
+        return {
+            'fast': (20, 'Fast MA period'),
+            'slow': (50, 'Slow MA period'),
+        }
+```
+
+### What Is Preserved Automatically (Without save_state)
+
+The broker snapshot saves the following automatically on every bar in live trading:
+
+| Data | Preserved |
+|------|-----------|
+| All deals (open + closed) | ✅ |
+| All orders (active + history) | ✅ |
+| All executed trades | ✅ |
+| Open positions | ✅ |
+| Trading statistics | ✅ |
+| Error registry | ✅ |
+| Active deal IDs | ✅ |
+| Exchange order mapping | ✅ |
+| Strategy custom state (`save_state`) | ✅ if overridden |
+
+**What is NOT restored after restart:**
+- Quote history (reloaded from the quotes server)
+- Indicator cache (recalculated on next bars)
+- Variables declared in `__init__` or `on_start` that are not returned by `save_state`
 
 ---
 

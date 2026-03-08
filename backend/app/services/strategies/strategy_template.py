@@ -32,10 +32,15 @@ class MyStrategy(Strategy):
         """
         return {}
     
-    def on_start(self):
+    def on_start(self, state=None):
         """
         Called before the start of trading.
         Use this method to initialize any strategy-specific data structures or variables.
+
+        Args:
+            state: Strategy state from previous live trading run, or None on first start.
+                   Restore persistent variables here using load_state() (already called
+                   automatically after on_start() during live restart).
         """
         self.logging("Strategy started (example log message)")
     

@@ -39,7 +39,7 @@ class TestPyitaStrategy(Strategy):
             'bb_deviation': (2.0, 'Bollinger Bands deviation'),
         }
     
-    def on_start(self):
+    def on_start(self, state=None):
         """
         Called before the start of trading.
         Initialize strategy variables and log start.

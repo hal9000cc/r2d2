@@ -776,6 +776,10 @@ class Broker(ABC):
         # Live trading flag (subclasses set to True)
         self.is_live: bool = False
 
+        # Strategy state to pass into on_start (set by BrokerLive before run())
+        # None = first start; {} = restart without save_state; {...} = restart with state
+        self._strategy_state: Optional[dict] = None
+
         # Centralized error registry (stores error/critical events for persistence in Redis)
         self.error_registry: ErrorRegistry = ErrorRegistry()
 
@@ -2219,7 +2223,7 @@ class Broker(ABC):
         self.i_time = self.task.history_size
         
         if hasattr(self, 'callbacks') and 'on_start' in self.callbacks:
-            self.callbacks['on_start'](self.task.parameters, ta_proxies)
+            self.callbacks['on_start'](self.task.parameters, ta_proxies, self._strategy_state)
         
         state_update_period = 1.0
         last_update_time = time.time()

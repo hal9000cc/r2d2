@@ -54,7 +54,7 @@ class TestStrategy(Strategy):
     - method_result: Optional[OrderOperationResult] - result of method call if method was called on this bar
     """
     
-    def on_start(self):
+    def on_start(self, state=None):
         """Initialize test strategy."""
         # Get protocol and callback from parameters
         self.test_protocol = self.parameters.get('test_protocol', [])

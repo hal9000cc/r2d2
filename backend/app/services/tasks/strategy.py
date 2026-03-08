@@ -169,11 +169,17 @@ class Strategy(ABC):
         assert self.broker is not None, "Broker is not set on strategy"
         return self.broker.format_price(value)
 
-    def on_start(self):
+    def on_start(self, state: Optional[Dict[str, Any]] = None):
         """
-        Called before the testing loop starts.
-        Use this method to initialize any strategy-specific data structures or variables.
-        Default implementation does nothing.
+        Called before the trading/backtesting loop starts.
+
+        Args:
+            state: Strategy state from previous live trading run.
+                   None  → first start (no previous run exists)
+                   {}    → restart after a run where save_state() was not overridden
+                   {...} → restart with state previously returned by save_state()
+
+                   In backtesting state is always None.
         """
         pass
 
@@ -189,6 +195,32 @@ class Strategy(ABC):
         Called after the testing loop completes.
         Use this method to perform any final calculations or cleanup.
         Default implementation does nothing.
+        """
+        pass
+
+    def save_state(self) -> Dict[str, Any]:
+        """
+        Return strategy state for persistence in Redis snapshot (live trading only).
+
+        Called automatically at snapshot save points. Override to persist custom
+        strategy variables across restarts. The returned dictionary must be
+        JSON-serializable (use plain Python types).
+
+        Returns:
+            Dictionary with strategy state. Empty dict by default.
+        """
+        return {}
+
+    def load_state(self, state: Dict[str, Any]) -> None:
+        """
+        Restore strategy state from a previously saved dictionary (live trading only).
+
+        Called automatically after on_start() when restarting after a crash.
+        Override together with save_state() to restore custom strategy variables.
+
+        Args:
+            state: Dictionary previously returned by save_state().
+                   May be empty ({}) if save_state() was never overridden.
         """
         pass
     
@@ -1378,12 +1410,19 @@ class Strategy(ABC):
         Returns:
             Dictionary with callback functions for broker
         """
-        def __on_start(parameters: Dict[str, Any], ta_proxies: Dict[str, ta_proxy]):
+        def __on_start(
+            parameters: Dict[str, Any],
+            ta_proxies: Dict[str, ta_proxy],
+            state: Optional[Dict[str, Any]] = None,
+        ):
             strategy.parameters = parameters
             # Set TA library proxies as strategy attributes
             for name, proxy in ta_proxies.items():
                 setattr(strategy, name, proxy)
-            strategy.on_start()
+            strategy.on_start(state=state)
+            # Restore state after on_start (live trading restart only)
+            if state is not None:
+                strategy.load_state(state)
         
         def __on_bar(
             price: PRICE_TYPE,
@@ -1409,11 +1448,15 @@ class Strategy(ABC):
         
         def __on_finish():
             strategy.on_finish()
-        
+
+        def __save_state() -> Dict[str, Any]:
+            return strategy.save_state()
+
         return {
             'on_start': __on_start,
             'on_bar': __on_bar,
-            'on_finish': __on_finish
+            'on_finish': __on_finish,
+            'save_state': __save_state,
         }
 
     
