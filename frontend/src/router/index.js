@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import TradingView from '../views/TradingView.vue'
 import BacktestingView from '../views/BacktestingView.vue'
+import SettingsView from '../views/SettingsView.vue'
 
 const routes = [
   {
@@ -16,6 +17,11 @@ const routes = [
     path: '/backtesting',
     name: 'Backtesting',
     component: BacktestingView
+  },
+  {
+    path: '/settings',
+    name: 'Settings',
+    component: SettingsView
   }
 ]
 

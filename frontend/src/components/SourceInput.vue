@@ -1,6 +1,6 @@
 <template>
   <div class="form-group">
-    <label :for="inputId">
+    <label v-if="showLabel" :for="inputId">
       Source
       <span v-if="required" class="required">*</span>
     </label>
@@ -54,6 +54,10 @@ export default {
     title: {
       type: String,
       default: 'Exchange or data source (e.g., binance, bybit)'
+    },
+    showLabel: {
+      type: Boolean,
+      default: true
     }
   },
   emits: ['update:modelValue', 'change', 'valid'],

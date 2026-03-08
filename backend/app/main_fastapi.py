@@ -11,7 +11,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1 import strategy_endpoints, backtesting_endpoints, trading_endpoints, common
+from app.api.v1 import strategy_endpoints, backtesting_endpoints, trading_endpoints, common, settings_endpoints
 from app.core.config import CORS_ORIGINS, CORS_ALLOW_METHODS, CORS_ALLOW_HEADERS
 from app.core.startup import startup, shutdown
 
@@ -52,6 +52,7 @@ app.include_router(strategy_endpoints.router)
 app.include_router(backtesting_endpoints.router)
 app.include_router(trading_endpoints.router)
 app.include_router(common.router)
+app.include_router(settings_endpoints.router)
 
 
 @app.get("/")

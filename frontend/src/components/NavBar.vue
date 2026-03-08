@@ -21,6 +21,14 @@
         >
           Backtesting
         </router-link>
+        <router-link
+          to="/settings"
+          class="dropdown-menu-item"
+          :class="{ active: $route.name === 'Settings' }"
+          @click="closeMenu"
+        >
+          Settings
+        </router-link>
       </div>
     </div>
     <div id="navbar-content-slot" class="navbar-right">
