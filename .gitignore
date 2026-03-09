@@ -49,6 +49,8 @@ lerna-debug.log*
 .env.development
 
 # IDE
+.clinerules
+.memory_bank/
 .vscode/
 .idea/
 *.swp

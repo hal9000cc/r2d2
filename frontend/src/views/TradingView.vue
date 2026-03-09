@@ -65,7 +65,7 @@
           <template #deals>
             <DataTable 
               :columns="dealsColumns"
-              :data="[]"
+              :data="dealsArray"
               row-key="deal_id"
               empty-message="No deals yet"
               :enabled="activeTab === 'deals'"
@@ -74,7 +74,7 @@
           <template #trades>
             <DataTable 
               :columns="tradesColumns"
-              :data="[]"
+              :data="allTradesArray"
               row-key="trade_id"
               empty-message="No trades yet"
               :enabled="activeTab === 'trades'"
@@ -83,7 +83,7 @@
           <template #orders>
             <DataTable 
               :columns="ordersColumns"
-              :data="[]"
+              :data="filteredOrders"
               row-key="order_id"
               empty-message="No orders yet"
               :enabled="activeTab === 'orders'"
@@ -163,9 +163,23 @@ import TradingTaskList from '../components/TradingTaskList.vue'
 import TradingStats from '../components/TradingStats.vue'
 import Tabs from '../components/Tabs.vue'
 import { tradingApi } from '../services/tradingApi'
+import { useBacktestingResults } from '../composables/useBacktestingResults'
 
 const route = useRoute()
 const router = useRouter()
+
+// Trading results composable (manages trades/deals/orders/stats Maps)
+const {
+  stats,
+  clearResults,
+  addTrades,
+  updateDeals,
+  updateOrders,
+  updateStats,
+  getAllDeals,
+  getAllTrades,
+  getAllOrders
+} = useBacktestingResults()
 
 // Layout state
 const chartHeight = ref(null)
@@ -192,7 +206,6 @@ const currentTask = ref(null)
 const currentResultId = ref(null)
 const isRunning = ref(false)
 const isReadonly = ref(true)
-const stats = ref(null)
 const hideCanceledOrders = ref(false)
 
 // Stop confirmation dialog
@@ -444,6 +457,43 @@ const ordersColumns = [
   }
 ]
 
+// Computed: table data arrays
+const dealsArray = computed(() => {
+  const all = getAllDeals()
+  return all.sort((a, b) => parseInt(a.deal_id, 10) - parseInt(b.deal_id, 10))
+})
+
+const allTradesArray = computed(() => getAllTrades())
+
+const filteredOrders = computed(() => {
+  const all = getAllOrders()
+  if (!hideCanceledOrders.value) return all
+  // Show only active orders or those with partial fills
+  return all.filter(order => {
+    const filledVolume = parseFloat(order.filled_volume) || 0
+    return order.status === 1 || filledVolume !== 0
+  })
+})
+
+/**
+ * Load trading results from API and populate trades/deals/orders/stats.
+ */
+async function loadTradingResults() {
+  if (!currentTaskId.value || !currentResultId.value) return
+  try {
+    const response = await tradingApi.getResults(currentTaskId.value, currentResultId.value)
+    if (response.success && response.data) {
+      const data = response.data
+      if (data.trades?.length) addTrades(data.trades)
+      if (data.deals?.length) updateDeals(data.deals)
+      if (data.orders?.length) updateOrders(data.orders)
+      if (data.stats) updateStats(data.stats)
+    }
+  } catch (err) {
+    console.error('Failed to load trading results:', err)
+  }
+}
+
 // Layout calculations
 function calculateSizes() {
   const viewportHeight = window.innerHeight
@@ -578,6 +628,8 @@ function handleFormDataChanged() {
 }
 
 function handleTaskSelected(task) {
+  clearResults()
+
   currentTaskId.value = task.id
   currentTask.value = task
   currentResultId.value = task.result_id || null
@@ -601,15 +653,20 @@ function handleTaskSelected(task) {
   } else {
     disconnectMessagesWs()
   }
+
+  // Load results if task has a result_id
+  if (task.result_id) {
+    loadTradingResults()
+  }
 }
 
 function handleTaskDeleted(taskId) {
   if (currentTaskId.value === taskId) {
+    clearResults()
     currentTaskId.value = null
     currentTask.value = null
     currentResultId.value = null
     isRunning.value = false
-    stats.value = null
     currentSource.value = null
     currentSymbol.value = null
     currentTimeframe.value = null
