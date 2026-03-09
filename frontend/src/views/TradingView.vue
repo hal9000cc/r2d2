@@ -92,6 +92,9 @@
           <template #errors>
             <ErrorsPanel :errors="errors" />
           </template>
+          <template #supervisor>
+            <ErrorsPanel :errors="supervisorErrors" />
+          </template>
           <template #messages>
             <MessagesPanel :messages="allMessages" />
           </template>
@@ -198,6 +201,7 @@ const tabs = [
   { id: 'trades', label: 'Trades' },
   { id: 'orders', label: 'Orders' },
   { id: 'errors', label: 'Errors' },
+  { id: 'supervisor', label: 'Supervisor' },
   { id: 'messages', label: 'Messages' }
 ]
 const activeTab = ref('deals')
@@ -205,6 +209,9 @@ const activeTab = ref('deals')
 // Errors state (managed locally, not in useBacktestingResults)
 const errors = ref([])
 const lastErrorId = ref(0)
+
+// Supervisor errors state
+const supervisorErrors = ref([])
 
 // Trading WS composable (messages, events, reconnection)
 const {
@@ -245,9 +252,10 @@ watch(isTradingRunning, (running, wasRunning) => {
   isRunning.value = running
   if (currentTask.value) currentTask.value.isRunning = running
   if (!running && wasRunning) {
-    // Trading stopped — reload task list and final results
+    // Trading stopped — reload task list, final results and supervisor errors
     taskListRef.value?.loadTasks()
     loadTradingResults()
+    loadSupervisorErrors()
   }
 })
 
@@ -297,11 +305,14 @@ const navFormRef = ref(null)
 const chartPanelRef = ref(null)
 const taskListRef = ref(null)
 
-// Tabs with badges: errors count and unread messages count
+// Tabs with badges: errors count, supervisor errors count, unread messages count
 const tabsWithBadge = computed(() => {
   return tabs.map(tab => {
     if (tab.id === 'errors' && errors.value.length > 0) {
       return { ...tab, badge: errors.value.length }
+    }
+    if (tab.id === 'supervisor' && supervisorErrors.value.length > 0) {
+      return { ...tab, badge: supervisorErrors.value.length }
     }
     if (tab.id === 'messages' && unreadImportantMessagesCount.value > 0) {
       return { ...tab, badge: unreadImportantMessagesCount.value }
@@ -551,6 +562,21 @@ const filteredOrders = computed(() => {
 })
 
 /**
+ * Load supervisor errors from API and populate supervisorErrors.
+ */
+async function loadSupervisorErrors() {
+  if (!currentTaskId.value) return
+  try {
+    const response = await tradingApi.getSupervisorErrors(currentTaskId.value)
+    if (response.success && response.data) {
+      supervisorErrors.value = response.data
+    }
+  } catch (err) {
+    console.error('Failed to load supervisor errors:', err)
+  }
+}
+
+/**
  * Load trading results from API and populate trades/deals/orders/stats/errors.
  */
 async function loadTradingResults() {
@@ -671,6 +697,7 @@ function handleTaskSelected(task) {
   clearResults()
   errors.value = []
   lastErrorId.value = 0
+  supervisorErrors.value = []
 
   currentTaskId.value = task.id
   currentTask.value = task
@@ -692,10 +719,11 @@ function handleTaskSelected(task) {
 
   // useTrading composable auto-manages WS connection via taskId watcher
 
-  // Load results if task has a result_id
+  // Load results and supervisor errors
   if (task.result_id) {
     loadTradingResults()
   }
+  loadSupervisorErrors()
 }
 
 function handleTaskDeleted(taskId) {
@@ -703,6 +731,7 @@ function handleTaskDeleted(taskId) {
     clearResults()
     errors.value = []
     lastErrorId.value = 0
+    supervisorErrors.value = []
     resetTradingState()
     currentTaskId.value = null
     currentTask.value = null

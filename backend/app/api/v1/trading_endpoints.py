@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import asyncio
 import json
 from datetime import datetime, timezone
+import redis
 import redis.asyncio as redis_async
 from app.services.tasks.tasks import BacktestingTaskList, TradingTaskList
 from app.services.tasks.task_results import TaskResults
@@ -258,6 +259,59 @@ async def get_trading_results(
             "success": False,
             "error_message": f"Failed to get results: {str(e)}",
         }
+
+
+SUPERVISOR_ERRORS_REDIS_KEY = "trading_tasks:supervisor_errors:{task_id}"
+
+
+@router.get("/tasks/{task_id}/supervisor-errors", response_model=Dict[str, Any])
+async def get_supervisor_errors(task_id: int):
+    """
+    Get supervisor-level errors for a trading task.
+
+    These are errors written by the supervisor process (crash detection,
+    force kill, instance protection) — not by the trading strategy itself.
+
+    Stored as a JSON list at trading_tasks:supervisor_errors:{task_id}.
+    Sequential id is added on the fly (1-based).
+
+    Args:
+        task_id: Trading task ID
+
+    Returns:
+        Dictionary with success flag and data (list of error objects with id)
+    """
+    task = trading_task_list.load(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Trading task {task_id} not found")
+
+    key = SUPERVISOR_ERRORS_REDIS_KEY.format(task_id=task_id)
+    try:
+        redis_params_dict = trading_task_list.get_redis_params()
+        r = redis.Redis(
+            host=redis_params_dict["host"],
+            port=redis_params_dict["port"],
+            db=redis_params_dict["db"],
+            password=redis_params_dict.get("password"),
+            decode_responses=True,
+            socket_connect_timeout=5,
+        )
+        raw_list = r.lrange(key, 0, -1)
+        r.close()
+
+        errors = []
+        for i, raw in enumerate(raw_list, start=1):
+            try:
+                entry = json.loads(raw)
+                entry["id"] = i
+                errors.append(entry)
+            except Exception:
+                logger.warning(f"Skipping malformed supervisor error entry for task {task_id}: {raw[:120]}")
+
+        return {"success": True, "data": errors}
+    except Exception as e:
+        logger.error(f"Error reading supervisor errors for task {task_id}: {e}", exc_info=True)
+        return {"success": False, "error_message": f"Failed to get supervisor errors: {str(e)}"}
 
 
 @router.get("/tasks/{task_id}/results/{result_id}/errors", response_model=Dict[str, Any])

@@ -97,6 +97,18 @@ export const tradingApi = {
   },
 
   /**
+   * Get supervisor-level errors for a trading task.
+   * @param {number} taskId
+   * @returns {Promise<{success: boolean, data: Array}>}
+   */
+  async getSupervisorErrors(taskId) {
+    const response = await axios.get(
+      `${API_BASE_URL}/api/v1/trading/tasks/${taskId}/supervisor-errors`
+    )
+    return response.data
+  },
+
+  /**
    * Create a WebSocket connection for streaming task messages.
    * @param {number} taskId
    * @returns {WebSocket}
