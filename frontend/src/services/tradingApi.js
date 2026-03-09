@@ -109,6 +109,17 @@ export const tradingApi = {
   },
 
   /**
+   * Get supervisor errors from all trading tasks combined.
+   * @returns {Promise<{success: boolean, data: Array}>}
+   */
+  async getAllSupervisorErrors() {
+    const response = await axios.get(
+      `${API_BASE_URL}/api/v1/trading/supervisor-errors`
+    )
+    return response.data
+  },
+
+  /**
    * Create a WebSocket connection for streaming task messages.
    * @param {number} taskId
    * @returns {WebSocket}
@@ -116,5 +127,14 @@ export const tradingApi = {
   createMessagesWebSocket(taskId) {
     const wsBase = API_BASE_URL.replace(/^http/, 'ws')
     return new WebSocket(`${wsBase}/api/v1/trading/tasks/${taskId}/messages`)
+  },
+
+  /**
+   * Create a WebSocket connection for streaming global supervisor messages.
+   * @returns {WebSocket}
+   */
+  createSupervisorWebSocket() {
+    const wsBase = API_BASE_URL.replace(/^http/, 'ws')
+    return new WebSocket(`${wsBase}/api/v1/trading/supervisor/messages`)
   },
 }

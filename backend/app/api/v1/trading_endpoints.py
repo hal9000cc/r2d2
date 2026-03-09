@@ -11,7 +11,12 @@ from app.services.tasks.tasks import BacktestingTaskList, TradingTaskList
 from app.services.tasks.task_results import TaskResults
 from app.services.strategies import load_strategy
 from app.services.strategies.exceptions import R2D2StrategyFileError, R2D2StrategyNotFoundError
-from app.core.config import redis_params
+from app.core.config import (
+    redis_params,
+    SUPERVISOR_ERRORS_KEY,
+    SUPERVISOR_ERRORS_KEY_PREFIX,
+    SUPERVISOR_GLOBAL_CHANNEL,
+)
 from app.core.datetime_utils import parse_utc_datetime64
 from app.core.logger import get_logger
 
@@ -261,7 +266,59 @@ async def get_trading_results(
         }
 
 
-SUPERVISOR_ERRORS_REDIS_KEY = "trading_tasks:supervisor_errors:{task_id}"
+@router.get("/supervisor-errors", response_model=Dict[str, Any])
+async def get_all_supervisor_errors():
+    """
+    Get supervisor errors from all trading tasks combined.
+
+    Scans all Redis keys matching trading_tasks:supervisor_errors:*,
+    reads their contents, adds task_id to each entry, and returns
+    results sorted by timestamp ascending.
+
+    Returns:
+        Dictionary with success flag and data (list of error objects with id and task_id)
+    """
+    try:
+        redis_params_dict = trading_task_list.get_redis_params()
+        r = redis.Redis(
+            host=redis_params_dict["host"],
+            port=redis_params_dict["port"],
+            db=redis_params_dict["db"],
+            password=redis_params_dict.get("password"),
+            decode_responses=True,
+            socket_connect_timeout=5,
+        )
+
+        pattern = f"{SUPERVISOR_ERRORS_KEY_PREFIX}*"
+        keys = r.keys(pattern)
+
+        errors = []
+        for key in keys:
+            try:
+                task_id = int(key[len(SUPERVISOR_ERRORS_KEY_PREFIX):])
+            except (ValueError, IndexError):
+                continue
+
+            raw_list = r.lrange(key, 0, -1)
+            for raw in raw_list:
+                try:
+                    entry = json.loads(raw)
+                    entry["task_id"] = task_id
+                    errors.append(entry)
+                except Exception:
+                    logger.warning(f"Skipping malformed supervisor error entry for key {key}: {raw[:120]}")
+
+        r.close()
+
+        # Sort by timestamp, then assign sequential id
+        errors.sort(key=lambda e: e.get("timestamp", ""))
+        for i, entry in enumerate(errors, start=1):
+            entry["id"] = i
+
+        return {"success": True, "data": errors}
+    except Exception as e:
+        logger.error(f"Error reading all supervisor errors: {e}", exc_info=True)
+        return {"success": False, "error_message": f"Failed to get supervisor errors: {str(e)}"}
 
 
 @router.get("/tasks/{task_id}/supervisor-errors", response_model=Dict[str, Any])
@@ -285,7 +342,7 @@ async def get_supervisor_errors(task_id: int):
     if task is None:
         raise HTTPException(status_code=404, detail=f"Trading task {task_id} not found")
 
-    key = SUPERVISOR_ERRORS_REDIS_KEY.format(task_id=task_id)
+    key = SUPERVISOR_ERRORS_KEY.format(task_id=task_id)
     try:
         redis_params_dict = trading_task_list.get_redis_params()
         r = redis.Redis(
@@ -456,6 +513,99 @@ async def trading_task_messages_websocket(websocket: WebSocket, task_id: int):
                 await redis_client.close()
             except Exception as e:
                 logger.warning(f"Error closing Redis client for trading task {task_id}: {e}")
+
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@router.websocket("/supervisor/messages")
+async def supervisor_messages_websocket(websocket: WebSocket):
+    """
+    WebSocket endpoint for streaming global supervisor messages to frontend.
+
+    Subscribes to Redis pub/sub channel: supervisor:messages
+    and forwards all supervisor events to the frontend.
+    This channel receives messages from all trading tasks combined.
+
+    Message format: {timestamp, level, category, message, task_id}
+    """
+    await websocket.accept()
+
+    redis_params_dict = trading_task_list.get_redis_params()
+
+    redis_client = None
+    pubsub = None
+
+    try:
+        redis_client = redis_async.Redis(
+            host=redis_params_dict["host"],
+            port=redis_params_dict["port"],
+            db=redis_params_dict["db"],
+            password=redis_params_dict.get("password"),
+            decode_responses=True,
+        )
+
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe(SUPERVISOR_GLOBAL_CHANNEL)
+
+        logger.info(f"Subscribed to global supervisor channel {SUPERVISOR_GLOBAL_CHANNEL}")
+
+        while True:
+            try:
+                message = await asyncio.wait_for(
+                    pubsub.get_message(ignore_subscribe_messages=True), timeout=1.0
+                )
+
+                if message is not None:
+                    try:
+                        message_data = json.loads(message["data"])
+                        await websocket.send_json(message_data)
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            f"Received non-JSON message from supervisor channel: {message['data']}"
+                        )
+                    except (WebSocketDisconnect, ConnectionError) as e:
+                        logger.debug(f"Supervisor WebSocket disconnected: {e}")
+                        break
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        if any(code in error_str for code in ("1001", "1005", "1012", "going away", "no status received", "service restart")):
+                            logger.debug(f"Supervisor WebSocket closed: {e}")
+                            break
+                        logger.error(f"Error processing supervisor message: {e}")
+
+            except asyncio.CancelledError:
+                logger.debug("Supervisor WebSocket cancelled")
+                break
+            except asyncio.TimeoutError:
+                continue
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                logger.error(f"Error in supervisor messages stream: {e}", exc_info=True)
+                break
+
+    except asyncio.CancelledError:
+        logger.debug("Supervisor WebSocket cancelled")
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"Error setting up supervisor messages stream: {e}", exc_info=True)
+    finally:
+        if pubsub:
+            try:
+                await pubsub.unsubscribe()
+                await pubsub.close()
+            except Exception as e:
+                logger.warning(f"Error closing pubsub for supervisor channel: {e}")
+
+        if redis_client:
+            try:
+                await redis_client.close()
+            except Exception as e:
+                logger.warning(f"Error closing Redis client for supervisor channel: {e}")
 
         try:
             await websocket.close()

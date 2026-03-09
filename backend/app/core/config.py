@@ -579,6 +579,29 @@ def get_api_secret(source: str) -> Optional[str]:
     return _api_secrets_cache[source]
 
 
+# ---------------------------------------------------------------------------
+# Redis key constants (shared between supervisor and API endpoints)
+# ---------------------------------------------------------------------------
+
+# Supervisor instance lock
+SUPERVISOR_LOCK_KEY = "r2d2:instance_lock"
+
+# Hash: task_id (str) → pid (str) — tracking live trading process PIDs
+SUPERVISOR_PIDS_KEY = "r2d2:supervisor:pids"
+
+# Per-task supervisor error log: list of JSON entries
+SUPERVISOR_ERRORS_KEY = "trading_tasks:supervisor_errors:{task_id}"
+
+# Prefix for scanning all per-task supervisor error keys
+SUPERVISOR_ERRORS_KEY_PREFIX = "trading_tasks:supervisor_errors:"
+
+# Global pub/sub channel for real-time supervisor events (all tasks combined)
+SUPERVISOR_GLOBAL_CHANNEL = "supervisor:messages"
+
+# Per-task pub/sub channel for trading messages (strategy logs, events)
+TRADING_MESSAGES_CHANNEL = "trading_tasks:messages:{task_id}"
+
+
 def redis_params() -> dict:
     """
     Returns dictionary with Redis connection parameters.

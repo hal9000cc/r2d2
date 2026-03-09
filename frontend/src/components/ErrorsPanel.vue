@@ -13,6 +13,7 @@
             <th class="col-time">Timestamp</th>
             <th class="col-broker-time">Broker Time</th>
             <th class="col-message">Message</th>
+            <th class="col-ref">Task</th>
             <th class="col-ref">Deal</th>
             <th class="col-ref">Order</th>
           </tr>
@@ -31,6 +32,7 @@
             <td class="col-time">{{ formatTime(error.timestamp) }}</td>
             <td class="col-broker-time">{{ formatTime(error.broker_time) }}</td>
             <td class="col-message">{{ error.message }}</td>
+            <td class="col-ref">{{ error.task_id ?? '—' }}</td>
             <td class="col-ref">{{ error.deal_id ?? '—' }}</td>
             <td class="col-ref">{{ error.order_id ?? '—' }}</td>
           </tr>

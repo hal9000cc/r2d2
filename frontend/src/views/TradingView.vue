@@ -172,6 +172,7 @@ import Tabs from '../components/Tabs.vue'
 import { tradingApi } from '../services/tradingApi'
 import { useBacktestingResults } from '../composables/useBacktestingResults'
 import { useTrading } from '../composables/useTrading'
+import { useSupervisor } from '../composables/useSupervisor'
 
 const route = useRoute()
 const router = useRouter()
@@ -218,8 +219,8 @@ const hideCanceledOrders = ref(false)
 const errors = ref([])
 const lastErrorId = ref(0)
 
-// Supervisor errors state
-const supervisorErrors = ref([])
+// Supervisor composable — global channel, independent of selected task
+const { supervisorErrors } = useSupervisor()
 
 // Trading WS composable (messages, events, reconnection)
 const {
@@ -260,10 +261,9 @@ watch(isTradingRunning, (running, wasRunning) => {
   isRunning.value = running
   if (currentTask.value) currentTask.value.isRunning = running
   if (!running && wasRunning) {
-    // Trading stopped — reload task list, final results and supervisor errors
+    // Trading stopped — reload task list and final results
     taskListRef.value?.loadTasks()
     loadTradingResults()
-    loadSupervisorErrors()
   }
 })
 
@@ -562,21 +562,6 @@ const filteredOrders = computed(() => {
 })
 
 /**
- * Load supervisor errors from API and populate supervisorErrors.
- */
-async function loadSupervisorErrors() {
-  if (!currentTaskId.value) return
-  try {
-    const response = await tradingApi.getSupervisorErrors(currentTaskId.value)
-    if (response.success && response.data) {
-      supervisorErrors.value = response.data
-    }
-  } catch (err) {
-    console.error('Failed to load supervisor errors:', err)
-  }
-}
-
-/**
  * Load trading results from API and populate trades/deals/orders/stats/errors.
  */
 async function loadTradingResults() {
@@ -697,7 +682,6 @@ function handleTaskSelected(task) {
   clearResults()
   errors.value = []
   lastErrorId.value = 0
-  supervisorErrors.value = []
 
   currentTaskId.value = task.id
   currentTask.value = task
@@ -719,11 +703,10 @@ function handleTaskSelected(task) {
 
   // useTrading composable auto-manages WS connection via taskId watcher
 
-  // Load results and supervisor errors
+  // Load trading results
   if (task.result_id) {
     loadTradingResults()
   }
-  loadSupervisorErrors()
 }
 
 function handleTaskDeleted(taskId) {
@@ -731,7 +714,6 @@ function handleTaskDeleted(taskId) {
     clearResults()
     errors.value = []
     lastErrorId.value = 0
-    supervisorErrors.value = []
     resetTradingState()
     currentTaskId.value = null
     currentTask.value = null

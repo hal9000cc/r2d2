@@ -35,6 +35,10 @@ from app.core.config import (
     SUPERVISOR_MAX_RESTARTS,
     SUPERVISOR_CRASH_INTERVAL,
     SUPERVISOR_FORCE_KILL_TIMEOUT,
+    SUPERVISOR_LOCK_KEY,
+    SUPERVISOR_PIDS_KEY,
+    SUPERVISOR_ERRORS_KEY,
+    SUPERVISOR_GLOBAL_CHANNEL,
 )
 from app.core.logger import setup_logging, get_logger
 from app.services.tasks.tasks import TradingTaskList
@@ -42,15 +46,8 @@ from app.services.trading_worker import worker_trading_task
 
 logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Redis keys
-# ---------------------------------------------------------------------------
-
-LOCK_KEY = "r2d2:instance_lock"
+# Lock TTL is computed from the poll interval — not a configurable constant
 LOCK_TTL = max(int(SUPERVISOR_POLL_INTERVAL * 5), 15)  # Seconds; renewed every poll
-
-PIDS_KEY = "r2d2:supervisor:pids"            # Hash: task_id (str) → pid (str)
-SUPERVISOR_ERRORS_KEY = "trading_tasks:supervisor_errors:{task_id}"
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -114,23 +111,23 @@ class Supervisor:
         """
         client = self._get_redis()
         pid = str(os.getpid())
-        acquired = client.set(LOCK_KEY, pid, nx=True, ex=LOCK_TTL)
+        acquired = client.set(SUPERVISOR_LOCK_KEY, pid, nx=True, ex=LOCK_TTL)
         if acquired:
             logger.info(f"Instance lock acquired (PID={pid}, TTL={LOCK_TTL}s)")
             return True
 
-        owner = client.get(LOCK_KEY)
+        owner = client.get(SUPERVISOR_LOCK_KEY)
         logger.error(
             f"Another instance is already running (lock owner PID={owner}). "
             "If you are sure no other instance is running, delete the Redis key: "
-            f"redis-cli del {LOCK_KEY}"
+            f"redis-cli del {SUPERVISOR_LOCK_KEY}"
         )
         return False
 
     def _renew_lock(self) -> None:
         """Renew lock TTL so it doesn't expire while supervisor is alive."""
         try:
-            self._get_redis().expire(LOCK_KEY, LOCK_TTL)
+            self._get_redis().expire(SUPERVISOR_LOCK_KEY, LOCK_TTL)
         except Exception as e:
             logger.warning(f"Failed to renew instance lock: {e}")
 
@@ -139,9 +136,9 @@ class Supervisor:
         try:
             pid = str(os.getpid())
             client = self._get_redis()
-            owner = client.get(LOCK_KEY)
+            owner = client.get(SUPERVISOR_LOCK_KEY)
             if owner == pid:
-                client.delete(LOCK_KEY)
+                client.delete(SUPERVISOR_LOCK_KEY)
                 logger.info("Instance lock released")
         except Exception as e:
             logger.warning(f"Failed to release instance lock: {e}")
@@ -152,20 +149,20 @@ class Supervisor:
 
     def _save_pid(self, task_id: int, pid: int) -> None:
         try:
-            self._get_redis().hset(PIDS_KEY, str(task_id), str(pid))
+            self._get_redis().hset(SUPERVISOR_PIDS_KEY, str(task_id), str(pid))
         except Exception as e:
             logger.warning(f"Failed to save PID for task {task_id}: {e}")
 
     def _remove_pid(self, task_id: int) -> None:
         try:
-            self._get_redis().hdel(PIDS_KEY, str(task_id))
+            self._get_redis().hdel(SUPERVISOR_PIDS_KEY, str(task_id))
         except Exception as e:
             logger.warning(f"Failed to remove PID for task {task_id}: {e}")
 
     def _load_pids(self) -> Dict[int, int]:
         """Load task_id → pid mapping from Redis."""
         try:
-            raw = self._get_redis().hgetall(PIDS_KEY)
+            raw = self._get_redis().hgetall(SUPERVISOR_PIDS_KEY)
             return {int(k): int(v) for k, v in raw.items()}
         except Exception as e:
             logger.warning(f"Failed to load PIDs from Redis: {e}")
@@ -180,7 +177,7 @@ class Supervisor:
         Persist a supervisor error for a trading task to Redis.
 
         Stored as a JSON list at key trading_tasks:supervisor_errors:{task_id}.
-        Also sends pub/sub message so frontend sees it in real time.
+        Also publishes to global supervisor:messages channel for real-time frontend updates.
         """
         entry = {
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -196,7 +193,14 @@ class Supervisor:
         except Exception as e:
             logger.warning(f"Failed to write supervisor error to Redis for task {task_id}: {e}")
 
-        # Also notify via pub/sub (best-effort)
+        # Publish to global supervisor channel (for frontend real-time updates)
+        try:
+            global_entry = dict(entry, task_id=task_id)
+            self._get_redis().publish(SUPERVISOR_GLOBAL_CHANNEL, json.dumps(global_entry))
+        except Exception as e:
+            logger.warning(f"Failed to publish supervisor error to global channel for task {task_id}: {e}")
+
+        # Also notify per-task pub/sub channel (best-effort)
         try:
             task_list = self._get_task_list()
             task = task_list.load(task_id)
