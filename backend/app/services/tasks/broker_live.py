@@ -129,7 +129,7 @@ class BrokerLive(Broker):
         except Exception as e:
             raise RuntimeError(f"Failed to parse timeframe '{self.task.timeframe}': {e}") from e
 
-        self.date_start = np.datetime64(datetime.now(timezone.utc).replace(microsecond=0), "ms")
+        self.date_start = np.datetime64(datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None), "ms")
 
         self.bar_wait_interval = BAR_WAIT_INTERVAL
         self.order_wait_interval = ORDER_WAIT_INTERVAL
