@@ -131,6 +131,7 @@ def process_trading_task(task: Task) -> None:
     broker.run()
 
     task.message(f"Live trading task {task.id} completed", level="info")
+    task.send_message(MessageType.EVENT, {"event": "trading_stopped", "result_id": TRADING_RESULT_ID})
     logger.info(f"Live trading task {task.id} completed normally")
 
 
@@ -175,3 +176,7 @@ def worker_trading_task(task_id: int) -> None:
                 task.message(f"Trading error: {e}", level="error")
             except Exception:
                 pass
+        try:
+            task.send_message(MessageType.EVENT, {"event": "trading_stopped", "result_id": TRADING_RESULT_ID, "error": True})
+        except Exception:
+            pass

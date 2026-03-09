@@ -41,8 +41,8 @@
             <div v-if="activeTab === 'messages'" class="header-actions">
               <button 
                 class="header-btn clear-btn" 
-                @click="clearMessages"
-                :disabled="messages.length === 0"
+                @click="handleClearMessages"
+                :disabled="allMessages.length === 0"
                 title="Clear messages"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon">
@@ -90,7 +90,7 @@
             />
           </template>
           <template #messages>
-            <MessagesPanel :messages="messages" />
+            <MessagesPanel :messages="allMessages" />
           </template>
         </Tabs>
       </div>
@@ -152,7 +152,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ResizablePanel from '../components/ResizablePanel.vue'
 import ChartPanel from '../components/ChartPanel.vue'
@@ -164,6 +164,7 @@ import TradingStats from '../components/TradingStats.vue'
 import Tabs from '../components/Tabs.vue'
 import { tradingApi } from '../services/tradingApi'
 import { useBacktestingResults } from '../composables/useBacktestingResults'
+import { useTrading } from '../composables/useTrading'
 
 const route = useRoute()
 const router = useRouter()
@@ -196,9 +197,68 @@ const tabs = [
 ]
 const activeTab = ref('deals')
 
-// Messages
-const messages = ref([])
+// Trading WS composable (messages, events, reconnection)
+const {
+  allMessages,
+  isTradingRunning,
+  lastProgressTime,
+  clearMessages,
+  clearAllMessages,
+  addLocalMessage,
+  setTradingStarted,
+  resetTradingState,
+} = useTrading(computed(() => currentTaskId.value))
+
+// Messages badge: count unread important messages when Messages tab is not active
 const unreadImportantMessagesCount = ref(0)
+const lastProcessedMessageIndex = ref(-1)
+
+watch(allMessages, (newMessages) => {
+  if (newMessages.length < lastProcessedMessageIndex.value) {
+    // Messages were cleared
+    lastProcessedMessageIndex.value = newMessages.length - 1
+    return
+  }
+  if (activeTab.value !== 'messages') {
+    for (let i = lastProcessedMessageIndex.value + 1; i < newMessages.length; i++) {
+      const msg = newMessages[i]
+      if (msg.level === 'error' || msg.level === 'warning') {
+        unreadImportantMessagesCount.value++
+      }
+    }
+  }
+  lastProcessedMessageIndex.value = newMessages.length - 1
+})
+
+// Watch isTradingRunning from composable: sync to isRunning and reload on stop
+watch(isTradingRunning, (running, wasRunning) => {
+  if (running === wasRunning) return
+  isRunning.value = running
+  if (currentTask.value) currentTask.value.isRunning = running
+  if (!running && wasRunning) {
+    // Trading stopped — reload task list and final results
+    taskListRef.value?.loadTasks()
+    loadTradingResults()
+  }
+})
+
+// Watch lastProgressTime from composable: incremental results reload on progress event
+watch(lastProgressTime, async (newTime) => {
+  if (!newTime) return
+  if (!currentTaskId.value || !currentResultId.value) return
+  try {
+    const response = await tradingApi.getResults(currentTaskId.value, currentResultId.value, newTime)
+    if (response.success && response.data) {
+      const data = response.data
+      if (data.trades?.length) addTrades(data.trades)
+      if (data.deals?.length) updateDeals(data.deals)
+      if (data.orders?.length) updateOrders(data.orders)
+      if (data.stats) updateStats(data.stats)
+    }
+  } catch (err) {
+    console.error('Failed to load trading results (incremental):', err)
+  }
+})
 
 // Task state
 const currentTaskId = ref(null)
@@ -211,9 +271,6 @@ const hideCanceledOrders = ref(false)
 // Stop confirmation dialog
 const showStopDialog = ref(false)
 const closeDealsOnStop = ref(false)
-
-// WebSocket for messages
-let messagesWs = null
 
 // Current task data for chart
 const currentSource = ref(null)
@@ -533,43 +590,6 @@ function calculateSizes() {
   }
 }
 
-// WebSocket helpers
-function connectMessagesWs(taskId) {
-  disconnectMessagesWs()
-  messagesWs = tradingApi.createMessagesWebSocket(taskId)
-  messagesWs.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data)
-      if (data.type === 'message' || data.level) {
-        messages.value.push(data)
-        if (data.level === 'error' || data.level === 'warning') {
-          if (activeTab.value !== 'messages') {
-            unreadImportantMessagesCount.value++
-          }
-        }
-      } else if (data.type === 'event') {
-        if (data.event === 'trading_stopped') {
-          isRunning.value = false
-          currentTask.value && (currentTask.value.isRunning = false)
-          taskListRef.value?.loadTasks()
-        }
-      }
-    } catch (e) {
-      // Non-JSON message
-    }
-  }
-  messagesWs.onerror = (err) => {
-    console.error('Trading messages WebSocket error:', err)
-  }
-}
-
-function disconnectMessagesWs() {
-  if (messagesWs) {
-    try { messagesWs.close() } catch (e) {}
-    messagesWs = null
-  }
-}
-
 // Event handlers
 function handleTabChange(tab) {
   activeTab.value = tab
@@ -594,13 +614,13 @@ async function handleStart() {
       isRunning.value = true
       currentResultId.value = result.result_id
       if (currentTask.value) currentTask.value.isRunning = true
+      setTradingStarted(result.result_id)
       taskListRef.value?.loadTasks()
-      connectMessagesWs(currentTaskId.value)
     }
   } catch (err) {
     const detail = err.response?.data?.detail || err.message
     console.error('Failed to start trading task:', detail)
-    messages.value.push({ level: 'error', message: `Start failed: ${detail}` })
+    addLocalMessage({ level: 'error', message: `Start failed: ${detail}` })
   }
 }
 
@@ -613,13 +633,11 @@ async function confirmStop() {
   if (!currentTaskId.value) return
   try {
     await tradingApi.stopTask(currentTaskId.value, closeDealsOnStop.value)
-    isRunning.value = false
-    if (currentTask.value) currentTask.value.isRunning = false
-    taskListRef.value?.loadTasks()
+    // isRunning will be set via isTradingRunning watcher when trading_stopped event arrives
   } catch (err) {
     const detail = err.response?.data?.detail || err.message
     console.error('Failed to stop trading task:', detail)
-    messages.value.push({ level: 'error', message: `Stop failed: ${detail}` })
+    addLocalMessage({ level: 'error', message: `Stop failed: ${detail}` })
   }
 }
 
@@ -648,11 +666,7 @@ function handleTaskSelected(task) {
     })
   }
 
-  if (task.isRunning) {
-    connectMessagesWs(task.id)
-  } else {
-    disconnectMessagesWs()
-  }
+  // useTrading composable auto-manages WS connection via taskId watcher
 
   // Load results if task has a result_id
   if (task.result_id) {
@@ -663,6 +677,7 @@ function handleTaskSelected(task) {
 function handleTaskDeleted(taskId) {
   if (currentTaskId.value === taskId) {
     clearResults()
+    resetTradingState()
     currentTaskId.value = null
     currentTask.value = null
     currentResultId.value = null
@@ -670,16 +685,16 @@ function handleTaskDeleted(taskId) {
     currentSource.value = null
     currentSymbol.value = null
     currentTimeframe.value = null
-    disconnectMessagesWs()
     if (navFormRef.value) {
       navFormRef.value.setFormData({ source: '', symbol: '', timeframe: '' })
     }
   }
 }
 
-function clearMessages() {
-  messages.value = []
+function handleClearMessages() {
+  clearAllMessages()
   unreadImportantMessagesCount.value = 0
+  lastProcessedMessageIndex.value = -1
 }
 
 // Auto-select task from query parameter (e.g. after Deploy from Backtesting)
@@ -713,7 +728,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', calculateSizes)
-  disconnectMessagesWs()
 })
 </script>
 
