@@ -374,8 +374,9 @@ class Supervisor:
 
                 if new_crash_count >= SUPERVISOR_MAX_RESTARTS:
                     # Too many rapid crashes — disable task
+                    task_label = f"{task.name} (id={task_id})" if task.name else f"Task {task_id}"
                     msg = (
-                        f"Task {task_id} crashed {new_crash_count} time(s) within "
+                        f"{task_label} crashed {new_crash_count} time(s) within "
                         f"{SUPERVISOR_CRASH_INTERVAL}s. Setting isRunning=False."
                     )
                     logger.error(msg)

@@ -206,6 +206,14 @@ const tabs = [
 ]
 const activeTab = ref('deals')
 
+// Task state
+const currentTaskId = ref(null)
+const currentTask = ref(null)
+const currentResultId = ref(null)
+const isRunning = ref(false)
+const isReadonly = ref(true)
+const hideCanceledOrders = ref(false)
+
 // Errors state (managed locally, not in useBacktestingResults)
 const errors = ref([])
 const lastErrorId = ref(0)
@@ -282,14 +290,6 @@ watch(lastProgressTime, async (newTime) => {
     console.error('Failed to load trading results (incremental):', err)
   }
 })
-
-// Task state
-const currentTaskId = ref(null)
-const currentTask = ref(null)
-const currentResultId = ref(null)
-const isRunning = ref(false)
-const isReadonly = ref(true)
-const hideCanceledOrders = ref(false)
 
 // Stop confirmation dialog
 const showStopDialog = ref(false)

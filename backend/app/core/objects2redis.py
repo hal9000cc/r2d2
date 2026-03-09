@@ -453,7 +453,7 @@ class Objects2RedisList(ABC, Generic[T]):
             if not isinstance(data['level'], str) or not isinstance(data['message'], str):
                 raise ValueError(f"Data 'level' and 'message' must be strings for type {type}")
             # Validate level
-            valid_levels = ['info', 'warning', 'error', 'success', 'debug']
+            valid_levels = ['info', 'warning', 'error', 'success', 'debug', 'critical']
             if data['level'] not in valid_levels:
                 raise ValueError(f"Invalid message level '{data['level']}'. Must be one of: {', '.join(valid_levels)}")
         elif type == MessageType.EVENT:
