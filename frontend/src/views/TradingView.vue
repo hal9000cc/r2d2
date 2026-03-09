@@ -89,6 +89,9 @@
               :enabled="activeTab === 'orders'"
             />
           </template>
+          <template #errors>
+            <ErrorsPanel :errors="errors" />
+          </template>
           <template #messages>
             <MessagesPanel :messages="allMessages" />
           </template>
@@ -161,6 +164,7 @@ import DataTable from '../components/DataTable.vue'
 import TradingNavForm from '../components/TradingNavForm.vue'
 import TradingTaskList from '../components/TradingTaskList.vue'
 import TradingStats from '../components/TradingStats.vue'
+import ErrorsPanel from '../components/ErrorsPanel.vue'
 import Tabs from '../components/Tabs.vue'
 import { tradingApi } from '../services/tradingApi'
 import { useBacktestingResults } from '../composables/useBacktestingResults'
@@ -193,9 +197,14 @@ const tabs = [
   { id: 'deals', label: 'Deals' },
   { id: 'trades', label: 'Trades' },
   { id: 'orders', label: 'Orders' },
+  { id: 'errors', label: 'Errors' },
   { id: 'messages', label: 'Messages' }
 ]
 const activeTab = ref('deals')
+
+// Errors state (managed locally, not in useBacktestingResults)
+const errors = ref([])
+const lastErrorId = ref(0)
 
 // Trading WS composable (messages, events, reconnection)
 const {
@@ -247,13 +256,19 @@ watch(lastProgressTime, async (newTime) => {
   if (!newTime) return
   if (!currentTaskId.value || !currentResultId.value) return
   try {
-    const response = await tradingApi.getResults(currentTaskId.value, currentResultId.value, newTime)
+    const response = await tradingApi.getResults(
+      currentTaskId.value, currentResultId.value, newTime, lastErrorId.value
+    )
     if (response.success && response.data) {
       const data = response.data
       if (data.trades?.length) addTrades(data.trades)
       if (data.deals?.length) updateDeals(data.deals)
       if (data.orders?.length) updateOrders(data.orders)
       if (data.stats) updateStats(data.stats)
+      if (data.errors?.length) {
+        errors.value.push(...data.errors)
+        lastErrorId.value = data.errors[data.errors.length - 1].id
+      }
     }
   } catch (err) {
     console.error('Failed to load trading results (incremental):', err)
@@ -282,9 +297,12 @@ const navFormRef = ref(null)
 const chartPanelRef = ref(null)
 const taskListRef = ref(null)
 
-// Tabs with badge for unread messages
+// Tabs with badges: errors count and unread messages count
 const tabsWithBadge = computed(() => {
   return tabs.map(tab => {
+    if (tab.id === 'errors' && errors.value.length > 0) {
+      return { ...tab, badge: errors.value.length }
+    }
     if (tab.id === 'messages' && unreadImportantMessagesCount.value > 0) {
       return { ...tab, badge: unreadImportantMessagesCount.value }
     }
@@ -533,7 +551,7 @@ const filteredOrders = computed(() => {
 })
 
 /**
- * Load trading results from API and populate trades/deals/orders/stats.
+ * Load trading results from API and populate trades/deals/orders/stats/errors.
  */
 async function loadTradingResults() {
   if (!currentTaskId.value || !currentResultId.value) return
@@ -545,6 +563,10 @@ async function loadTradingResults() {
       if (data.deals?.length) updateDeals(data.deals)
       if (data.orders?.length) updateOrders(data.orders)
       if (data.stats) updateStats(data.stats)
+      if (data.errors?.length) {
+        errors.value = data.errors
+        lastErrorId.value = data.errors[data.errors.length - 1].id
+      }
     }
   } catch (err) {
     console.error('Failed to load trading results:', err)
@@ -647,6 +669,8 @@ function handleFormDataChanged() {
 
 function handleTaskSelected(task) {
   clearResults()
+  errors.value = []
+  lastErrorId.value = 0
 
   currentTaskId.value = task.id
   currentTask.value = task
@@ -677,6 +701,8 @@ function handleTaskSelected(task) {
 function handleTaskDeleted(taskId) {
   if (currentTaskId.value === taskId) {
     clearResults()
+    errors.value = []
+    lastErrorId.value = 0
     resetTradingState()
     currentTaskId.value = null
     currentTask.value = null

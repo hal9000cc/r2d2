@@ -217,17 +217,19 @@ async def get_trading_results(
     task_id: int,
     result_id: str,
     time_begin: Optional[str] = Query(None, description="Start time for filtering (ISO format)"),
+    min_error_id: int = Query(0, description="Minimum error id for incremental error loading"),
 ):
     """
-    Get live trading results (trades, deals, orders, stats) for a task.
+    Get live trading results (trades, deals, orders, stats, errors) for a task.
 
     Args:
         task_id: Trading task ID
         result_id: Result ID (UUID) associated with this trading run
         time_begin: Optional ISO datetime string for filtering from this time onwards
+        min_error_id: Minimum error id to load (0 = all errors, use last known id for incremental)
 
     Returns:
-        Dictionary with success flag and data (trades, deals, orders, optional stats)
+        Dictionary with success flag and data (trades, deals, orders, optional stats, errors)
     """
     task = trading_task_list.load(task_id)
     if task is None:
@@ -245,7 +247,7 @@ async def get_trading_results(
 
     try:
         results = TaskResults(task, broker=None)
-        data = results.get_results(result_id, time_begin_dt64)
+        data = results.get_results(result_id, time_begin_dt64, min_error_id=min_error_id)
         return {"success": True, "data": data}
     except Exception as e:
         logger.error(
@@ -255,6 +257,44 @@ async def get_trading_results(
         return {
             "success": False,
             "error_message": f"Failed to get results: {str(e)}",
+        }
+
+
+@router.get("/tasks/{task_id}/results/{result_id}/errors", response_model=Dict[str, Any])
+async def get_trading_errors(
+    task_id: int,
+    result_id: str,
+    min_id: int = Query(0, description="Minimum error id (0 = all errors)"),
+    deal_id: Optional[int] = Query(None, description="Filter by deal id"),
+):
+    """
+    Get errors from the error registry for a live trading run.
+
+    Args:
+        task_id: Trading task ID
+        result_id: Result ID (UUID) associated with this trading run
+        min_id: Minimum error id to load (0 = all, use last known id for incremental)
+        deal_id: Optional deal id to filter errors by
+
+    Returns:
+        Dictionary with success flag and data (list of error objects)
+    """
+    task = trading_task_list.load(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Trading task {task_id} not found")
+
+    try:
+        results = TaskResults(task, broker=None)
+        errors = results.get_errors(result_id, min_id=min_id, deal_id=deal_id)
+        return {"success": True, "data": errors}
+    except Exception as e:
+        logger.error(
+            f"Error getting trading errors for task {task_id}, result_id {result_id}: {e}",
+            exc_info=True,
+        )
+        return {
+            "success": False,
+            "error_message": f"Failed to get errors: {str(e)}",
         }
 
 

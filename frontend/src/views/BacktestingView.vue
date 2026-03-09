@@ -374,6 +374,9 @@
               @row-copy="handleOrderCopy"
             />
           </template>
+          <template #errors>
+            <ErrorsPanel :errors="errors" />
+          </template>
         </Tabs>
       </div>
       
@@ -467,6 +470,7 @@ import TradingStats from '../components/TradingStats.vue'
 import Tabs from '../components/Tabs.vue'
 import CodeMirrorEditor from '../components/CodeMirrorEditor.vue'
 import BacktestingTaskList from '../components/BacktestingTaskList.vue'
+import ErrorsPanel from '../components/ErrorsPanel.vue'
 import { strategiesApi } from '../services/strategiesApi'
 import { backtestingApi } from '../services/backtestingApi'
 import { tradingApi } from '../services/tradingApi'
@@ -500,9 +504,14 @@ const tabs = [
   { id: 'deals', label: 'Deals' },
   { id: 'trades', label: 'Trades' },
   { id: 'orders', label: 'Orders' },
+  { id: 'errors', label: 'Errors' },
   { id: 'messages', label: 'Messages' }
 ]
 const activeTab = ref('deals')
+
+// Errors state (managed locally)
+const errors = ref([])
+const lastErrorId = ref(0)
 
 // Unread important messages counter
 const unreadImportantMessagesCount = ref(0)
@@ -959,14 +968,14 @@ const hasMessages = computed(() => {
   return messagesCount.value > 0
 })
 
-// Computed: tabs with unread badge for Messages tab
+// Computed: tabs with badges (errors count and unread messages)
 const tabsWithBadge = computed(() => {
   return tabs.map(tab => {
+    if (tab.id === 'errors' && errors.value.length > 0) {
+      return { ...tab, badge: errors.value.length }
+    }
     if (tab.id === 'messages' && unreadImportantMessagesCount.value > 0) {
-      return {
-        ...tab,
-        badge: unreadImportantMessagesCount.value
-      }
+      return { ...tab, badge: unreadImportantMessagesCount.value }
     }
     return tab
   })
@@ -1063,6 +1072,12 @@ async function loadBacktestingResults(fromTime = null) {
       // Update statistics
       if (response.data.stats) {
         updateStats(response.data.stats)
+      }
+
+      // Append new errors (incremental: backend returns only errors with id > lastErrorId)
+      if (response.data.errors?.length) {
+        errors.value.push(...response.data.errors)
+        lastErrorId.value = response.data.errors[response.data.errors.length - 1].id
       }
       
       // Update relevance time with current_time from progress
@@ -2541,8 +2556,10 @@ async function handleStart(formData) {
   await nextTick()
   clearChartFlag.value = true
   
-  // Clear results before starting new backtest
+  // Clear results and errors before starting new backtest
   clearResults()
+  errors.value = []
+  lastErrorId.value = 0
   
   // Set backtesting state immediately for instant UI feedback
   setBacktestingStarted()

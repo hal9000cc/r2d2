@@ -59,17 +59,38 @@ export const tradingApi = {
   },
 
   /**
-   * Get live trading results (trades, deals, orders, stats).
+   * Get live trading results (trades, deals, orders, stats, errors).
    * @param {number} taskId
    * @param {string} resultId - UUID of the trading run
    * @param {string|null} timeBegin - Optional ISO datetime string to filter from
+   * @param {number} minErrorId - Minimum error id for incremental loading (0 = all)
    * @returns {Promise<{success: boolean, data: Object}>}
    */
-  async getResults(taskId, resultId, timeBegin = null) {
+  async getResults(taskId, resultId, timeBegin = null, minErrorId = 0) {
     const params = {}
     if (timeBegin) params.time_begin = timeBegin
+    if (minErrorId > 0) params.min_error_id = minErrorId
     const response = await axios.get(
       `${API_BASE_URL}/api/v1/trading/tasks/${taskId}/results/${resultId}`,
+      { params }
+    )
+    return response.data
+  },
+
+  /**
+   * Get errors from the error registry for a live trading run.
+   * @param {number} taskId
+   * @param {string} resultId - UUID of the trading run
+   * @param {number} minId - Minimum error id (0 = all)
+   * @param {number|null} dealId - Optional deal id to filter errors by
+   * @returns {Promise<{success: boolean, data: Array}>}
+   */
+  async getErrors(taskId, resultId, minId = 0, dealId = null) {
+    const params = {}
+    if (minId > 0) params.min_id = minId
+    if (dealId !== null) params.deal_id = dealId
+    const response = await axios.get(
+      `${API_BASE_URL}/api/v1/trading/tasks/${taskId}/results/${resultId}/errors`,
       { params }
     )
     return response.data

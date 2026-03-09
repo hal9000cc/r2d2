@@ -354,29 +354,29 @@ async def stop_backtesting(task_id: int):
 async def get_backtesting_results(
     task_id: int,
     result_id: str,
-    time_begin: Optional[str] = Query(None, description="Start time for filtering trades (ISO format)")
+    time_begin: Optional[str] = Query(None, description="Start time for filtering trades (ISO format)"),
+    min_error_id: int = Query(0, description="Minimum error id for incremental error loading"),
 ):
     """
     Get backtesting results for a task.
-    
+
     Args:
         task_id: Task ID
         result_id: Result ID (GUID) for the backtesting run
         time_begin: Optional ISO format datetime string (e.g., "2024-01-01T00:00:00Z")
                    Start time for filtering trades. Default: 1900-01-01 (all trades)
-    
+        min_error_id: Minimum error id to load (0 = all errors, use last known id for incremental)
+
     Returns:
-        Dictionary with success flag, data (trades and deals), or error_message
-        
+        Dictionary with success flag, data (trades, deals, orders, stats, errors), or error_message
+
     Raises:
         HTTPException: If task not found or invalid time_begin format
     """
-    # Load task
     task = task_list.load(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    
-    # Parse time_begin if provided
+
     time_begin_dt64 = None
     if time_begin is not None:
         try:
@@ -386,23 +386,51 @@ async def get_backtesting_results(
                 "success": False,
                 "error_message": f"Invalid time_begin format: {str(e)}"
             }
-    
+
     try:
-        # Create TaskResults instance without broker (read-only mode)
         results = TaskResults(task, broker=None)
-        
-        # Get results
-        data = results.get_results(result_id, time_begin_dt64)
-        
-        return {
-            "success": True,
-            "data": data
-        }
+        data = results.get_results(result_id, time_begin_dt64, min_error_id=min_error_id)
+        return {"success": True, "data": data}
     except Exception as e:
         logger.error(f"Error getting backtesting results for task {task_id}, result_id {result_id}: {str(e)}", exc_info=True)
         return {
             "success": False,
             "error_message": f"Failed to get results: {str(e)}"
+        }
+
+
+@router.get("/tasks/{task_id}/results/{result_id}/errors", response_model=Dict[str, Any])
+async def get_backtesting_errors(
+    task_id: int,
+    result_id: str,
+    min_id: int = Query(0, description="Minimum error id (0 = all errors)"),
+    deal_id: Optional[int] = Query(None, description="Filter by deal id"),
+):
+    """
+    Get errors from the error registry for a backtesting run.
+
+    Args:
+        task_id: Task ID
+        result_id: Result ID (GUID) for the backtesting run
+        min_id: Minimum error id to load (0 = all, use last known id for incremental)
+        deal_id: Optional deal id to filter errors by
+
+    Returns:
+        Dictionary with success flag and data (list of error objects)
+    """
+    task = task_list.load(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    try:
+        results = TaskResults(task, broker=None)
+        errors = results.get_errors(result_id, min_id=min_id, deal_id=deal_id)
+        return {"success": True, "data": errors}
+    except Exception as e:
+        logger.error(f"Error getting backtesting errors for task {task_id}, result_id {result_id}: {str(e)}", exc_info=True)
+        return {
+            "success": False,
+            "error_message": f"Failed to get errors: {str(e)}"
         }
 
 

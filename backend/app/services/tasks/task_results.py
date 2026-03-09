@@ -910,46 +910,51 @@ class TaskResults:
         return None
     
     def get_results(
-        self, 
+        self,
         result_id: str,
-        time_begin: Optional[np.datetime64] = None
+        time_begin: Optional[np.datetime64] = None,
+        min_error_id: int = 0,
     ) -> Dict:
         """
         Get results for the specified time interval.
-        Returns all trades with time >= time_begin, corresponding deals, and orders with modify_time >= time_begin.
-        
+        Returns all trades with time >= time_begin, corresponding deals, orders with
+        modify_time >= time_begin, stats, and errors with id >= min_error_id.
+
         Args:
             result_id: Result ID
             time_begin: Interval start (default: 1900-01-01)
-            
+            min_error_id: Minimum error id to load (0 = all errors)
+
         Returns:
-            Dictionary with "trades", "deals", and "orders" lists
+            Dictionary with "trades", "deals", "orders", "stats" (optional), "errors" lists
         """
         if time_begin is None:
             time_begin = np.datetime64('1900-01-01T00:00:00', 'ns')
-        
+
         try:
             client = self._get_redis_client()
             result_key_prefix = self.task.get_result_key()
-            
+
             time_begin_score = int(time_begin.astype('datetime64[ms]').astype(int))
-            
+
             trades, deal_ids = self._load_trades(client, result_key_prefix, result_id, time_begin_score)
             deals = self._load_deals(client, result_key_prefix, result_id, deal_ids)
             orders = self._load_orders(client, result_key_prefix, result_id, time_begin_score)
             stats = self._load_stats(client, result_key_prefix, result_id)
-            
-            result = {
+            errors = self._load_errors(client, result_key_prefix, result_id, min_id=min_error_id)
+
+            result: Dict[str, Any] = {
                 'trades': trades,
                 'deals': deals,
-                'orders': orders
+                'orders': orders,
+                'errors': errors,
             }
-            
+
             if stats is not None:
                 result['stats'] = stats
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"Failed to get results: {str(e)}")
             raise RuntimeError(f"Failed to get results: {str(e)}") from e
