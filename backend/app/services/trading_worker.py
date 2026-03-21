@@ -114,7 +114,9 @@ def process_trading_task(task: Task) -> None:
     # Set strategy file path to snapshot marker
     strategy.strategy_file = str(STRATEGIES_DIR / "snapshot")
 
-    task.message(f"Live trading task {task.id} starting", level="info")
+    task_display_name = f"{task.name} (id={task.id})" if task.name else f"id={task.id}"
+
+    task.message(f"Live trading task {task_display_name} starting", level="info")
     task.send_message(MessageType.EVENT, {"event": "trading_started", "result_id": TRADING_RESULT_ID})
     logger.info(f"Starting live trading for task {task.id}")
 
@@ -130,7 +132,7 @@ def process_trading_task(task: Task) -> None:
 
     broker.run()
 
-    task.message(f"Live trading task {task.id} completed", level="info")
+    task.message(f"Live trading task {task_display_name} completed", level="info")
     task.send_message(MessageType.EVENT, {"event": "trading_stopped", "result_id": TRADING_RESULT_ID})
     logger.info(f"Live trading task {task.id} completed normally")
 
@@ -167,7 +169,7 @@ def worker_trading_task(task_id: int) -> None:
         if is_strategy:
             logger.error(f"Strategy error in trading task {task_id}: {strategy_msg}", exc_info=True)
             try:
-                task.message(strategy_msg, level="error")
+                task.message(strategy_msg or "Strategy error", level="error")
             except Exception:
                 pass
         else:
