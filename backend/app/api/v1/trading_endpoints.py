@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, cast
 from collections import defaultdict
 from pydantic import BaseModel
 import asyncio
@@ -290,7 +290,7 @@ async def get_all_supervisor_errors():
         )
 
         pattern = f"{SUPERVISOR_ERRORS_KEY_PREFIX}*"
-        keys = r.keys(pattern)
+        keys = cast(List[str], r.keys(pattern))
 
         errors = []
         for key in keys:
@@ -299,7 +299,7 @@ async def get_all_supervisor_errors():
             except (ValueError, IndexError):
                 continue
 
-            raw_list = r.lrange(key, 0, -1)
+            raw_list = cast(List[str], r.lrange(key, 0, -1))
             for raw in raw_list:
                 try:
                     entry = json.loads(raw)
@@ -319,6 +319,39 @@ async def get_all_supervisor_errors():
     except Exception as e:
         logger.error(f"Error reading all supervisor errors: {e}", exc_info=True)
         return {"success": False, "error_message": f"Failed to get supervisor errors: {str(e)}"}
+
+
+@router.delete("/supervisor-errors", response_model=Dict[str, Any])
+async def clear_all_supervisor_errors():
+    """
+    Delete all persisted supervisor errors for all trading tasks.
+
+    Scans all Redis keys matching trading_tasks:supervisor_errors:* and deletes them.
+
+    Returns:
+        Dictionary with success flag and deleted keys count
+    """
+    try:
+        redis_params_dict = trading_task_list.get_redis_params()
+        r = redis.Redis(
+            host=redis_params_dict["host"],
+            port=redis_params_dict["port"],
+            db=redis_params_dict["db"],
+            password=redis_params_dict.get("password"),
+            decode_responses=True,
+            socket_connect_timeout=5,
+        )
+
+        pattern = f"{SUPERVISOR_ERRORS_KEY_PREFIX}*"
+        keys = cast(List[str], r.keys(pattern))
+        deleted_count = r.delete(*keys) if keys else 0
+        r.close()
+
+        logger.info(f"Cleared all supervisor errors: deleted {deleted_count} Redis keys")
+        return {"success": True, "deleted_count": deleted_count}
+    except Exception as e:
+        logger.error(f"Error clearing all supervisor errors: {e}", exc_info=True)
+        return {"success": False, "error_message": f"Failed to clear supervisor errors: {str(e)}"}
 
 
 @router.get("/tasks/{task_id}/supervisor-errors", response_model=Dict[str, Any])
@@ -353,7 +386,7 @@ async def get_supervisor_errors(task_id: int):
             decode_responses=True,
             socket_connect_timeout=5,
         )
-        raw_list = r.lrange(key, 0, -1)
+        raw_list = cast(List[str], r.lrange(key, 0, -1))
         r.close()
 
         errors = []

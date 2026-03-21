@@ -129,8 +129,12 @@ export function useSupervisor() {
     }
   }
 
-  function clearErrors() {
-    supervisorErrors.value = []
+  async function clearErrors() {
+    const response = await tradingApi.clearAllSupervisorErrors()
+    if (response.success) {
+      supervisorErrors.value = []
+    }
+    return response
   }
 
   // ------------------------------------------------------------------

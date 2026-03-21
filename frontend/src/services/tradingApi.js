@@ -120,6 +120,17 @@ export const tradingApi = {
   },
 
   /**
+   * Delete supervisor errors from all trading tasks.
+   * @returns {Promise<{success: boolean, deleted_count: number}>}
+   */
+  async clearAllSupervisorErrors() {
+    const response = await axios.delete(
+      `${API_BASE_URL}/api/v1/trading/supervisor-errors`
+    )
+    return response.data
+  },
+
+  /**
    * Create a WebSocket connection for streaming task messages.
    * @param {number} taskId
    * @returns {WebSocket}

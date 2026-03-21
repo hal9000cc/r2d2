@@ -38,6 +38,19 @@
           @tab-change="handleTabChange"
         >
           <template #header-actions>
+            <div v-if="activeTab === 'supervisor'" class="header-actions">
+              <button 
+                class="header-btn clear-btn" 
+                @click="handleClearSupervisorClick"
+                :disabled="supervisorErrors.length === 0"
+                title="Clear supervisor errors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="icon">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                Clear
+              </button>
+            </div>
             <div v-if="activeTab === 'messages'" class="header-actions">
               <button 
                 class="header-btn clear-btn" 
@@ -154,6 +167,16 @@
         </div>
       </div>
     </div>
+
+    <div v-if="showClearSupervisorDialog" class="confirm-overlay" @click.self="showClearSupervisorDialog = false">
+      <div class="confirm-dialog">
+        <p>Clear all supervisor errors from UI and backend storage?</p>
+        <div class="confirm-actions">
+          <button class="btn btn-cancel" @click="showClearSupervisorDialog = false">Cancel</button>
+          <button class="btn btn-danger" @click="confirmClearSupervisorErrors">Clear</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -220,7 +243,7 @@ const errors = ref([])
 const lastErrorId = ref(0)
 
 // Supervisor composable — global channel, independent of selected task
-const { supervisorErrors } = useSupervisor()
+const { supervisorErrors, clearErrors: clearSupervisorErrors } = useSupervisor()
 
 // Trading WS composable (messages, events, reconnection)
 const {
@@ -294,6 +317,7 @@ watch(lastProgressTime, async (newTime) => {
 // Stop confirmation dialog
 const showStopDialog = ref(false)
 const closeDealsOnStop = ref(false)
+const showClearSupervisorDialog = ref(false)
 
 // Current task data for chart
 const currentSource = ref(null)
@@ -732,6 +756,24 @@ function handleClearMessages() {
   clearAllMessages()
   unreadImportantMessagesCount.value = 0
   lastProcessedMessageIndex.value = -1
+}
+
+function handleClearSupervisorClick() {
+  showClearSupervisorDialog.value = true
+}
+
+async function confirmClearSupervisorErrors() {
+  showClearSupervisorDialog.value = false
+  try {
+    const result = await clearSupervisorErrors()
+    if (!result?.success) {
+      addLocalMessage({ level: 'error', message: result?.error_message || 'Failed to clear supervisor errors' })
+    }
+  } catch (err) {
+    const detail = err.response?.data?.detail || err.message
+    console.error('Failed to clear supervisor errors:', detail)
+    addLocalMessage({ level: 'error', message: `Clear supervisor errors failed: ${detail}` })
+  }
 }
 
 // Auto-select task from query parameter (e.g. after Deploy from Backtesting)
