@@ -225,7 +225,6 @@ class Objects2RedisList(ABC, Generic[T]):
                 if old_key and old_key != new_key:
                     old_index_key = self._get_index_key(old_key)
                     client.delete(old_index_key)
-                    logger.debug(f"Deleted old index for key '{old_key}'")
             
             # Serialize and save object
             obj_dict = obj.model_dump()
@@ -236,9 +235,7 @@ class Objects2RedisList(ABC, Generic[T]):
             if new_key:
                 index_key = self._get_index_key(new_key)
                 client.set(index_key, str(obj.id))
-                logger.debug(f"Created index for key '{new_key}' -> id {obj.id}")
-            
-            logger.debug(f"Saved object with id {obj.id} to key {obj_key}")
+
             return obj
         except ValueError:
             raise
@@ -272,7 +269,6 @@ class Objects2RedisList(ABC, Generic[T]):
             obj_dict = json.loads(obj_json)
             obj = self.object_class().model_validate(obj_dict)
             obj._list = self  # Set reference to list
-            logger.debug(f"Loaded object with id {obj_id} from key {key}")
             return obj
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode object {obj_id}: {str(e)}")
@@ -303,12 +299,10 @@ class Objects2RedisList(ABC, Generic[T]):
             # Get id from reverse index
             obj_id_str = client.get(index_key)
             if not obj_id_str:
-                logger.debug(f"No object found for key '{key}'")
                 return None
             
             # Load object by id
             obj_id = int(obj_id_str)
-            logger.debug(f"Found object id {obj_id} for key '{key}'")
             return self.load(obj_id)
         except Exception as e:
             logger.error(f"Failed to load object by key '{key}': {str(e)}")
@@ -334,7 +328,6 @@ class Objects2RedisList(ABC, Generic[T]):
             # Create new object with unique id
             obj = self.object_class()(id=new_id)
             obj._list = self  # Set reference to list
-            logger.debug(f"Created new object with id {new_id}")
             return obj
         except Exception as e:
             logger.error(f"Failed to create new object: {str(e)}")
@@ -403,11 +396,9 @@ class Objects2RedisList(ABC, Generic[T]):
                 if obj_key:
                     index_key = self._get_index_key(obj_key)
                     client.delete(index_key)
-                    logger.debug(f"Deleted index for key '{obj_key}'")
             
             # Delete the object itself
             client.delete(key)
-            logger.debug(f"Deleted object with id {obj_id}")
         except KeyError:
             raise
         except Exception as e:

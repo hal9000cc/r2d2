@@ -40,6 +40,22 @@ from app.services.tasks.tasks import Task
 logger = get_logger(__name__)
 
 
+def _summarize_exchange_result(result: Any) -> str:
+    """Build a short human-readable summary for exchange responses."""
+    if isinstance(result, dict):
+        parts = []
+        for key in ("id", "clientOrderId", "symbol", "type", "side", "status", "price", "amount", "timestamp"):
+            value = result.get(key)
+            if value not in (None, "", {}, []):
+                parts.append(f"{key}={value}")
+        if not parts:
+            parts.append(f"keys={sorted(result.keys())}")
+        return ", ".join(parts)
+    if isinstance(result, list):
+        return f"items={len(result)}"
+    return str(result)
+
+
 class BrokerLive(Broker):
     """
     Live trading broker implementation.
@@ -90,8 +106,13 @@ class BrokerLive(Broker):
         if exchange_class is None:
             raise RuntimeError(f"Exchange '{source}' is not supported by ccxt")
 
+        logger.info("Exchange client create request: exchange=%s auth=%s", source, True)
         self.exchange = exchange_class(build_ccxt_exchange_config(source, with_auth=True))
+        logger.info("Exchange client create result: exchange=%s client=%s", source, exchange_class.__name__)
+
+        logger.info("Exchange request: method=load_markets exchange=%s", source)
         self.exchange.load_markets()
+        logger.info("Exchange result: method=load_markets exchange=%s markets=%s", source, len(getattr(self.exchange, "markets", {}) or {}))
 
         market = self.exchange.market(self.symbol)
         if market is None:
@@ -249,6 +270,15 @@ class BrokerLive(Broker):
         """
         try:
             ccxt_side = side.value  # "buy" or "sell"
+            logger.info(
+                "Exchange request: method=create_order exchange=%s symbol=%s order_type=%s side=%s amount=%s price=%s",
+                self.source,
+                symbol,
+                order_type.value,
+                ccxt_side,
+                amount,
+                price,
+            )
 
             if order_type == OrderType.MARKET:
                 result = self.exchange.create_order(
@@ -276,6 +306,12 @@ class BrokerLive(Broker):
                 )
                 return {}
 
+            logger.info(
+                "Exchange result: method=create_order exchange=%s %s",
+                self.source,
+                _summarize_exchange_result(result),
+            )
+
             return {
                 "id": str(result.get("id", "")),
                 "symbol": symbol,
@@ -299,7 +335,18 @@ class BrokerLive(Broker):
     def exchange_cancel_order(self, exchange_order_id: str, symbol: str) -> Dict:
         """Cancel an order on the exchange via ccxt."""
         try:
+            logger.info(
+                "Exchange request: method=cancel_order exchange=%s symbol=%s order_id=%s",
+                self.source,
+                symbol,
+                exchange_order_id,
+            )
             result = self.exchange.cancel_order(exchange_order_id, symbol)
+            logger.info(
+                "Exchange result: method=cancel_order exchange=%s %s",
+                self.source,
+                _summarize_exchange_result(result),
+            )
             return {
                 "id": exchange_order_id,
                 "symbol": symbol,
@@ -324,7 +371,19 @@ class BrokerLive(Broker):
         to a plain float as expected by the base Broker.
         """
         try:
+            logger.info(
+                "Exchange request: method=fetch_my_trades exchange=%s symbol=%s since=%s markets_only=%s",
+                self.source,
+                symbol,
+                since,
+                markets_only,
+            )
             raw_trades = self.exchange.fetch_my_trades(symbol, since=since)
+            logger.info(
+                "Exchange result: method=fetch_my_trades exchange=%s items=%s",
+                self.source,
+                len(raw_trades),
+            )
         except Exception as e:
             self.logging(
                 f"exchange_fetch_my_trades failed: {e}",
@@ -745,7 +804,9 @@ class BrokerLive(Broker):
 
         if self.exchange is not None:
             try:
+                logger.info("Exchange request: method=close exchange=%s", self.source)
                 self.exchange.close()
+                logger.info("Exchange result: method=close exchange=%s status=success", self.source)
             except Exception as e:
                 logger.warning("Error closing exchange: %s", e)
             self.exchange = None

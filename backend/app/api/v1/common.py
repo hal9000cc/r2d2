@@ -123,10 +123,14 @@ def _load_source_symbols(source: str) -> List[SymbolInfo]:
     """
     # Create exchange instance
     exchange_class = getattr(ccxt, source)
+    logger.info("Exchange client create request: exchange=%s auth=%s", source, False)
     exchange = exchange_class(build_ccxt_exchange_config(source))
+    logger.info("Exchange client create result: exchange=%s client=%s", source, exchange_class.__name__)
     
     # Load markets to get symbols and fee information
+    logger.info("Exchange request: method=load_markets exchange=%s", source)
     markets = exchange.load_markets()
+    logger.info("Exchange result: method=load_markets exchange=%s markets=%s", source, len(markets))
     
     # Build list of SymbolInfo objects with fee information
     symbol_infos = []
@@ -286,10 +290,20 @@ async def get_symbol_info(source: str, symbol: str = Query(..., description="Tra
         if symbol_info.fee_maker is None or symbol_info.fee_taker is None:
             try:
                 exchange_class = getattr(ccxt, source)
+                logger.info("Exchange client create request: exchange=%s auth=%s", source, True)
                 exchange = exchange_class(build_ccxt_exchange_config(source, with_auth=True))
+                logger.info("Exchange client create result: exchange=%s client=%s", source, exchange_class.__name__)
                 
                 # Fetch user-specific trading fees (requires authentication)
+                logger.info("Exchange request: method=fetch_trading_fee exchange=%s symbol=%s", source, symbol)
                 trading_fee = exchange.fetch_trading_fee(symbol=symbol)
+                logger.info(
+                    "Exchange result: method=fetch_trading_fee exchange=%s symbol=%s maker=%s taker=%s",
+                    source,
+                    symbol,
+                    trading_fee.get('maker') if isinstance(trading_fee, dict) else None,
+                    trading_fee.get('taker') if isinstance(trading_fee, dict) else None,
+                )
                 
                 # Extract fee_maker and fee_taker from trading_fee response
                 # Structure: {'maker': 0.00036, 'taker': 0.001, ...}

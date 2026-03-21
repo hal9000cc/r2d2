@@ -31,6 +31,20 @@ T = TypeVar('T')
 
 logger = logging.getLogger(__name__)
 
+
+def summarize_exchange_result(result: Any) -> str:
+    """Build a short summary for exchange call results."""
+    if isinstance(result, list):
+        count = len(result)
+        if count > 0 and isinstance(result[0], list) and len(result[0]) >= 6:
+            first_ts = result[0][0]
+            last_ts = result[-1][0]
+            return f"items={count}, first_ts={first_ts}, last_ts={last_ts}"
+        return f"items={count}"
+    if isinstance(result, dict):
+        return f"keys={sorted(result.keys())}"
+    return str(result)
+
 # Global variables for service management
 _service_process: Optional[multiprocessing.Process] = None
 _stop_event: Optional[multiprocessing.Event] = None
@@ -496,7 +510,9 @@ class QuotesServer:
         # Step 3: Fill gaps by fetching from exchange
         if gaps:
             exchange_class = getattr(ccxt, source.lower())
+            logger.info("Exchange client create request: exchange=%s auth=%s mode=rest-history", source, False)
             exchange = exchange_class(build_ccxt_exchange_config(source))
+            logger.info("Exchange client create result: exchange=%s client=%s mode=rest-history", source, exchange_class.__name__)
             try:
                 for gap_start, gap_end in gaps:
                     logger.info(
@@ -518,7 +534,9 @@ class QuotesServer:
                     )
             finally:
                 try:
+                    logger.info("Exchange request: method=close exchange=%s mode=rest-history", source)
                     await exchange.close()
+                    logger.info("Exchange result: method=close exchange=%s mode=rest-history status=success", source)
                 except Exception as e:
                     logger.warning(f"Failed to close exchange {source}: {e}", exc_info=True)
 
@@ -763,6 +781,14 @@ class QuotesServer:
             request_limit = min(bars_needed, max_bars)
             
             # Use retry mechanism for fetching bars
+            logger.info(
+                "Exchange request: method=fetch_ohlcv exchange=%s symbol=%s timeframe=%s since=%s limit=%s",
+                exchange_name,
+                symbol,
+                tf_str,
+                current_since,
+                request_limit,
+            )
             bars = await retry_async(
                 exchange.fetch_ohlcv,
                 max_attempts=QUOTES_FETCH_RETRY_ATTEMPTS,
@@ -771,6 +797,13 @@ class QuotesServer:
                 timeframe=tf_str,
                 since=current_since,
                 limit=request_limit
+            )
+            logger.info(
+                "Exchange result: method=fetch_ohlcv exchange=%s symbol=%s timeframe=%s %s",
+                exchange_name,
+                symbol,
+                tf_str,
+                summarize_exchange_result(bars),
             )
             
             if not bars or len(bars) == 0:
@@ -820,7 +853,9 @@ class SubscriptionManager:
                 return
 
             exchange_class = getattr(ccxt_pro, source.lower())
+            logger.info("Exchange client create request: exchange=%s auth=%s mode=ws", source, False)
             exchange = exchange_class(build_ccxt_exchange_config(source))
+            logger.info("Exchange client create result: exchange=%s client=%s mode=ws", source, exchange_class.__name__)
 
             task = asyncio.create_task(
                 self._watch_ohlcv_loop(source, symbol, timeframe_str, exchange)
@@ -845,7 +880,9 @@ class SubscriptionManager:
             if self._subscriptions[key]["ref_count"] <= 0:
                 self._subscriptions[key]["task"].cancel()
                 try:
+                    logger.info("Exchange request: method=close exchange=%s mode=ws", source)
                     await self._subscriptions[key]["exchange"].close()
+                    logger.info("Exchange result: method=close exchange=%s mode=ws status=success", source)
                 except Exception as exc:
                     logger.warning("Failed to close exchange for %s: %s", key, exc)
                 del self._subscriptions[key]
@@ -874,7 +911,9 @@ class SubscriptionManager:
 
                 sub_info["task"].cancel()
                 try:
+                    logger.info("Exchange request: method=close exchange=%s mode=ws", source)
                     await sub_info["exchange"].close()
+                    logger.info("Exchange result: method=close exchange=%s mode=ws status=success", source)
                 except Exception:
                     pass
 
@@ -1004,8 +1043,21 @@ class SubscriptionManager:
 
         while True:
             try:
+                logger.info(
+                    "Exchange request: method=watch_ohlcv exchange=%s symbol=%s timeframe=%s",
+                    source,
+                    symbol,
+                    timeframe_str,
+                )
                 candles = await exchange.watch_ohlcv(symbol, timeframe_str)
                 reconnect_delay = WS_RECONNECT_DELAY  # reset on successful response
+                logger.info(
+                    "Exchange result: method=watch_ohlcv exchange=%s symbol=%s timeframe=%s %s",
+                    source,
+                    symbol,
+                    timeframe_str,
+                    summarize_exchange_result(candles),
+                )
 
                 if not candles:
                     continue
@@ -1041,7 +1093,16 @@ class SubscriptionManager:
 
                 # Replace exchange instance after reconnect (use ccxt.pro for WebSocket)
                 exchange_class = getattr(ccxt_pro, source.lower())
+                logger.info(
+                    "Exchange reconnect: exchange=%s symbol=%s timeframe=%s next_delay=%s",
+                    source,
+                    symbol,
+                    timeframe_str,
+                    reconnect_delay,
+                )
+                logger.info("Exchange client create request: exchange=%s auth=%s mode=ws-reconnect", source, False)
                 exchange = exchange_class(build_ccxt_exchange_config(source))
+                logger.info("Exchange client create result: exchange=%s client=%s mode=ws-reconnect", source, exchange_class.__name__)
                 key = (source, symbol, timeframe_str)
                 async with self._lock:
                     if key in self._subscriptions:
@@ -1078,10 +1139,20 @@ class SubscriptionManager:
         except Exception as pub_exc:
             logger.error("Failed to publish error message: %s", pub_exc)
 
+        logger.warning(
+            "Exchange reconnect wait: exchange=%s symbol=%s timeframe=%s delay=%s error=%s",
+            source,
+            symbol,
+            timeframe_str,
+            reconnect_delay,
+            exc,
+        )
         await asyncio.sleep(reconnect_delay)
 
         try:
+            logger.info("Exchange request: method=close exchange=%s mode=ws-reconnect", source)
             await exchange.close()
+            logger.info("Exchange result: method=close exchange=%s mode=ws-reconnect status=success", source)
         except Exception:
             pass
 
