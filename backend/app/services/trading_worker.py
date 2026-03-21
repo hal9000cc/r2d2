@@ -10,7 +10,7 @@ import importlib.util
 from pathlib import Path
 from typing import Optional
 
-from app.core.config import redis_params, STRATEGIES_DIR
+from app.core.config import redis_params, STRATEGIES_DIR, reload_runtime_config
 from app.core.logger import setup_logging, get_logger
 from app.core.objects2redis import MessageType
 from app.core.constants import TRADE_RESULTS_SAVE_PERIOD
@@ -148,6 +148,8 @@ def worker_trading_task(task_id: int) -> None:
         task_id: ID of the trading task to run
     """
     setup_logging()
+
+    reload_runtime_config(exchange_settings_only=True)
 
     params = redis_params()
     TradingTaskList(redis_params=params)

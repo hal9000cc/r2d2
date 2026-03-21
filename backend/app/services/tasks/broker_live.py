@@ -31,8 +31,7 @@ from app.core.config import (
     BAR_WAIT_INTERVAL,
     ORDER_WAIT_INTERVAL,
     ORDER_PLACEMENT_TIMEOUT,
-    get_api_key,
-    get_api_secret,
+    build_ccxt_exchange_config,
 )
 from app.core.datetime_utils import parse_utc_datetime, datetime64_to_iso
 from app.core.logger import get_logger
@@ -87,20 +86,11 @@ class BrokerLive(Broker):
         """
         source = self.task.source.lower()
 
-        api_key = get_api_key(source)
-        api_secret = get_api_secret(source)
-
         exchange_class = getattr(ccxt, source, None)
         if exchange_class is None:
             raise RuntimeError(f"Exchange '{source}' is not supported by ccxt")
 
-        exchange_config: Dict[str, Any] = {"enableRateLimit": True}
-        if api_key:
-            exchange_config["apiKey"] = api_key
-        if api_secret:
-            exchange_config["secret"] = api_secret
-
-        self.exchange = exchange_class(exchange_config)
+        self.exchange = exchange_class(build_ccxt_exchange_config(source, with_auth=True))
         self.exchange.load_markets()
 
         market = self.exchange.market(self.symbol)

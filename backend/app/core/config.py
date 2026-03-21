@@ -1,6 +1,7 @@
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv, dotenv_values
 
 # Base directory (backend/)
@@ -95,6 +96,153 @@ def _is_sensitive_key(key: str) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class ExchangeScopedField:
+    field_name: str
+    env_prefix: str
+    sensitive: bool = False
+
+
+@dataclass(frozen=True)
+class ExchangeScopedSpec:
+    section_name: str
+    fields: tuple[ExchangeScopedField, ...]
+    skip_empty_fields: bool = True
+
+
+EXCHANGE_API_KEYS_SPEC = ExchangeScopedSpec(
+    section_name="exchange_api_keys",
+    fields=(
+        ExchangeScopedField("api_key", "api_key_", sensitive=True),
+        ExchangeScopedField("api_secret", "api_secret_", sensitive=True),
+    ),
+)
+
+EXCHANGE_API_URLS_SPEC = ExchangeScopedSpec(
+    section_name="exchange_api_urls",
+    fields=(
+        ExchangeScopedField("public_api", "api_public_url_"),
+        ExchangeScopedField("private_api", "api_private_url_"),
+    ),
+)
+
+EXCHANGE_SCOPED_SPECS: tuple[ExchangeScopedSpec, ...] = (
+    EXCHANGE_API_KEYS_SPEC,
+    EXCHANGE_API_URLS_SPEC,
+)
+
+
+def _collect_exchange_sources(raw: Dict[str, str], spec: ExchangeScopedSpec) -> List[str]:
+    sources: set[str] = set()
+    for key in raw:
+        key_lower = key.lower()
+        for field in spec.fields:
+            if key_lower.startswith(field.env_prefix):
+                sources.add(key_lower[len(field.env_prefix):])
+    return sorted(sources)
+
+
+def _read_exchange_scoped_section(raw: Dict[str, str], spec: ExchangeScopedSpec) -> List[Dict[str, str]]:
+    entries: List[Dict[str, str]] = []
+    for source in _collect_exchange_sources(raw, spec):
+        entry: Dict[str, str] = {"source": source}
+        has_value = False
+        for field in spec.fields:
+            env_key = f"{field.env_prefix}{source}"
+            raw_value = raw.get(env_key, "")
+            if raw_value:
+                has_value = True
+            entry[field.field_name] = SETTINGS_MASK if field.sensitive and raw_value else raw_value
+        if has_value:
+            entries.append(entry)
+    return entries
+
+
+def _apply_exchange_scoped_section(
+    new_values: Dict[str, str],
+    raw_old: Dict[str, str],
+    data: dict,
+    spec: ExchangeScopedSpec,
+) -> None:
+    new_sources: set[str] = set()
+    entries = data.get(spec.section_name)
+    if isinstance(entries, list):
+        for entry in entries:
+            source = (entry.get("source") or "").strip().lower()
+            if not source:
+                continue
+
+            field_values: Dict[ExchangeScopedField, str] = {}
+            has_meaningful_value = False
+            for field in spec.fields:
+                env_key = f"{field.env_prefix}{source}"
+                field_value = entry.get(field.field_name, "")
+                if field.sensitive and field_value == SETTINGS_MASK:
+                    field_value = raw_old.get(env_key, "")
+                field_value = "" if field_value is None else str(field_value)
+                if field_value:
+                    has_meaningful_value = True
+                field_values[field] = field_value
+
+            if not has_meaningful_value:
+                continue
+
+            new_sources.add(source)
+            for field, field_value in field_values.items():
+                new_values[f"{field.env_prefix}{source}"] = field_value
+
+    for old_key in raw_old:
+        old_lower = old_key.lower()
+        matched_source: Optional[str] = None
+        for field in spec.fields:
+            if old_lower.startswith(field.env_prefix):
+                matched_source = old_lower[len(field.env_prefix):]
+                break
+        if matched_source is not None and matched_source not in new_sources and old_key not in new_values:
+            new_values[old_key] = ""
+
+
+def get_exchange_api_urls(source: str) -> Dict[str, str]:
+    source = source.lower()
+    public_api = os.getenv(f"api_public_url_{source}", "")
+    private_api = os.getenv(f"api_private_url_{source}", "")
+    result: Dict[str, str] = {}
+    if public_api:
+        result["public"] = public_api
+    if private_api:
+        result["private"] = private_api
+    return result
+
+
+def build_ccxt_exchange_config(
+    source: str,
+    *,
+    with_auth: bool = False,
+    enable_rate_limit: bool = True,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    config: Dict[str, Any] = {}
+    if enable_rate_limit:
+        config["enableRateLimit"] = True
+
+    if with_auth:
+        api_key = get_api_key(source)
+        api_secret = get_api_secret(source)
+        if api_key:
+            config["apiKey"] = api_key
+        if api_secret:
+            config["secret"] = api_secret
+
+    api_urls = get_exchange_api_urls(source)
+    if api_urls:
+        config["urls"] = {"api": api_urls}
+
+    if extra:
+        config.update(extra)
+
+    return config
+
+
 def _read_raw_env() -> Dict[str, str]:
     """
     Read raw (unmasked) values from .env file using dotenv parser.
@@ -103,6 +251,55 @@ def _read_raw_env() -> Dict[str, str]:
     if ENV_FILE.exists():
         return {k: (v or "") for k, v in dotenv_values(ENV_FILE).items()}
     return {}
+
+
+def reload_runtime_config(*, exchange_settings_only: bool = False) -> Dict[str, str]:
+    """
+    Reload configuration values from the .env file into the current process.
+
+    This is intended for long-lived child processes (for example trading workers)
+    that should pick up fresh configuration written by the settings API without
+    requiring a supervisor restart.
+
+    Args:
+        exchange_settings_only: If True, reload only exchange-scoped API keys,
+            secrets and custom API URLs. If False, reload all keys present in
+            the .env file.
+
+    Returns:
+        Raw key/value mapping parsed from the .env file.
+    """
+    raw = _read_raw_env()
+
+    if exchange_settings_only:
+        managed_prefixes = (
+            "api_key_",
+            "api_secret_",
+            "api_public_url_",
+            "api_private_url_",
+        )
+        managed_keys = {
+            key for key in list(os.environ.keys())
+            if key.lower().startswith(managed_prefixes)
+        }
+        reload_keys = {
+            key for key in raw.keys()
+            if key.lower().startswith(managed_prefixes)
+        }
+    else:
+        managed_keys = set(os.environ.keys())
+        reload_keys = set(raw.keys())
+
+    for key in managed_keys - reload_keys:
+        os.environ.pop(key, None)
+
+    for key in reload_keys:
+        os.environ[key] = raw.get(key, "")
+
+    _api_keys_cache.clear()
+    _api_secrets_cache.clear()
+
+    return raw
 
 
 def _write_env_file(values: Dict[str, str]) -> None:
@@ -148,17 +345,28 @@ def _write_env_file(values: Dict[str, str]) -> None:
             written_keys.add(key)
         lines.append("\n")
 
-    # Write API keys (skip entries with empty values — means they were deleted)
-    api_entries = {
+    exchange_api_key_entries = {
         k: v for k, v in values.items()
         if k not in written_keys and v and (
             k.lower().startswith("api_key_") or k.lower().startswith("api_secret_")
         )
     }
-    if api_entries:
+    if exchange_api_key_entries:
         lines.append("# Exchange API Keys\n")
-        for key in sorted(api_entries.keys()):
-            lines.append(f"{key}={api_entries[key]}\n")
+        for key in sorted(exchange_api_key_entries.keys()):
+            lines.append(f"{key}={exchange_api_key_entries[key]}\n")
+        lines.append("\n")
+
+    exchange_api_url_entries = {
+        k: v for k, v in values.items()
+        if k not in written_keys and v and (
+            k.lower().startswith("api_public_url_") or k.lower().startswith("api_private_url_")
+        )
+    }
+    if exchange_api_url_entries:
+        lines.append("# Exchange API URLs\n")
+        for key in sorted(exchange_api_url_entries.keys()):
+            lines.append(f"{key}={exchange_api_url_entries[key]}\n")
         lines.append("\n")
 
     with open(ENV_FILE, "w", encoding="utf-8") as f:
@@ -180,25 +388,6 @@ def read_config() -> dict:
         if _is_sensitive_key(key) and val:
             return SETTINGS_MASK
         return val or ""
-
-    # Detect exchange sources from api_key_* / api_secret_* entries in the file
-    sources: set = set()
-    for key in raw:
-        key_lower = key.lower()
-        if key_lower.startswith("api_key_"):
-            sources.add(key_lower[len("api_key_"):])
-        elif key_lower.startswith("api_secret_"):
-            sources.add(key_lower[len("api_secret_"):])
-
-    exchange_api_keys = []
-    for source in sorted(sources):
-        raw_key = raw.get(f"api_key_{source}", "")
-        raw_secret = raw.get(f"api_secret_{source}", "")
-        exchange_api_keys.append({
-            "source": source,
-            "api_key": SETTINGS_MASK if raw_key else "",
-            "api_secret": SETTINGS_MASK if raw_secret else "",
-        })
 
     return {
         "general": {
@@ -240,7 +429,8 @@ def read_config() -> dict:
             "SUPERVISOR_CRASH_INTERVAL": get_val("SUPERVISOR_CRASH_INTERVAL", "60.0"),
             "SUPERVISOR_FORCE_KILL_TIMEOUT": get_val("SUPERVISOR_FORCE_KILL_TIMEOUT", "300.0"),
         },
-        "exchange_api_keys": exchange_api_keys,
+        "exchange_api_keys": _read_exchange_scoped_section(raw, EXCHANGE_API_KEYS_SPEC),
+        "exchange_api_urls": _read_exchange_scoped_section(raw, EXCHANGE_API_URLS_SPEC),
     }
 
 
@@ -289,36 +479,8 @@ def write_config(data: dict) -> dict:
         if _is_sensitive_key(key) and new_values[key] == SETTINGS_MASK:
             new_values[key] = raw_old.get(key, "")
 
-    # Process exchange API keys list
-    new_api_sources: set = set()
-    if "exchange_api_keys" in data and isinstance(data["exchange_api_keys"], list):
-        for entry in data["exchange_api_keys"]:
-            source = (entry.get("source") or "").strip().lower()
-            if not source:
-                continue
-            new_api_sources.add(source)
-
-            api_key_env = f"api_key_{source}"
-            api_secret_env = f"api_secret_{source}"
-
-            api_key_val = entry.get("api_key", "")
-            api_secret_val = entry.get("api_secret", "")
-
-            new_values[api_key_env] = (
-                raw_old.get(api_key_env, "") if api_key_val == SETTINGS_MASK else api_key_val
-            )
-            new_values[api_secret_env] = (
-                raw_old.get(api_secret_env, "") if api_secret_val == SETTINGS_MASK else api_secret_val
-            )
-
-    # Mark deleted exchanges by setting their keys to empty string
-    for old_key in raw_old:
-        old_lower = old_key.lower()
-        if old_lower.startswith("api_key_") or old_lower.startswith("api_secret_"):
-            prefix = "api_key_" if old_lower.startswith("api_key_") else "api_secret_"
-            source = old_lower[len(prefix):]
-            if source not in new_api_sources and old_key not in new_values:
-                new_values[old_key] = ""  # will be omitted from file by _write_env_file
+    for spec in EXCHANGE_SCOPED_SPECS:
+        _apply_exchange_scoped_section(new_values, raw_old, data, spec)
 
     # Compute changed keys
     changed_keys: List[str] = []
@@ -346,8 +508,11 @@ def write_config(data: dict) -> dict:
     needs_quotes_restart = bool(changed_set & RESTART_QUOTES_SERVICE_KEYS)
     needs_tasks_restart = bool(changed_set & RESTART_TRADING_TASKS_KEYS)
     needs_supervisor_restart = bool(changed_set & RESTART_SUPERVISOR_KEYS)
-    api_keys_changed = any(
-        k.lower().startswith("api_key_") or k.lower().startswith("api_secret_")
+    exchange_connection_settings_changed = any(
+        k.lower().startswith("api_key_")
+        or k.lower().startswith("api_secret_")
+        or k.lower().startswith("api_public_url_")
+        or k.lower().startswith("api_private_url_")
         for k in changed_set
     )
 
@@ -377,7 +542,7 @@ def write_config(data: dict) -> dict:
     elif needs_quotes_restart and needs_full_restart:
         pass  # covered by restart_required
 
-    if needs_tasks_restart or api_keys_changed:
+    if needs_tasks_restart or exchange_connection_settings_changed:
         _api_keys_cache.clear()
         _api_secrets_cache.clear()
         warnings.append("restart_trading_tasks")
@@ -456,6 +621,12 @@ SUPERVISOR_FORCE_KILL_TIMEOUT=300.0
 # api_secret_bybit=your_bybit_api_secret
 # api_key_binance=your_binance_api_key
 # api_secret_binance=your_binance_api_secret
+
+# Exchange API URLs
+# Format: api_public_url_<source> and api_private_url_<source>
+# Example:
+# api_public_url_bybit=https://api.bybit.com
+# api_private_url_bybit=https://api.bybit.com
 """
 
     env_lines = []

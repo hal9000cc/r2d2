@@ -315,6 +315,65 @@
             </div>
           </div>
 
+          <!-- Exchange API URLs -->
+          <div class="settings-section">
+            <div class="section-header">
+              <span class="section-title">Exchange API URLs</span>
+              <button class="btn btn-secondary btn-sm" @click="addApiUrl" type="button">
+                + Add Exchange
+              </button>
+            </div>
+
+            <div v-if="form.exchange_api_urls.length === 0" class="empty-keys">
+              No exchange API URLs configured.
+            </div>
+
+            <div v-else class="api-keys-table api-urls-table">
+              <div class="api-keys-header">
+                <span class="col-source">Exchange</span>
+                <span class="col-key">Public API</span>
+                <span class="col-secret">Private API</span>
+                <span class="col-actions"></span>
+              </div>
+
+              <div
+                v-for="(entry, idx) in form.exchange_api_urls"
+                :key="`api-url-${idx}`"
+                class="api-keys-row"
+              >
+                <div class="col-source">
+                  <SourceInput
+                    v-model="entry.source"
+                    :input-id="`exchange-api-url-source-${idx}`"
+                    :show-label="false"
+                    placeholder="e.g. bybit"
+                  />
+                </div>
+                <div class="col-key">
+                  <input
+                    v-model="entry.public_api"
+                    type="text"
+                    class="form-input"
+                    autocomplete="off"
+                    placeholder="Public API URL"
+                  />
+                </div>
+                <div class="col-secret">
+                  <input
+                    v-model="entry.private_api"
+                    type="text"
+                    class="form-input"
+                    autocomplete="off"
+                    placeholder="Private API URL"
+                  />
+                </div>
+                <div class="col-actions">
+                  <button class="btn-remove" @click="removeApiUrl(idx)" type="button" title="Remove">✕</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
         </template>
 
         <!-- Bottom save button (convenience) -->
@@ -391,6 +450,7 @@ const form = reactive({
     SUPERVISOR_FORCE_KILL_TIMEOUT: '300.0',
   },
   exchange_api_keys: [],
+  exchange_api_urls: [],
 })
 
 // ---------------------------------------------------------------------------
@@ -449,6 +509,14 @@ function removeApiKey(idx) {
   form.exchange_api_keys.splice(idx, 1)
 }
 
+function addApiUrl() {
+  form.exchange_api_urls.push({ source: '', public_api: '', private_api: '' })
+}
+
+function removeApiUrl(idx) {
+  form.exchange_api_urls.splice(idx, 1)
+}
+
 // ---------------------------------------------------------------------------
 // Load / save
 // ---------------------------------------------------------------------------
@@ -474,6 +542,12 @@ function applyData(data) {
     api_secret: e.api_secret || '',
     showKey: false,
     showSecret: false,
+  }))
+
+  form.exchange_api_urls = (data.exchange_api_urls || []).map(e => ({
+    source: e.source || '',
+    public_api: e.public_api || '',
+    private_api: e.private_api || '',
   }))
 }
 
@@ -515,6 +589,13 @@ async function saveSettings() {
         api_key,
         api_secret,
       })),
+      exchange_api_urls: form.exchange_api_urls
+        .map(({ source, public_api, private_api }) => ({
+          source,
+          public_api,
+          private_api,
+        }))
+        .filter(entry => entry.public_api || entry.private_api),
     }
     const result = await settingsApi.saveSettings(payload)
     saveResult.value = result

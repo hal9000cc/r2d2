@@ -32,6 +32,20 @@ class ExchangeApiKey(BaseModel):
         return v
 
 
+class ExchangeApiUrl(BaseModel):
+    source: str
+    public_api: str = ""
+    private_api: str = ""
+
+    @field_validator("source")
+    @classmethod
+    def source_not_empty(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v:
+            raise ValueError("Exchange source name must not be empty")
+        return v
+
+
 class GeneralSettings(BaseModel):
     ENVIRONMENT: str
     DATA_DIR: str
@@ -219,6 +233,7 @@ class ConfigRequest(BaseModel):
     others: OtherSettings
     supervisor: SupervisorSettings
     exchange_api_keys: List[ExchangeApiKey] = []
+    exchange_api_urls: List[ExchangeApiUrl] = []
 
 
 class SaveResponse(BaseModel):

@@ -25,7 +25,7 @@ from .constants import (
     WS_RECONNECT_MAX_DELAY,
 )
 from .serialization import encode_bar_message, build_bar_channel
-from app.core.config import QUOTES_FETCH_RETRY_ATTEMPTS, QUOTES_FETCH_RETRY_DELAY
+from app.core.config import QUOTES_FETCH_RETRY_ATTEMPTS, QUOTES_FETCH_RETRY_DELAY, build_ccxt_exchange_config
 
 T = TypeVar('T')
 
@@ -496,7 +496,7 @@ class QuotesServer:
         # Step 3: Fill gaps by fetching from exchange
         if gaps:
             exchange_class = getattr(ccxt, source.lower())
-            exchange = exchange_class()
+            exchange = exchange_class(build_ccxt_exchange_config(source))
             try:
                 for gap_start, gap_end in gaps:
                     logger.info(
@@ -820,7 +820,7 @@ class SubscriptionManager:
                 return
 
             exchange_class = getattr(ccxt_pro, source.lower())
-            exchange = exchange_class()
+            exchange = exchange_class(build_ccxt_exchange_config(source))
 
             task = asyncio.create_task(
                 self._watch_ohlcv_loop(source, symbol, timeframe_str, exchange)
@@ -1041,7 +1041,7 @@ class SubscriptionManager:
 
                 # Replace exchange instance after reconnect (use ccxt.pro for WebSocket)
                 exchange_class = getattr(ccxt_pro, source.lower())
-                exchange = exchange_class()
+                exchange = exchange_class(build_ccxt_exchange_config(source))
                 key = (source, symbol, timeframe_str)
                 async with self._lock:
                     if key in self._subscriptions:

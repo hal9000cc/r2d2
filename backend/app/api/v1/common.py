@@ -8,7 +8,7 @@ from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.exceptions import R2D2QuotesExceptionDataNotReceived
 from app.core.datetime_utils import parse_utc_datetime, datetime64_to_iso
-from app.core.config import SYMBOLS_CACHE_TTL_SECONDS, get_api_key, get_api_secret
+from app.core.config import SYMBOLS_CACHE_TTL_SECONDS, build_ccxt_exchange_config
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -123,9 +123,7 @@ def _load_source_symbols(source: str) -> List[SymbolInfo]:
     """
     # Create exchange instance
     exchange_class = getattr(ccxt, source)
-    exchange = exchange_class({
-        'enableRateLimit': True,
-    })
+    exchange = exchange_class(build_ccxt_exchange_config(source))
     
     # Load markets to get symbols and fee information
     markets = exchange.load_markets()
@@ -287,21 +285,8 @@ async def get_symbol_info(source: str, symbol: str = Query(..., description="Tra
         # Check if user-specific fees need to be fetched (requires authentication)
         if symbol_info.fee_maker is None or symbol_info.fee_taker is None:
             try:
-                # Get API credentials from config
-                api_key = get_api_key(source)
-                api_secret = get_api_secret(source)
-                
-                # Create exchange instance with API credentials if available
                 exchange_class = getattr(ccxt, source)
-                exchange_config = {
-                    'enableRateLimit': True,
-                }
-                if api_key:
-                    exchange_config['apiKey'] = api_key
-                if api_secret:
-                    exchange_config['secret'] = api_secret
-                
-                exchange = exchange_class(exchange_config)
+                exchange = exchange_class(build_ccxt_exchange_config(source, with_auth=True))
                 
                 # Fetch user-specific trading fees (requires authentication)
                 trading_fee = exchange.fetch_trading_fee(symbol=symbol)
