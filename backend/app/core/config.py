@@ -520,25 +520,7 @@ def write_config(data: dict) -> dict:
         warnings.append("restart_required")
 
     if needs_quotes_restart and not needs_full_restart:
-        try:
-            from app.services.quotes.server import stop_quotes_service, start_quotes_service
-            stop_quotes_service(timeout=5.0)
-            ch_params = {
-                "host": new_values.get("CLICKHOUSE_HOST", CLICKHOUSE_HOST),
-                "port": int(new_values.get("CLICKHOUSE_PORT", str(CLICKHOUSE_PORT))),
-                "username": new_values.get("CLICKHOUSE_USERNAME", CLICKHOUSE_USERNAME),
-                "password": new_values.get("CLICKHOUSE_PASSWORD", CLICKHOUSE_PASSWORD),
-                "database": new_values.get("CLICKHOUSE_DATABASE", CLICKHOUSE_DATABASE),
-            }
-            start_quotes_service(
-                redis_params=redis_params(),
-                clickhouse_params=ch_params,
-                request_list=new_values.get("REDIS_QUOTE_REQUEST_LIST", REDIS_QUOTE_REQUEST_LIST),
-                response_prefix=new_values.get("REDIS_QUOTE_RESPONSE_PREFIX", REDIS_QUOTE_RESPONSE_PREFIX),
-            )
-            actions_taken.append("quotes_service_restarted")
-        except Exception as exc:
-            warnings.append(f"quotes_service_restart_failed:{exc}")
+        warnings.append("restart_supervisor")
     elif needs_quotes_restart and needs_full_restart:
         pass  # covered by restart_required
 

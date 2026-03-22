@@ -166,6 +166,17 @@ def _terminate_stale_quotes_service(redis_params: Dict, timeout: float = 5.0) ->
             os.kill(stored_pid, signal.SIGKILL)
         except Exception as exc:
             logger.warning("Failed to send SIGKILL to orphan QuotesServer PID=%s: %s", stored_pid, exc)
+        else:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if not _is_pid_alive(stored_pid):
+                    break
+                time.sleep(0.1)
+
+    if _is_pid_alive(stored_pid):
+        logger.error("Orphan QuotesServer PID=%s is still alive after SIGKILL", stored_pid)
+    else:
+        logger.info("Orphan QuotesServer PID=%s stopped", stored_pid)
 
     _clear_stored_service_pid(redis_params, expected_pid=stored_pid)
 
@@ -1733,6 +1744,13 @@ def start_quotes_service(
             # Don't return False here - service might still start, just log warning
     
     return True
+
+
+def is_quotes_service_running() -> bool:
+    """Return True when the tracked QuotesServer process is alive."""
+    global _service_process
+
+    return _service_process is not None and _service_process.is_alive()
 
 
 def stop_quotes_service(timeout: float = 5.0) -> bool:

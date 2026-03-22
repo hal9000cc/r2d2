@@ -33,6 +33,7 @@ import redis
 
 from app.core.config import (
     redis_params,
+    clickhouse_params,
     SUPERVISOR_POLL_INTERVAL,
     SUPERVISOR_MAX_RESTARTS,
     SUPERVISOR_CRASH_INTERVAL,
@@ -46,6 +47,11 @@ from app.core.config import (
 from app.core.logger import setup_logging, get_logger
 from app.services.tasks.tasks import TradingTaskList
 from app.services.trading_worker import worker_trading_task
+from app.services.quotes.server import (
+    start_quotes_service,
+    stop_quotes_service,
+    is_quotes_service_running,
+)
 from app.services.quotes.constants import SUB_ACTION_UNSUBSCRIBE
 
 logger = get_logger(__name__)
@@ -313,6 +319,42 @@ class Supervisor:
         self._api_process = None
 
     # ------------------------------------------------------------------
+    # Quotes service process
+    # ------------------------------------------------------------------
+
+    def _start_quotes_service(self) -> None:
+        """Start QuotesServer under supervisor control."""
+        started = start_quotes_service(
+            redis_params=redis_params(),
+            clickhouse_params=clickhouse_params(),
+            request_list=REDIS_QUOTE_REQUEST_LIST,
+        )
+        if started:
+            logger.info("Quotes service started under supervisor control")
+        else:
+            logger.warning("Quotes service was already running or failed to start")
+
+    def _ensure_quotes_alive(self) -> None:
+        """Ensure QuotesServer is running, restarting it if needed."""
+        if is_quotes_service_running():
+            return
+
+        started = start_quotes_service(
+            redis_params=redis_params(),
+            clickhouse_params=clickhouse_params(),
+            request_list=REDIS_QUOTE_REQUEST_LIST,
+        )
+        if started:
+            logger.warning("Quotes service was not running, restarted by supervisor")
+
+    def _stop_quotes_service(self) -> None:
+        """Stop QuotesServer under supervisor control."""
+        if stop_quotes_service(timeout=10.0):
+            logger.info("Quotes service stopped by supervisor")
+        else:
+            logger.warning("Quotes service was not running or failed to stop cleanly")
+
+    # ------------------------------------------------------------------
     # Trading process management
     # ------------------------------------------------------------------
 
@@ -526,6 +568,9 @@ class Supervisor:
         # Stop uvicorn
         self._stop_api()
 
+        # Stop quotes service
+        self._stop_quotes_service()
+
         self._release_lock()
         logger.info("Supervisor shutdown complete")
 
@@ -555,6 +600,9 @@ class Supervisor:
         # Restore previously tracked processes (from before a supervisor restart)
         self._restore_tracked_processes()
 
+        # Start quotes service under supervisor control
+        self._start_quotes_service()
+
         # Start uvicorn
         self._start_api()
 
@@ -568,6 +616,7 @@ class Supervisor:
         try:
             while self._running:
                 self._renew_lock()
+                self._ensure_quotes_alive()
                 self._ensure_api_alive()
                 self._poll()
                 time.sleep(SUPERVISOR_POLL_INTERVAL)

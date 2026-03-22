@@ -7,11 +7,8 @@ from app.core.logger import setup_logging, get_logger
 from app.services.tasks.tasks import TaskList, BacktestingTaskList, TradingTaskList
 from app.core.config import (
     REDIS_QUOTE_REQUEST_LIST, REDIS_QUOTE_RESPONSE_PREFIX,
-    CLICKHOUSE_HOST, CLICKHOUSE_PORT, CLICKHOUSE_USERNAME,
-    CLICKHOUSE_PASSWORD, CLICKHOUSE_DATABASE,
     redis_params
 )
-from app.services.quotes.server import start_quotes_service, stop_quotes_service
 from app.services.quotes.client import QuotesClient
 
 logger = get_logger(__name__)
@@ -43,28 +40,6 @@ def check_redis_connection():
     except Exception as e:
         logger.error(f"Error checking Redis connection: {e}")
         raise RuntimeError(f"Failed to verify Redis connection: {e}")
-
-
-def startup_quote_service():
-    """
-    Start quotes service with configuration from environment.
-    """
-    clickhouse_params = {
-        'host': CLICKHOUSE_HOST,
-        'port': CLICKHOUSE_PORT,
-        'username': CLICKHOUSE_USERNAME,
-        'password': CLICKHOUSE_PASSWORD,
-        'database': CLICKHOUSE_DATABASE
-    }
-    if start_quotes_service(
-        redis_params=redis_params(),
-        clickhouse_params=clickhouse_params,
-        request_list=REDIS_QUOTE_REQUEST_LIST,
-        response_prefix=REDIS_QUOTE_RESPONSE_PREFIX
-    ):
-        logger.info("Quotes service started successfully")
-    else:
-        logger.warning("Quotes service failed to start or was already running")
 
 
 def startup():
@@ -100,9 +75,6 @@ def startup():
         response_prefix=REDIS_QUOTE_RESPONSE_PREFIX
     )
     logger.info("Quotes client initialized")
-    
-    # Start quotes service
-    startup_quote_service()
 
 
 def shutdown():
@@ -112,12 +84,6 @@ def shutdown():
     Uses shorter timeout for quotes service to allow faster reload.
     """
     logger.info("Shutting down R2D2 backend application")
-    
-    # Stop quotes service with shorter timeout for faster shutdown
-    if stop_quotes_service(timeout=2.0):
-        logger.info("Quotes service stopped successfully")
-    else:
-        logger.warning("Quotes service was not running or failed to stop")
     
     # Shutdown TaskList
     task_list = TaskList()

@@ -2112,8 +2112,8 @@ class Broker(ABC):
             self.order_processing()
 
             if status == BarStatus.WAITING:
-                if self.bar_wait_interval > 0:
-                    time.sleep(self.bar_wait_interval)
+                # if self.bar_wait_interval > 0:
+                #     time.sleep(self.bar_wait_interval)
                 continue
             
             # status == BarStatus.RECEIVED
