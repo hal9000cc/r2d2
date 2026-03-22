@@ -14,6 +14,7 @@ import clickhouse_connect
 import ccxt.async_support as ccxt
 import ccxt.pro as ccxt_pro  # WebSocket support (watch_ohlcv)
 import asyncio
+import traceback
 from .timeframe import Timeframe
 from .exceptions import R2D2QuotesException, R2D2QuotesExceptionDataNotReceived
 from .constants import (
@@ -41,6 +42,20 @@ from app.core.config import (
 T = TypeVar('T')
 
 logger = logging.getLogger(__name__)
+
+SERVER_CODE_MARKER = "quotes-server-2026-03-22-subscription-diagnostics-v2"
+
+
+def _create_subscription_manager(server: 'QuotesServer') -> 'SubscriptionManager':
+    """Create SubscriptionManager with explicit diagnostics if module state is invalid."""
+    manager_cls = globals().get("SubscriptionManager")
+    if manager_cls is None:
+        available = sorted(name for name in globals().keys() if not name.startswith("__"))
+        raise RuntimeError(
+            "SubscriptionManager is not available in app.services.quotes.server globals. "
+            f"Available names: {available}"
+        )
+    return manager_cls(server)
 
 
 def summarize_exchange_result(result: Any) -> str:
@@ -1309,7 +1324,15 @@ async def process_request_async(
     """
     async def _send_response(status: str, **extra) -> None:
         """Helper to push a msgpack response and set TTL."""
-        resp = {"metadata": {"request_id": request_id, "status": status, **extra}}
+        resp = {
+            "metadata": {
+                "request_id": request_id,
+                "status": status,
+                "server_pid": os.getpid(),
+                "server_code_marker": SERVER_CODE_MARKER,
+                **extra,
+            }
+        }
         resp_bytes = msgpack.packb(resp, use_bin_type=True)
         key = f"{response_prefix}:{request_id}"
         await server.redis_client.lpush(key, resp_bytes)
@@ -1320,11 +1343,34 @@ async def process_request_async(
         source = request_data.get('source')
         symbol = request_data.get('symbol')
         timeframe_str = request_data.get('timeframe')
+        logger.info(
+            "Processing request: id=%s action=%s target=%s:%s:%s pid=%s marker=%s",
+            request_id,
+            action,
+            source,
+            symbol,
+            timeframe_str,
+            os.getpid(),
+            SERVER_CODE_MARKER,
+        )
 
         # --- subscribe ---
         if action == SUB_ACTION_SUBSCRIBE:
             if server.subscription_manager is None:
-                server.subscription_manager = SubscriptionManager(server)
+                logger.info(
+                    "Initializing SubscriptionManager for %s:%s:%s",
+                    source,
+                    symbol,
+                    timeframe_str,
+                )
+                server.subscription_manager = _create_subscription_manager(server)
+            else:
+                logger.info(
+                    "Reusing SubscriptionManager: type=%s id=%s active_subscriptions=%s",
+                    type(server.subscription_manager).__name__,
+                    id(server.subscription_manager),
+                    len(getattr(server.subscription_manager, "_subscriptions", {})),
+                )
             await server.subscription_manager.subscribe(source, symbol, timeframe_str)
             await _send_response("success", action="subscribed")
             logger.info("Subscribed %s:%s:%s (request %s)", source, symbol, timeframe_str, request_id)
@@ -1409,12 +1455,17 @@ async def process_request_async(
         logger.warning(f"Request {request_id} failed: {e}")
         
     except Exception as e:
+        tb = traceback.format_exc()
         # Send error response
         response_data = {
             'metadata': {
                 'request_id': request_id if request_id else 'unknown',
                 'status': 'error',
-                'error': str(e)
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'server_pid': os.getpid(),
+                'server_code_marker': SERVER_CODE_MARKER,
+                'traceback': tb,
             }
         }
         if request_id:
@@ -1423,7 +1474,15 @@ async def process_request_async(
             await server.redis_client.lpush(individual_response_list, response_bytes)
             # Set TTL for response list
             await server.redis_client.expire(individual_response_list, response_ttl)
-        logger.error(f"Error processing request {request_id}: {e}", exc_info=True)
+        logger.error(
+            "Error processing request %s: type=%s pid=%s marker=%s error=%s\n%s",
+            request_id,
+            type(e).__name__,
+            os.getpid(),
+            SERVER_CODE_MARKER,
+            e,
+            tb,
+        )
 
 
 async def run_quotes_service(
@@ -1480,6 +1539,13 @@ async def run_quotes_service(
         raise ValueError("clickhouse_params must be provided and cannot be empty")
     
     server = QuotesServer(redis_params=redis_params, clickhouse_params=clickhouse_params)
+    logger.info(
+        "Quotes service booted: pid=%s marker=%s request_list=%s response_prefix=%s",
+        os.getpid(),
+        SERVER_CODE_MARKER,
+        request_list,
+        response_prefix,
+    )
     
     # Clean Redis database from old test data
     patterns = [

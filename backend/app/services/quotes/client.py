@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional, Dict, List
 import time as _time
+import json
 import redis
 import numpy as np
 import msgpack
@@ -22,6 +23,8 @@ from app.core.logger import get_logger
 logger = get_logger(__name__)
 
 DEFAULT_HISTORY_SIZE = 1000
+SUBSCRIBE_RETRY_ATTEMPTS = 3
+SUBSCRIBE_RETRY_DELAY = 0.5
 
 
 class QuotesClient:
@@ -193,6 +196,14 @@ class QuotesClient:
             self.request_list,
             msgpack.packb(request, use_bin_type=True),
         )
+        logger.debug(
+            "Action request sent: action=%s request_id=%s target=%s:%s:%s",
+            action,
+            request_id,
+            source,
+            symbol,
+            timeframe,
+        )
 
         response_list = f"{self.response_prefix}:{request_id}"
         result = self.redis_client.brpop(response_list, timeout=confirm_timeout)
@@ -206,11 +217,38 @@ class QuotesClient:
         _, response_bytes = result
         response_data = msgpack.unpackb(response_bytes, raw=False)
         metadata = response_data.get("metadata", {})
+        logger.debug(
+            "Action response received: action=%s request_id=%s metadata=%s",
+            action,
+            request_id,
+            metadata,
+        )
 
         if metadata.get("status") != "success":
+            details = {
+                key: metadata.get(key)
+                for key in (
+                    "error",
+                    "error_type",
+                    "server_pid",
+                    "server_code_marker",
+                    "traceback",
+                )
+                if metadata.get(key) is not None
+            }
             raise R2D2QuotesException(
                 f"{action} failed: {metadata.get('error', 'Unknown error')}"
+                + (
+                    f" | diagnostics={json.dumps(details, ensure_ascii=False)}"
+                    if details else ""
+                )
             )
+
+    @staticmethod
+    def _is_retryable_subscribe_error(exc: Exception) -> bool:
+        """Return True for transient subscribe failures worth retrying once more."""
+        message = str(exc)
+        return "cannot import name 'SubscriptionManager'" in message
 
     def subscribe(self, source: str, symbol: str, timeframe: Timeframe) -> None:
         """
@@ -231,7 +269,29 @@ class QuotesClient:
         timeframe_str = str(timeframe)
         channel = build_bar_channel(source, symbol, timeframe_str)
 
-        self._send_action_request(SUB_ACTION_SUBSCRIBE, source, symbol, timeframe)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, SUBSCRIBE_RETRY_ATTEMPTS + 1):
+            try:
+                self._send_action_request(SUB_ACTION_SUBSCRIBE, source, symbol, timeframe)
+                break
+            except R2D2QuotesException as exc:
+                last_error = exc
+                if attempt >= SUBSCRIBE_RETRY_ATTEMPTS or not self._is_retryable_subscribe_error(exc):
+                    raise
+                logger.warning(
+                    "Transient subscribe failure for %s:%s:%s on attempt %s/%s: %s. Retrying in %.1fs",
+                    source,
+                    symbol,
+                    timeframe,
+                    attempt,
+                    SUBSCRIBE_RETRY_ATTEMPTS,
+                    exc,
+                    SUBSCRIBE_RETRY_DELAY,
+                )
+                _time.sleep(SUBSCRIBE_RETRY_DELAY)
+        else:
+            if last_error is not None:
+                raise last_error
 
         if self._pubsub is None:
             self._pubsub = self.redis_client.pubsub()
@@ -365,10 +425,19 @@ class QuotesClient:
                 f"Not subscribed to {channel}. Call subscribe() first."
             )
 
-        start = _time.monotonic()
+        deadline = None
+        if timeout > 0:
+            deadline = _time.monotonic() + timeout
 
         while True:
-            decoded = self._poll_subscription_message(timeout=1.0)
+            poll_timeout = 1.0
+            if deadline is not None:
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    return None
+                poll_timeout = min(poll_timeout, remaining)
+
+            decoded = self._poll_subscription_message(timeout=poll_timeout)
 
             if decoded is not None and decoded["channel"] == channel:
                 if decoded["type"] == SUB_MSG_MARKET_SNAPSHOT:
@@ -387,8 +456,4 @@ class QuotesClient:
                     raise RuntimeError(
                         f"QuotesServer shut down while waiting on {channel}"
                     )
-
-            # Check timeout
-            if timeout > 0 and (_time.monotonic() - start) >= timeout:
-                return None
 

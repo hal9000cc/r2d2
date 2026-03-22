@@ -843,9 +843,16 @@ class BrokerLive(Broker):
 
         if self.exchange is not None:
             try:
-                logger.info("Exchange request: method=close exchange=%s", self.source)
-                self.exchange.close()
-                logger.info("Exchange result: method=close exchange=%s status=success", self.source)
+                close_method = getattr(self.exchange, "close", None)
+                if callable(close_method):
+                    logger.info("Exchange request: method=close exchange=%s", self.source)
+                    close_method()
+                    logger.info("Exchange result: method=close exchange=%s status=success", self.source)
+                else:
+                    logger.debug(
+                        "Exchange %s does not expose close(); skipping sync client cleanup",
+                        self.source,
+                    )
             except Exception as e:
                 logger.warning("Error closing exchange: %s", e)
             self.exchange = None
