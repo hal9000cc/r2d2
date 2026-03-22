@@ -557,7 +557,7 @@ class ta_proxy(ABC):
         
         if is_custom:
             slice_size = self.quotes_provider.get_slice_size(
-                quotes_for_calc, actual_tf, self.broker.current_time
+                quotes_for_calc, actual_tf, self.broker.bar_time
             )
             sliced_result = full_result[:slice_size]
         else:
@@ -1032,7 +1032,7 @@ class QuotesProxy:
         
         quotes = self.quotes_provider.get_quotes(actual_symbol, actual_tf)
         slice_size = self.quotes_provider.get_slice_size(
-            quotes, actual_tf, self.broker.current_time
+            quotes, actual_tf, self.broker.bar_time
         )
         return quotes[:slice_size]
 

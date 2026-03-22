@@ -11,7 +11,8 @@ import msgpack
 from .constants import (
     TIME_TYPE,
     PUBSUB_BAR_CHANNEL_PREFIX,
-    SUB_MSG_BAR,
+    SUB_MSG_COMPLETED_BAR,
+    SUB_MSG_MARKET_SNAPSHOT,
     SUB_MSG_ERROR,
     SUB_MSG_SHUTDOWN,
 )
@@ -41,8 +42,9 @@ def encode_bar_message(
     Encode a subscription message to MessagePack bytes.
 
     Args:
-        msg_type: One of SUB_MSG_BAR, SUB_MSG_ERROR, SUB_MSG_SHUTDOWN.
-        bar_data: For SUB_MSG_BAR — dict with numpy arrays (1 element each):
+        msg_type: One of SUB_MSG_COMPLETED_BAR, SUB_MSG_MARKET_SNAPSHOT,
+                  SUB_MSG_ERROR, SUB_MSG_SHUTDOWN.
+        bar_data: For bar/snapshot messages — dict with numpy arrays (1 element each):
                   {time, open, high, low, close, volume}.
         error: For SUB_MSG_ERROR — human-readable error description.
 
@@ -51,7 +53,7 @@ def encode_bar_message(
     """
     message: dict = {"type": msg_type}
 
-    if msg_type == SUB_MSG_BAR and bar_data is not None:
+    if msg_type in (SUB_MSG_COMPLETED_BAR, SUB_MSG_MARKET_SNAPSHOT) and bar_data is not None:
         message["binary_data"] = {
             "time": bar_data["time"].tobytes(),
             "open": bar_data["open"].tobytes(),
@@ -73,7 +75,8 @@ def decode_bar_message(data: bytes) -> dict:
 
     Returns:
         dict with key 'type' (str) and type-specific fields:
-        - SUB_MSG_BAR:      'bar_data' -> dict with 1-element numpy arrays
+        - SUB_MSG_COMPLETED_BAR / SUB_MSG_MARKET_SNAPSHOT:
+                             'bar_data' -> dict with 1-element numpy arrays
                              {time, open, high, low, close, volume}
         - SUB_MSG_ERROR:    'error' -> str
         - SUB_MSG_SHUTDOWN: no extra fields
@@ -81,7 +84,7 @@ def decode_bar_message(data: bytes) -> dict:
     message = msgpack.unpackb(data, raw=False)
     result: dict = {"type": message["type"]}
 
-    if message["type"] == SUB_MSG_BAR:
+    if message["type"] in (SUB_MSG_COMPLETED_BAR, SUB_MSG_MARKET_SNAPSHOT):
         bd = message["binary_data"]
         result["bar_data"] = {
             "time": np.frombuffer(bd["time"], dtype=TIME_TYPE).copy(),

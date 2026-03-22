@@ -80,6 +80,16 @@ class BrokerBacktesting(Broker):
         # Current bar prices for stop order processing
         self.bar_high: Optional[PRICE_TYPE] = None
         self.bar_low: Optional[PRICE_TYPE] = None
+
+    @property
+    def current_time(self) -> np.datetime64:
+        assert self.bar_time is not None, "Current bar time is not available"
+        return self.bar_time
+
+    @property
+    def current_price(self) -> PRICE_TYPE:
+        assert self.bar_close_price is not None, "Current bar close price is not available"
+        return self.bar_close_price
         
     def progress(self) -> float:
         """
@@ -261,7 +271,10 @@ class BrokerBacktesting(Broker):
         """
         # In backtesting, we process orders on demand and return newly executed trades
         # The 'since' parameter is ignored as we always return trades from the current processing step
-        return self._backtesting_process_orders(self.price, self.current_time, markets_only=markets_only)
+        if self.bar_close_price is None or self.bar_time is None:
+            return []
+
+        return self._backtesting_process_orders(self.current_price, self.current_time, markets_only=markets_only)
 
     def _process_market_orders(self, current_price: float, current_time: np.datetime64) -> List[Dict]:
         """Process market orders execution."""

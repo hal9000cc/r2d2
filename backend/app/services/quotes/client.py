@@ -9,7 +9,8 @@ from .timeframe import Timeframe
 from .exceptions import R2D2QuotesException, R2D2QuotesExceptionDataNotReceived
 from .constants import (
     TIME_TYPE,
-    SUB_MSG_BAR,
+    SUB_MSG_COMPLETED_BAR,
+    SUB_MSG_MARKET_SNAPSHOT,
     SUB_MSG_ERROR,
     SUB_MSG_SHUTDOWN,
     SUB_ACTION_SUBSCRIBE,
@@ -62,6 +63,8 @@ class QuotesClient:
             # Pub/Sub state for real-time subscriptions
             self._pubsub = None  # Created lazily on first subscribe()
             self._subscribed_channels: Dict[str, bool] = {}  # channel -> active
+            self._latest_market_snapshots: Dict[str, Dict] = {}
+            self._pending_messages: List[Dict] = []
 
             QuotesClient._initialized = True
             logger.debug(f"Quotes client initialized with Redis connection parameters: host {self.redis_host}, port {self.redis_port}, db {self.redis_db}")
@@ -270,7 +273,59 @@ class QuotesClient:
         except Exception as exc:
             logger.warning("Unsubscribe confirmation failed (non-critical): %s", exc)
 
-    def wait_next_bar(
+    def _poll_subscription_message(self, timeout: float = 1.0) -> Optional[Dict]:
+        """Poll a single pub/sub message and decode it."""
+        if self._pending_messages:
+            return self._pending_messages.pop(0)
+
+        if self._pubsub is None:
+            return None
+
+        message = self._pubsub.get_message(
+            ignore_subscribe_messages=True,
+            timeout=timeout,
+        )
+        if message is None or message["type"] != "message":
+            return None
+
+        raw_channel = message["channel"]
+        msg_channel = raw_channel.decode("utf-8") if isinstance(raw_channel, bytes) else raw_channel
+        decoded = decode_bar_message(message["data"])
+        decoded["channel"] = msg_channel
+        return decoded
+
+    def _drain_subscription_messages(self, max_messages: int = 100) -> None:
+        """Drain available pub/sub messages and update latest market snapshots."""
+        for _ in range(max_messages):
+            decoded = self._poll_subscription_message(timeout=0.0)
+            if decoded is None:
+                return
+
+            if decoded["type"] == SUB_MSG_MARKET_SNAPSHOT:
+                self._latest_market_snapshots[decoded["channel"]] = decoded["bar_data"]
+                continue
+
+            # Keep non-snapshot messages for the blocking consumer.
+            self._pending_messages.insert(0, decoded)
+            return
+
+    def get_latest_market_snapshot(
+        self,
+        source: str,
+        symbol: str,
+        timeframe: Timeframe,
+    ) -> Optional[Dict]:
+        """Return the most recent forming-bar snapshot seen for this subscription."""
+        timeframe_str = str(timeframe)
+        channel = build_bar_channel(source, symbol, timeframe_str)
+
+        if self._pubsub is None or channel not in self._subscribed_channels:
+            raise RuntimeError(f"Not subscribed to {channel}. Call subscribe() first.")
+
+        self._drain_subscription_messages()
+        return self._latest_market_snapshots.get(channel)
+
+    def wait_next_completed_bar(
         self,
         source: str,
         symbol: str,
@@ -282,7 +337,8 @@ class QuotesClient:
 
         subscribe() must be called first.
 
-        Polls the Redis Pub/Sub channel. On error messages the exception is
+        Polls the Redis Pub/Sub channel. Market snapshot messages update the
+        internal cache and are skipped. On error messages the exception is
         propagated to let the caller decide whether to reconnect. On a shutdown
         message a RuntimeError is raised.
 
@@ -312,35 +368,27 @@ class QuotesClient:
         start = _time.monotonic()
 
         while True:
-            # get_message with internal_timeout polls for up to 1 s per call
-            message = self._pubsub.get_message(
-                ignore_subscribe_messages=True,
-                timeout=1.0,
-            )
+            decoded = self._poll_subscription_message(timeout=1.0)
 
-            if message is not None and message["type"] == "message":
-                raw_channel = message["channel"]
-                msg_channel = (
-                    raw_channel.decode("utf-8")
-                    if isinstance(raw_channel, bytes)
-                    else raw_channel
-                )
-                if msg_channel == channel:
-                    decoded = decode_bar_message(message["data"])
+            if decoded is not None and decoded["channel"] == channel:
+                if decoded["type"] == SUB_MSG_MARKET_SNAPSHOT:
+                    self._latest_market_snapshots[channel] = decoded["bar_data"]
+                    continue
 
-                    if decoded["type"] == SUB_MSG_BAR:
-                        return decoded["bar_data"]
+                if decoded["type"] == SUB_MSG_COMPLETED_BAR:
+                    return decoded["bar_data"]
 
-                    if decoded["type"] == SUB_MSG_ERROR:
-                        raise R2D2QuotesException(
-                            f"Subscription error on {channel}: {decoded['error']}"
-                        )
+                if decoded["type"] == SUB_MSG_ERROR:
+                    raise R2D2QuotesException(
+                        f"Subscription error on {channel}: {decoded['error']}"
+                    )
 
-                    if decoded["type"] == SUB_MSG_SHUTDOWN:
-                        raise RuntimeError(
-                            f"QuotesServer shut down while waiting on {channel}"
-                        )
+                if decoded["type"] == SUB_MSG_SHUTDOWN:
+                    raise RuntimeError(
+                        f"QuotesServer shut down while waiting on {channel}"
+                    )
 
             # Check timeout
             if timeout > 0 and (_time.monotonic() - start) >= timeout:
                 return None
+

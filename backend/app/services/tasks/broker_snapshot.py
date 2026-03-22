@@ -35,8 +35,11 @@ class BrokerSnapshot(BaseModel):
     active_deals: List[int]              # Set[int] serialised as list
 
     # --- Broker time tracking ---
-    # Used for order.modify_time and progress events after restore
-    current_time: Optional[str] = None   # ISO format datetime
+    # market_* is used for live operational state, bar_* for the latest closed bar.
+    market_time: Optional[str] = None    # ISO format datetime
+    bar_time: Optional[str] = None       # ISO format datetime
+    market_price: Optional[float] = None
+    bar_close_price: Optional[float] = None
     date_start: Optional[str] = None     # ISO format datetime
 
     # --- TaskResults incremental save indices ---

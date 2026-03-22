@@ -279,8 +279,8 @@ class Strategy(ABC):
         
         # Validate limit order price (for BUY: price must be <= current price)
         if price is not None:
-            assert self.close is not None and len(self.close) > 0, "Current price is not available"
-            current_price = self.close[-1]
+            assert self.broker is not None, "Broker is not set on strategy"
+            current_price = self.broker.current_price
             if not self.lteq(price, current_price):
                 all_errors.append(f"must be below or equal to current price")
                 return self._create_error_result(all_errors, "buy")
@@ -291,8 +291,8 @@ class Strategy(ABC):
         
         # Validate stop order trigger_price (for BUY: trigger_price must be > current price)
         if trigger_price is not None:
-            assert self.close is not None and len(self.close) > 0, "Current price is not available"
-            current_price = self.close[-1]
+            assert self.broker is not None, "Broker is not set on strategy"
+            current_price = self.broker.current_price
             if not self.gt(trigger_price, current_price):
                 all_errors.append(f"must be above current price")
                 return self._create_error_result(all_errors, "buy")
@@ -361,8 +361,8 @@ class Strategy(ABC):
         
         # Validate limit order price (for SELL: price must be >= current price)
         if price is not None:
-            assert self.close is not None and len(self.close) > 0, "Current price is not available"
-            current_price = self.close[-1]
+            assert self.broker is not None, "Broker is not set on strategy"
+            current_price = self.broker.current_price
             if not self.gteq(price, current_price):
                 all_errors.append(f"must be above or equal to current price")
                 return self._create_error_result(all_errors, "sell")
@@ -373,8 +373,8 @@ class Strategy(ABC):
         
         # Validate stop order trigger_price (for SELL: trigger_price must be < current price)
         if trigger_price is not None:
-            assert self.close is not None and len(self.close) > 0, "Current price is not available"
-            current_price = self.close[-1]
+            assert self.broker is not None, "Broker is not set on strategy"
+            current_price = self.broker.current_price
             if not self.lt(trigger_price, current_price):
                 all_errors.append(f"must be below current price")
                 return self._create_error_result(all_errors, "sell")
@@ -747,8 +747,8 @@ class Strategy(ABC):
         """
         errors = []
         
-        assert self.close is not None and len(self.close) > 0, "Current price is not available"
-        current_price = self.close[-1]
+        assert self.broker is not None, "Broker is not set on strategy"
+        current_price = self.broker.current_price
         
         # Validate entry limit orders relative to current price
         for i, (vol, price) in enumerate(entries):

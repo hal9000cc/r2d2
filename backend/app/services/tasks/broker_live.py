@@ -92,6 +92,16 @@ class BrokerLive(Broker):
         # forces re-save of all restored trades/orders to Redis.
         self._first_update_after_restore: bool = False
 
+    @property
+    def current_time(self) -> np.datetime64:
+        assert self.market_time is not None, "Current market time is not available"
+        return self.market_time
+
+    @property
+    def current_price(self) -> PRICE_TYPE:
+        assert self.market_price is not None, "Current market price is not available"
+        return self.market_price
+
     # ------------------------------------------------------------------
     # Abstract method implementations
     # ------------------------------------------------------------------
@@ -153,6 +163,8 @@ class BrokerLive(Broker):
         """
         history_size = self.task.history_size
         timeframe = self._timeframe
+        if timeframe is None:
+            raise RuntimeError("BrokerLive timeframe is not initialized")
 
         history_start = datetime.now(timezone.utc) - (history_size * timeframe.timedelta())
 
@@ -209,7 +221,21 @@ class BrokerLive(Broker):
             return (BarStatus.FINISHED, None)
 
         try:
-            bar_data = self._quotes_client.wait_next_bar(
+            if self._quotes_client is None:
+                raise RuntimeError("Quotes client is not initialized")
+            if self._timeframe is None:
+                raise RuntimeError("BrokerLive timeframe is not initialized")
+
+            snapshot_data = self._quotes_client.get_latest_market_snapshot(
+                self.source,
+                self.symbol,
+                self._timeframe,
+            )
+            if snapshot_data is not None:
+                self.market_time = snapshot_data["time"][0]
+                self.market_price = PRICE_TYPE(snapshot_data["close"][0])
+
+            bar_data = self._quotes_client.wait_next_completed_bar(
                 self.source,
                 self.symbol,
                 self._timeframe,
@@ -226,6 +252,8 @@ class BrokerLive(Broker):
             return (BarStatus.WAITING, None)
 
         # Append bar to provider
+        if not isinstance(quotes_provider, RealTimeQuotesProvider):
+            raise RuntimeError("BrokerLive requires RealTimeQuotesProvider in live mode")
         quotes_provider.append_bar(bar_data)
 
         # Update ta_proxies with new provider state
@@ -236,13 +264,18 @@ class BrokerLive(Broker):
         primary = quotes_provider.primary
         self.i_time = len(primary.close) - 1
 
-        current_time = primary.time[self.i_time]
-        current_price = PRICE_TYPE(primary.close[self.i_time])
+        completed_bar_time = primary.time[self.i_time]
+        completed_bar_close_price = PRICE_TYPE(primary.close[self.i_time])
+
+        self.bar_time = completed_bar_time
+        self.bar_close_price = completed_bar_close_price
+        self.market_time = completed_bar_time
+        self.market_price = completed_bar_close_price
 
         sliced_quotes = primary[: self.i_time + 1]
         sliced_quotes.writeable = False
 
-        return (BarStatus.RECEIVED, (sliced_quotes, current_time, current_price))
+        return (BarStatus.RECEIVED, (sliced_quotes, completed_bar_time, completed_bar_close_price))
 
     def progress(self) -> float:
         """Live trading has no finite progress."""
@@ -617,7 +650,10 @@ class BrokerLive(Broker):
             last_trade_time=self._last_trade_time,
             current_auto_deal_id=self._current_auto_deal_id,
             active_deals=list(self.active_deals),
-            current_time=datetime64_to_iso(self.current_time) if self.current_time is not None else None,
+            market_time=datetime64_to_iso(self.market_time) if self.market_time is not None else None,
+            bar_time=datetime64_to_iso(self.bar_time) if self.bar_time is not None else None,
+            market_price=float(self.market_price) if self.market_price is not None else None,
+            bar_close_price=float(self.bar_close_price) if self.bar_close_price is not None else None,
             date_start=datetime64_to_iso(self.date_start) if self.date_start is not None else None,
             trades_start_index=trades_start_index,
             last_orders_save_time=last_orders_save_time_iso,
@@ -730,7 +766,10 @@ class BrokerLive(Broker):
         self.active_deals = set(snapshot.active_deals)
 
         # 6. Restore time tracking
-        self.current_time = self._dt64(snapshot.current_time)
+        self.market_time = self._dt64(snapshot.market_time)
+        self.bar_time = self._dt64(snapshot.bar_time)
+        self.market_price = snapshot.market_price
+        self.bar_close_price = snapshot.bar_close_price
         if snapshot.date_start:
             # Keep the original session start for progress events
             self.date_start = self._dt64(snapshot.date_start)

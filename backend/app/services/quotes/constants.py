@@ -16,9 +16,10 @@ TIME_UNITS_IN_ONE_DAY = 24 * 60 * 60 * 1000
 PUBSUB_BAR_CHANNEL_PREFIX = "quotes:bars"
 
 # Subscription message types (published via Redis Pub/Sub)
-SUB_MSG_BAR = "bar"          # A completed bar with OHLCV data
-SUB_MSG_ERROR = "error"      # WebSocket/connection error (server is reconnecting)
-SUB_MSG_SHUTDOWN = "shutdown" # Server is shutting down gracefully
+SUB_MSG_COMPLETED_BAR = "completed_bar"  # A closed bar with OHLCV data
+SUB_MSG_MARKET_SNAPSHOT = "market_snapshot"  # The latest forming-bar snapshot from exchange
+SUB_MSG_ERROR = "error"  # WebSocket/connection error (server is reconnecting)
+SUB_MSG_SHUTDOWN = "shutdown"  # Server is shutting down gracefully
 
 # Subscription action values (sent in the Redis request queue)
 SUB_ACTION_SUBSCRIBE = "subscribe"

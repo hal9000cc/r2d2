@@ -719,8 +719,8 @@ class TaskResults:
             if trades_data is not None:
                 self._trades_start_index = current_trades_size
             
-            if orders_data is not None and hasattr(broker, 'current_time') and broker.current_time is not None:
-                self._last_orders_save_time = broker.current_time
+            if orders_data is not None and broker.market_time is not None:
+                self._last_orders_save_time = broker.market_time
             
             self._save_quotes_time(result_key_prefix, result_id)
             

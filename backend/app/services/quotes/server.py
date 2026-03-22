@@ -16,7 +16,8 @@ from .constants import (
     TIME_TYPE,
     TIME_TYPE_UNIT,
     TIME_UNITS_IN_ONE_SECOND,
-    SUB_MSG_BAR,
+    SUB_MSG_COMPLETED_BAR,
+    SUB_MSG_MARKET_SNAPSHOT,
     SUB_MSG_ERROR,
     SUB_MSG_SHUTDOWN,
     SUB_ACTION_SUBSCRIBE,
@@ -976,7 +977,7 @@ class SubscriptionManager:
         Steps:
         1. Validate OHLCV values via QuotesServer.validate_bars().
         2. Save to ClickHouse in a thread-pool executor (non-blocking).
-        3. Publish a SUB_MSG_BAR message to the Redis Pub/Sub channel.
+        3. Publish a SUB_MSG_COMPLETED_BAR message to the Redis Pub/Sub channel.
 
         Args:
             source: Exchange name.
@@ -1012,12 +1013,37 @@ class SubscriptionManager:
             "close": np.array([bar[4]], dtype=np.float64),
             "volume": np.array([bar[5]], dtype=np.float64),
         }
-        msg = encode_bar_message(SUB_MSG_BAR, bar_data=bar_data)
+        msg = encode_bar_message(SUB_MSG_COMPLETED_BAR, bar_data=bar_data)
         await self._server.redis_client.publish(channel, msg)
 
         logger.debug(
             "Published completed bar for %s:%s:%s at %d",
             source, symbol, timeframe_str, bar[0],
+        )
+
+    async def _publish_market_snapshot(
+        self,
+        source: str,
+        symbol: str,
+        timeframe_str: str,
+        channel: str,
+        forming_candle: list,
+    ) -> None:
+        """Publish the latest forming-bar snapshot without persisting it."""
+        bar_data = {
+            "time": np.array([np.datetime64(int(forming_candle[0]), "ms")], dtype=TIME_TYPE),
+            "open": np.array([forming_candle[1]], dtype=np.float64),
+            "high": np.array([forming_candle[2]], dtype=np.float64),
+            "low": np.array([forming_candle[3]], dtype=np.float64),
+            "close": np.array([forming_candle[4]], dtype=np.float64),
+            "volume": np.array([forming_candle[5]], dtype=np.float64),
+        }
+        msg = encode_bar_message(SUB_MSG_MARKET_SNAPSHOT, bar_data=bar_data)
+        await self._server.redis_client.publish(channel, msg)
+
+        logger.debug(
+            "Published market snapshot for %s:%s:%s at %d",
+            source, symbol, timeframe_str, forming_candle[0],
         )
 
     async def _watch_ohlcv_loop(
@@ -1061,6 +1087,10 @@ class SubscriptionManager:
 
                 if not candles:
                     continue
+
+                await self._publish_market_snapshot(
+                    source, symbol, timeframe_str, channel, candles[-1]
+                )
 
                 completed_bar, last_bar_timestamp, last_forming_candle = self._detect_completed_bar(
                     candles, last_bar_timestamp, last_forming_candle,

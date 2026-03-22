@@ -159,13 +159,13 @@ class Order(BaseModel):
     
     def update_modify_time(self, broker: 'Broker') -> None:
         """
-        Update modify_time to broker's current_time.
+        Update modify_time to broker's market_time.
         
         Args:
-            broker: Broker instance to get current_time from
+            broker: Broker instance to get market_time from
         """
-        assert broker.current_time is not None, "Broker's current_time must be set"
-        self.modify_time = broker.current_time
+        assert broker.market_time is not None, "Broker's market_time must be set"
+        self.modify_time = broker.market_time
     
     def _set_sync_field(self, field_name: str, new_value: Any) -> None:
         """
@@ -361,7 +361,9 @@ class Deal(BaseModel):
         Returns:
             Unrealized profit if current_price is available, None otherwise
         """
-        current_price = broker.current_price
+        current_price = broker.market_price
+        if current_price is None:
+            return None
         
         # Value of current open position at market price
         current_value = self.quantity * current_price
@@ -744,9 +746,11 @@ class Broker(ABC):
         self.result_id = result_id
         self._current_auto_deal_id: Optional[int] = None  # ID of current open auto-deal
         self.active_deals: Set[int] = set()  # Set of deal_id for active (open) deals
-        self.current_time: Optional[np.datetime64] = None
         self.i_time: int = task.history_size  # Current bar index, initialized with history_size
-        self.price: Optional[PRICE_TYPE] = None  # Current price
+        self.bar_time: Optional[np.datetime64] = None
+        self.bar_close_price: Optional[PRICE_TYPE] = None
+        self.market_time: Optional[np.datetime64] = None
+        self.market_price: Optional[PRICE_TYPE] = None
         
         # Precision for amount and price
         self.precision_amount: float = task.precision_amount
@@ -795,7 +799,19 @@ class Broker(ABC):
             date_start=task.dateStart,
             date_end=task.dateEnd
         )
-    
+
+    @property
+    @abstractmethod
+    def current_time(self) -> np.datetime64:
+        """Strategy-facing current time provided by the broker model."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def current_price(self) -> PRICE_TYPE:
+        """Strategy-facing current price provided by the broker model."""
+        raise NotImplementedError
+
     def format_volume(self, value: VOLUME_TYPE) -> VOLUME_TYPE:
         """
         Format volume by rounding down to nearest multiple of precision_amount.
@@ -1033,7 +1049,7 @@ class Broker(ABC):
         Raises:
             NotImplementedError: Must be implemented by subclasses
         """
-        assert self.current_time is not None, "current_time must be set before executing deal"
+        assert self.market_time is not None, "market_time must be set before executing deal"
         
         deal, canceled_order_ids = self._prepare_deal(
             deal_type, existing_deal_id, clear_enter, clear_stop_loss, clear_take_profit
@@ -1267,8 +1283,8 @@ class Broker(ABC):
             order_id=order_id,
             deal_id=deal.deal_id,
             order_type=order_type,
-            create_time=self.current_time,
-            modify_time=self.current_time,
+            create_time=self.market_time,
+            modify_time=self.market_time,
             side=side,
             price=price,
             trigger_price=trigger_price,
@@ -1599,8 +1615,8 @@ class Broker(ABC):
             logger.info(message)
 
         broker_time_iso = None
-        if self.current_time is not None:
-            broker_time_iso = datetime64_to_iso(self.current_time)
+        if self.market_time is not None:
+            broker_time_iso = datetime64_to_iso(self.market_time)
 
         # Persist error/critical events in the registry
         if level in ("error", "critical"):
@@ -1650,8 +1666,8 @@ class Broker(ABC):
         if self.date_start is not None:
             event_data["date_start"] = datetime64_to_iso(self.date_start)
         
-        if self.current_time is not None:
-            event_data["current_time"] = datetime64_to_iso(self.current_time)
+        if self.market_time is not None:
+            event_data["current_time"] = datetime64_to_iso(self.market_time)
         
         # Save results to Redis if results instance is provided
         if results is not None:
@@ -1848,7 +1864,7 @@ class Broker(ABC):
         assert quantity > 0, f"quantity must be > 0, got {quantity}"
         assert price > 0, f"price must be > 0, got {price}"
         assert fee >= 0, f"fee must be >= 0, got {fee}"
-        assert self.current_time is not None, "current_time must be set before creating trade"
+        assert self.market_time is not None, "market_time must be set before creating trade"
         assert exchange_trade_id, "exchange_trade_id must be provided"
         
         if auto_deal_id is not None and order.deal_id != 0:
@@ -1874,7 +1890,7 @@ class Broker(ABC):
             exchange_trade_id=exchange_trade_id,
             deal_id=effective_deal_id,
             order_id=order.order_id,
-            time=self.current_time,
+            time=self.market_time,
             side=order.side,
             price=price,
             quantity=quantity,
@@ -2089,8 +2105,11 @@ class Broker(ABC):
             
             if status == BarStatus.FINISHED:
                 return None
-            
-            self.current_time = bar_data[1]
+
+            if bar_data is not None:
+                self.bar_time = bar_data[1]
+                self.bar_close_price = bar_data[2]
+
             self.order_processing()
 
             if status == BarStatus.WAITING:
@@ -2260,17 +2279,16 @@ class Broker(ABC):
             if bar_data is None:
                 break
             
-            sliced_quotes, _, current_price = bar_data
-            
-            if hasattr(self, 'price'):
-                self.price = current_price
+            sliced_quotes, bar_time, current_price = bar_data
+            self.bar_time = bar_time
+            self.bar_close_price = current_price
             
             equity_usd = getattr(self, 'equity_usd', 0.0)
             equity_symbol = getattr(self, 'equity_symbol', 0.0)
             self._invoke_callback(
                 'on_bar',
                 current_price,
-                self.current_time,
+                self.bar_time,
                 sliced_quotes.time,
                 sliced_quotes.open,
                 sliced_quotes.high,
@@ -2320,7 +2338,7 @@ class Broker(ABC):
         self._invoke_callback('on_finish')
         
         if hasattr(self, 'date_end') and self.date_end is not None:
-            self.current_time = self.date_end
+            self.market_time = self.date_end
             self.update_state(results, is_finish=True)
     
     # Abstract methods (must be implemented by subclasses)
@@ -2454,7 +2472,7 @@ class Broker(ABC):
         Returns:
             List with single order
         """
-        assert self.current_time is not None, "current_time must be set before calling buy()"
+        assert self.market_time is not None, "market_time must be set before calling buy()"
         assert quantity > 0, f"quantity must be > 0, got {quantity}"
         
         # Determine order type
@@ -2477,8 +2495,8 @@ class Broker(ABC):
             order_id=order_id,
             deal_id=0,  # Auto-deal marker
             order_type=order_type,
-            create_time=self.current_time,
-            modify_time=self.current_time,
+            create_time=self.market_time,
+            modify_time=self.market_time,
             side=OrderSide.BUY,
             price=order_price,
             trigger_price=self.format_price(trigger_price) if trigger_price is not None else None,
@@ -2516,7 +2534,7 @@ class Broker(ABC):
         Returns:
             List with single order
         """
-        assert self.current_time is not None, "current_time must be set before calling sell()"
+        assert self.market_time is not None, "market_time must be set before calling sell()"
         assert quantity > 0, f"quantity must be > 0, got {quantity}"
         
         # Determine order type
@@ -2539,8 +2557,8 @@ class Broker(ABC):
             order_id=order_id,
             deal_id=0,  # Auto-deal marker
             order_type=order_type,
-            create_time=self.current_time,
-            modify_time=self.current_time,
+            create_time=self.market_time,
+            modify_time=self.market_time,
             side=OrderSide.SELL,
             price=order_price,
             trigger_price=self.format_price(trigger_price) if trigger_price is not None else None,
