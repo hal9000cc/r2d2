@@ -5,6 +5,7 @@ Uses ccxt for exchange interaction and QuotesClient for real-time bar data.
 Supports any exchange supported by ccxt.
 """
 import json
+import time
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Tuple, Callable
 
@@ -39,6 +40,9 @@ from app.services.tasks.tasks import Task
 
 logger = get_logger(__name__)
 
+EXCHANGE_INIT_RETRY_ATTEMPTS = 3
+EXCHANGE_INIT_RETRY_DELAY = 1.0
+
 
 def _summarize_exchange_result(result: Any) -> str:
     """Build a short human-readable summary for exchange responses."""
@@ -54,6 +58,119 @@ def _summarize_exchange_result(result: Any) -> str:
     if isinstance(result, list):
         return f"items={len(result)}"
     return str(result)
+
+
+def _build_exchange_debug_context(exchange: Any) -> Dict[str, Any]:
+    """Build a safe diagnostic snapshot of an exchange instance."""
+    context: Dict[str, Any] = {
+        "exchange_id": getattr(exchange, "id", None),
+        "hostname": getattr(exchange, "hostname", None),
+        "rate_limit": getattr(exchange, "rateLimit", None),
+        "timeout": getattr(exchange, "timeout", None),
+    }
+
+    options = getattr(exchange, "options", None)
+    if isinstance(options, dict):
+        context["options_keys"] = sorted(options.keys())
+        for key in ("defaultType", "defaultSubType", "recvWindow", "recv_window"):
+            if key in options:
+                context[f"option_{key}"] = options.get(key)
+
+    urls = getattr(exchange, "urls", None)
+    if isinstance(urls, dict):
+        api_urls = urls.get("api")
+        if isinstance(api_urls, dict):
+            context["api_url_keys"] = sorted(api_urls.keys())
+        elif api_urls:
+            context["api_url_type"] = type(api_urls).__name__
+
+    return context
+
+
+def _is_retryable_exchange_init_error(exc: Exception) -> bool:
+    """Return True for transient exchange initialization errors."""
+    retryable_types = (
+        ccxt.NetworkError,
+        ccxt.RequestTimeout,
+        ccxt.ExchangeNotAvailable,
+        ccxt.DDoSProtection,
+        ccxt.RateLimitExceeded,
+    )
+    if isinstance(exc, retryable_types):
+        return True
+
+    message = str(exc).lower()
+    retryable_fragments = (
+        "remotedisconnected",
+        "remote end closed connection without response",
+        "connection aborted",
+        "connection reset",
+        "temporarily unavailable",
+        "timed out",
+        "timeout",
+    )
+    return any(fragment in message for fragment in retryable_fragments)
+
+
+def _execute_exchange_operation_with_retry(
+    *,
+    exchange: Any,
+    operation_name: str,
+    func: Callable[[], Any],
+    exchange_name: str,
+    max_attempts: int = EXCHANGE_INIT_RETRY_ATTEMPTS,
+    retry_delay: float = EXCHANGE_INIT_RETRY_DELAY,
+) -> Any:
+    """Execute an exchange operation with latency diagnostics and retry."""
+    last_error: Optional[Exception] = None
+
+    for attempt in range(1, max_attempts + 1):
+        started_at = time.monotonic()
+        logger.info(
+            "Exchange request: method=%s exchange=%s attempt=%s/%s context=%s",
+            operation_name,
+            exchange_name,
+            attempt,
+            max_attempts,
+            json.dumps(_build_exchange_debug_context(exchange), ensure_ascii=False, sort_keys=True),
+        )
+        try:
+            result = func()
+        except Exception as exc:
+            elapsed = time.monotonic() - started_at
+            last_error = exc
+            retryable = _is_retryable_exchange_init_error(exc)
+            logger.warning(
+                "Exchange failure: method=%s exchange=%s attempt=%s/%s elapsed=%.3fs retryable=%s error_type=%s error=%s",
+                operation_name,
+                exchange_name,
+                attempt,
+                max_attempts,
+                elapsed,
+                retryable,
+                type(exc).__name__,
+                exc,
+            )
+            if attempt >= max_attempts or not retryable:
+                raise
+            time.sleep(retry_delay)
+            continue
+
+        elapsed = time.monotonic() - started_at
+        logger.info(
+            "Exchange result: method=%s exchange=%s attempt=%s/%s elapsed=%.3fs %s",
+            operation_name,
+            exchange_name,
+            attempt,
+            max_attempts,
+            elapsed,
+            _summarize_exchange_result(result),
+        )
+        return result
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"Exchange operation failed unexpectedly: {operation_name}")
 
 
 class BrokerLive(Broker):
@@ -116,13 +233,23 @@ class BrokerLive(Broker):
         if exchange_class is None:
             raise RuntimeError(f"Exchange '{source}' is not supported by ccxt")
 
+        create_started_at = time.monotonic()
         logger.info("Exchange client create request: exchange=%s auth=%s", source, True)
         self.exchange = exchange_class(build_ccxt_exchange_config(source, with_auth=True))
-        logger.info("Exchange client create result: exchange=%s client=%s", source, exchange_class.__name__)
+        logger.info(
+            "Exchange client create result: exchange=%s client=%s elapsed=%.3fs context=%s",
+            source,
+            exchange_class.__name__,
+            time.monotonic() - create_started_at,
+            json.dumps(_build_exchange_debug_context(self.exchange), ensure_ascii=False, sort_keys=True),
+        )
 
-        logger.info("Exchange request: method=load_markets exchange=%s", source)
-        self.exchange.load_markets()
-        logger.info("Exchange result: method=load_markets exchange=%s markets=%s", source, len(getattr(self.exchange, "markets", {}) or {}))
+        _execute_exchange_operation_with_retry(
+            exchange=self.exchange,
+            operation_name="load_markets",
+            func=self.exchange.load_markets,
+            exchange_name=source,
+        )
 
         market = self.exchange.market(self.symbol)
         if market is None:
