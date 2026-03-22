@@ -9,6 +9,7 @@
         :readonly="isReadonly"
         @start="handleStart"
         @stop="handleStop"
+        @edit-clicked="handleEditClicked"
         @form-data-changed="handleFormDataChanged"
       />
     </Teleport>
@@ -663,9 +664,23 @@ function handleRightPanelResize(size) {
   rightPanelWidth.value = size
 }
 
-async function handleStart() {
+async function handleStart(formData) {
   if (!currentTaskId.value) return
   try {
+    if (!isReadonly.value && formData) {
+      const updatedTask = await tradingApi.updateTask(currentTaskId.value, {
+        source: formData.source,
+        symbol: formData.symbol,
+        timeframe: formData.timeframe?.name || ''
+      })
+
+      currentTask.value = updatedTask
+      currentSource.value = updatedTask.source || null
+      currentSymbol.value = updatedTask.symbol || null
+      currentTimeframe.value = updatedTask.timeframe || null
+      isReadonly.value = true
+    }
+
     const result = await tradingApi.startTask(currentTaskId.value)
     if (result.success) {
       isRunning.value = true
@@ -700,6 +715,11 @@ async function confirmStop() {
 
 function handleFormDataChanged() {
   // Placeholder — will handle form data changes
+}
+
+function handleEditClicked() {
+  if (!currentTaskId.value || isRunning.value) return
+  isReadonly.value = false
 }
 
 function handleTaskSelected(task) {

@@ -6,6 +6,7 @@ Loads the strategy from task.strategy_snapshot, creates BrokerLive,
 and runs the trading loop.
 """
 import sys
+import signal
 import importlib.util
 from pathlib import Path
 from typing import Optional
@@ -25,6 +26,11 @@ logger = get_logger(__name__)
 _trading_task_list: Optional[TradingTaskList] = None
 
 TRADING_RESULT_ID = "0"
+
+
+def _handle_sigterm(signum, frame) -> None:
+    """Convert SIGTERM into graceful Python shutdown."""
+    raise SystemExit(0)
 
 
 def _get_task_list() -> TradingTaskList:
@@ -148,6 +154,7 @@ def worker_trading_task(task_id: int) -> None:
         task_id: ID of the trading task to run
     """
     setup_logging()
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     reload_runtime_config(exchange_settings_only=True)
 

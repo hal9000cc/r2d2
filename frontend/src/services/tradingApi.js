@@ -34,6 +34,17 @@ export const tradingApi = {
   },
 
   /**
+   * Update editable fields of a trading task.
+   * @param {number} taskId
+   * @param {{source?: string, symbol?: string, timeframe?: string}} data
+   * @returns {Promise<Object>} Updated trading task
+   */
+  async updateTask(taskId, data) {
+    const response = await axios.patch(`${API_BASE_URL}/api/v1/trading/tasks/${taskId}`, data)
+    return response.data
+  },
+
+  /**
    * Start a live trading task.
    * Sets isRunning=True and generates a result_id.
    * @param {number} taskId

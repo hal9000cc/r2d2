@@ -1,6 +1,16 @@
 <template>
   <div class="trading-nav-form">
     <div class="form-row">
+      <button
+        v-if="!disabled && !isRunning && readonly"
+        class="edit-btn"
+        type="button"
+        title="Edit trading task market parameters"
+        @click="$emit('edit-clicked')"
+      >
+        <PencilSquareIcon class="btn-icon" />
+        Edit
+      </button>
       <SourceInput
         v-model="formData.source"
         input-id="trading-source"
@@ -56,17 +66,18 @@
 import { inject, computed } from 'vue'
 import SourceInput from './SourceInput.vue'
 import SymbolInput from './SymbolInput.vue'
-import { PlayIcon, StopIcon } from '@heroicons/vue/24/outline'
+import { PencilSquareIcon, PlayIcon, StopIcon } from '@heroicons/vue/24/outline'
 
 export default {
   name: 'TradingNavForm',
   components: {
     SourceInput,
     SymbolInput,
+    PencilSquareIcon,
     PlayIcon,
     StopIcon
   },
-  emits: ['start', 'stop', 'form-data-changed'],
+  emits: ['start', 'stop', 'form-data-changed', 'edit-clicked'],
   props: {
     disabled: {
       type: Boolean,
@@ -144,6 +155,13 @@ export default {
         this.$emit('stop')
       } else {
         this.$emit('start', { ...this.formData })
+      }
+    },
+    getFormData() {
+      return {
+        source: this.formData.source,
+        symbol: this.formData.symbol,
+        timeframe: this.formData.timeframe,
       }
     },
     setFormData(data) {
@@ -227,6 +245,31 @@ export default {
   cursor: pointer;
   transition: background-color var(--transition-base);
   margin-top: 1.25rem;
+}
+
+.edit-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: all var(--transition-base);
+  margin-top: 1.25rem;
+}
+
+.edit-btn:hover {
+  background-color: var(--bg-hover);
+  border-color: var(--color-primary);
+}
+
+.edit-btn .btn-icon {
+  width: 1.25rem;
+  height: 1.25rem;
 }
 
 .action-btn .btn-icon {

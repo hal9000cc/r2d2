@@ -39,6 +39,12 @@ class StopRequest(BaseModel):
     close_deals_on_stop: bool = False
 
 
+class UpdateTradingTaskRequest(BaseModel):
+    source: Optional[str] = None
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
+
+
 @router.get("/tasks", response_model=Dict[str, Any])
 async def get_trading_tasks():
     """
@@ -131,6 +137,41 @@ async def clone_to_trading(backtesting_task_id: int):
         f"Created trading task {saved.id} from backtesting task {backtesting_task_id} "
         f"(strategy: {source_task.name})"
     )
+    return saved.model_dump(exclude_unset=False)
+
+
+@router.patch("/tasks/{task_id}", response_model=Dict[str, Any])
+async def update_trading_task(task_id: int, body: UpdateTradingTaskRequest):
+    """
+    Update editable fields of a live trading task.
+
+    Only stopped tasks can be edited.
+
+    Args:
+        task_id: Trading task ID
+        body: Partial update payload with editable task fields
+
+    Returns:
+        Updated trading task dictionary
+    """
+    loaded_task = trading_task_list.load(task_id)
+    if loaded_task is None:
+        raise HTTPException(status_code=404, detail=f"Trading task {task_id} not found")
+
+    task = cast(Any, loaded_task)
+
+    if task.isRunning:
+        raise HTTPException(status_code=400, detail="Cannot edit a running task. Stop it first.")
+
+    if body.source is not None:
+        task.source = body.source
+    if body.symbol is not None:
+        task.symbol = body.symbol
+    if body.timeframe is not None:
+        task.timeframe = body.timeframe
+
+    saved = task.save()
+    logger.info(f"Updated trading task {task_id}: source={saved.source}, symbol={saved.symbol}, timeframe={saved.timeframe}")
     return saved.model_dump(exclude_unset=False)
 
 

@@ -16,11 +16,13 @@ import time
 import signal
 import subprocess
 import json
+import uuid
+import msgpack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from multiprocessing import Process
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Any, cast
 
 # Ensure backend/ is in sys.path when run directly
 _backend_dir = Path(__file__).parent.parent
@@ -39,10 +41,12 @@ from app.core.config import (
     SUPERVISOR_PIDS_KEY,
     SUPERVISOR_ERRORS_KEY,
     SUPERVISOR_GLOBAL_CHANNEL,
+    REDIS_QUOTE_REQUEST_LIST,
 )
 from app.core.logger import setup_logging, get_logger
 from app.services.tasks.tasks import TradingTaskList
 from app.services.trading_worker import worker_trading_task
+from app.services.quotes.constants import SUB_ACTION_UNSUBSCRIBE
 
 logger = get_logger(__name__)
 
@@ -92,6 +96,8 @@ class Supervisor:
         return self._redis
 
     def _ping_redis(self) -> bool:
+        if self._redis is None:
+            return False
         try:
             self._redis.ping()
             return True
@@ -155,14 +161,54 @@ class Supervisor:
 
     def _remove_pid(self, task_id: int) -> None:
         try:
-            self._get_redis().hdel(SUPERVISOR_PIDS_KEY, str(task_id))
+            self._get_redis().hdel(SUPERVISOR_PIDS_KEY, [str(task_id)])
         except Exception as e:
             logger.warning(f"Failed to remove PID for task {task_id}: {e}")
+
+    def _cleanup_quotes_subscription(self, task_id: int) -> None:
+        """
+        Best-effort unsubscribe for QuotesServer after worker death.
+
+        This covers cases where the worker process exits before BrokerLive.cleanup()
+        can send the unsubscribe request itself.
+        """
+        try:
+            task = self._get_task_list().load(task_id)
+            if task is None:
+                return
+            if not task.source or not task.symbol or not task.timeframe:
+                return
+
+            request = {
+                "request_id": str(uuid.uuid4()),
+                "action": SUB_ACTION_UNSUBSCRIBE,
+                "source": task.source,
+                "symbol": task.symbol,
+                "timeframe": task.timeframe,
+            }
+            request_bytes = cast(bytes, msgpack.packb(request, use_bin_type=True))
+            self._get_redis().lpush(
+                REDIS_QUOTE_REQUEST_LIST,
+                request_bytes,
+            )
+            logger.info(
+                "Queued quotes unsubscribe for task %s: %s:%s:%s",
+                task_id,
+                task.source,
+                task.symbol,
+                task.timeframe,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to queue quotes unsubscribe for task %s: %s",
+                task_id,
+                e,
+            )
 
     def _load_pids(self) -> Dict[int, int]:
         """Load task_id → pid mapping from Redis."""
         try:
-            raw = self._get_redis().hgetall(SUPERVISOR_PIDS_KEY)
+            raw = cast(Dict[str, str], self._get_redis().hgetall(SUPERVISOR_PIDS_KEY))
             return {int(k): int(v) for k, v in raw.items()}
         except Exception as e:
             logger.warning(f"Failed to load PIDs from Redis: {e}")
@@ -275,6 +321,8 @@ class Supervisor:
         process = Process(target=worker_trading_task, args=(task_id,), daemon=False)
         process.start()
         pid = process.pid
+        if pid is None:
+            raise RuntimeError(f"Failed to start trading process for task {task_id}: PID is None")
         logger.info(f"Started trading process for task {task_id} (PID={pid}, crash_count={crash_count})")
         self._save_pid(task_id, pid)
         return ProcessInfo(
@@ -375,6 +423,7 @@ class Supervisor:
                     new_crash_count = 1
 
                 self._remove_pid(task_id)
+                self._cleanup_quotes_subscription(task_id)
 
                 if new_crash_count >= SUPERVISOR_MAX_RESTARTS:
                     # Too many rapid crashes — disable task
@@ -447,6 +496,7 @@ class Supervisor:
                         logger.error(msg)
                         self._write_supervisor_error(task_id, msg, level="error")
                         _kill_process(info.process, task_id, "force kill after timeout")
+                        self._cleanup_quotes_subscription(task_id)
                         del self._processes[task_id]
                         self._remove_pid(task_id)
 
@@ -538,7 +588,7 @@ def _is_pid_alive(pid: int) -> bool:
         return False
 
 
-def _adopt_process(pid: int) -> Optional[Process]:
+def _adopt_process(pid: int) -> Optional[Any]:
     """
     Create a lightweight proxy that lets us poll an existing PID.
 
