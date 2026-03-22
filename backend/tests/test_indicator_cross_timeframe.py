@@ -485,6 +485,41 @@ class TestQuotesProxy:
             expected_close = float(quotes_5m['close'][history_size + r['bar_count']])
             assert np.allclose(r['primary_last_close'], expected_close, rtol=1e-5, atol=1e-8)
 
+    def test_primary_quotes_proxy_includes_current_live_bar(self):
+        """Primary QuotesProxy slice must include the current bar for live on_bar semantics."""
+        proxy = ta.Quotes(
+            time=np.array([
+                np.datetime64('2024-01-01T00:00:00', 'ms'),
+                np.datetime64('2024-01-01T00:01:00', 'ms'),
+                np.datetime64('2024-01-01T00:02:00', 'ms'),
+            ], dtype='datetime64[ms]'),
+            open=np.array([1.0, 2.0, 3.0]),
+            high=np.array([1.0, 2.0, 3.0]),
+            low=np.array([1.0, 2.0, 3.0]),
+            close=np.array([1.0, 2.0, 3.0]),
+            volume=np.array([1.0, 2.0, 3.0]),
+        )
+
+        provider = Mock()
+        provider.primary = proxy
+        provider.primary_timeframe = Timeframe.t1m
+
+        broker = Mock()
+        broker.i_time = 2
+        broker.symbol = 'TEST/USDT'
+        broker.bar_time = proxy.time[2]
+        broker.is_live = True
+
+        from app.services.tasks.indicator_proxy import QuotesProxy
+        quotes_proxy = QuotesProxy(broker)
+        quotes_proxy.set_quotes(provider)
+
+        current_quotes = quotes_proxy()
+
+        assert len(current_quotes) == 3
+        assert current_quotes.time[-1] == proxy.time[2]
+        assert len(quotes_proxy) == 3
+
     @patch('app.services.tasks.quotes_provider.QuotesClient')
     @patch('app.services.tasks.broker_backtesting.QuotesClient')
     def test_higher_tf_quotes(self, mock_broker_cls, mock_provider_cls):
@@ -548,7 +583,7 @@ class TestQuotesProxy:
             def on_bar(self):
                 if self.error is None:
                     try:
-                        self.quotes(timeframe='1m')
+                        getattr(self, 'quotes')(timeframe='1m')
                     except ValueError as e:
                         self.error = str(e)
 

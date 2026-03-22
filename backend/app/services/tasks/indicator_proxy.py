@@ -1027,7 +1027,8 @@ class QuotesProxy:
             ta.Quotes sliced to current bar (closed bars only for higher TFs)
         """
         if symbol is None and timeframe is None:
-            return self.quotes_provider.primary[:self.broker.i_time]
+            slice_end = self.broker.i_time + 1 if getattr(self.broker, 'is_live', False) else self.broker.i_time
+            return self.quotes_provider.primary[:slice_end]
         
         actual_symbol = symbol or self.broker.symbol
         actual_tf = Timeframe.cast(timeframe) if timeframe else self.quotes_provider.primary_timeframe
