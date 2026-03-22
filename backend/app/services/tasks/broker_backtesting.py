@@ -98,11 +98,11 @@ class BrokerBacktesting(Broker):
         Returns:
             float: Progress in range [0.0, 100.0]
         """
-        if self.current_time is None or self.date_start is None or self.date_end is None:
+        if self.bar_time is None or self.date_start is None or self.date_end is None:
             return 0.0
             
         total_delta = self.date_end - self.date_start
-        current_delta = self.current_time - self.date_start
+        current_delta = self.bar_time - self.date_start
         
         if total_delta <= np.timedelta64(0, 'ns'):
             return 100.0
@@ -619,6 +619,8 @@ class BrokerBacktesting(Broker):
         
         self.bar_high = primary.high[self.i_time]
         self.bar_low = primary.low[self.i_time]
+        self.market_time = current_time
+        self.market_price = current_price
         
         sliced_quotes = primary[:self.i_time+1]
         sliced_quotes.writeable = False

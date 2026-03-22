@@ -1087,6 +1087,56 @@ class TestStopOrders:
 
 class TestValidation:
     """Test order validation."""
+
+    def test_buy_sltp_uses_current_time_without_market_time(self, test_task, simple_quotes_data):
+        """Strategy-facing deal execution should rely on current_time in backtesting."""
+
+        class BuySltpStrategy(Strategy):
+            def __init__(self):
+                super().__init__()
+                self.bar_count = 0
+                self.result = None
+
+            def on_bar(self):
+                self.bar_count += 1
+                if self.bar_count == 1:
+                    self.result = self.buy_sltp(
+                        enter=1.0,
+                        stop_loss=90.0,
+                        take_profit=110.0,
+                    )
+
+        strategy = BuySltpStrategy()
+        callbacks = Strategy.create_strategy_callbacks(strategy)
+
+        with patch('app.services.tasks.broker_backtesting.QuotesClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_quotes.return_value = simple_quotes_data
+            mock_client_class.return_value = mock_client
+
+            broker = BrokerBacktesting(
+                task=test_task,
+                result_id="test_buy_sltp_uses_current_time_without_market_time",
+                callbacks_dict=callbacks,
+                results_save_period=1.0
+            )
+            strategy.broker = broker
+            broker.logging = Mock()
+
+            broker.run(save_results=False)
+
+            assert strategy.bar_count >= 1, "Strategy should process at least one bar"
+            assert strategy.result is not None, "buy_sltp() should return a result"
+            assert strategy.result.error_messages == [], f"Unexpected errors: {strategy.result.error_messages}"
+            assert strategy.result.deal_id > 0, "buy_sltp() should create a deal"
+
+            entry_order = next(
+                (o for o in strategy.result.orders if o.order_type == OrderType.MARKET and o.side == OrderSide.BUY),
+                None,
+            )
+            assert entry_order is not None, "Market entry order should be created"
+            assert entry_order.create_time == broker.bar_time
+
     
     def test_validation_quantity_zero(self, test_task, simple_quotes_data):
         """Test order with zero quantity through run() with minimal strategy."""

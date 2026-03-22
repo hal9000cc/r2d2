@@ -159,13 +159,12 @@ class Order(BaseModel):
     
     def update_modify_time(self, broker: 'Broker') -> None:
         """
-        Update modify_time to broker's market_time.
+        Update modify_time to broker's current strategy-facing time.
         
         Args:
-            broker: Broker instance to get market_time from
+            broker: Broker instance to get current_time from
         """
-        assert broker.market_time is not None, "Broker's market_time must be set"
-        self.modify_time = broker.market_time
+        self.modify_time = broker.current_time
     
     def _set_sync_field(self, field_name: str, new_value: Any) -> None:
         """
@@ -1049,7 +1048,7 @@ class Broker(ABC):
         Raises:
             NotImplementedError: Must be implemented by subclasses
         """
-        assert self.market_time is not None, "market_time must be set before executing deal"
+        _ = self.current_time
         
         deal, canceled_order_ids = self._prepare_deal(
             deal_type, existing_deal_id, clear_enter, clear_stop_loss, clear_take_profit
@@ -1283,8 +1282,8 @@ class Broker(ABC):
             order_id=order_id,
             deal_id=deal.deal_id,
             order_type=order_type,
-            create_time=self.market_time,
-            modify_time=self.market_time,
+            create_time=self.current_time,
+            modify_time=self.current_time,
             side=side,
             price=price,
             trigger_price=trigger_price,
@@ -1864,8 +1863,8 @@ class Broker(ABC):
         assert quantity > 0, f"quantity must be > 0, got {quantity}"
         assert price > 0, f"price must be > 0, got {price}"
         assert fee >= 0, f"fee must be >= 0, got {fee}"
-        assert self.market_time is not None, "market_time must be set before creating trade"
         assert exchange_trade_id, "exchange_trade_id must be provided"
+        trade_time = self.current_time
         
         if auto_deal_id is not None and order.deal_id != 0:
             raise ValueError(f"auto_deal_id can only be used with auto-deal orders (order.deal_id=0), got order.deal_id={order.deal_id}")
@@ -1890,7 +1889,7 @@ class Broker(ABC):
             exchange_trade_id=exchange_trade_id,
             deal_id=effective_deal_id,
             order_id=order.order_id,
-            time=self.market_time,
+            time=trade_time,
             side=order.side,
             price=price,
             quantity=quantity,
@@ -2280,8 +2279,6 @@ class Broker(ABC):
                 break
             
             sliced_quotes, bar_time, current_price = bar_data
-            self.bar_time = bar_time
-            self.bar_close_price = current_price
             
             equity_usd = getattr(self, 'equity_usd', 0.0)
             equity_symbol = getattr(self, 'equity_symbol', 0.0)
@@ -2472,7 +2469,7 @@ class Broker(ABC):
         Returns:
             List with single order
         """
-        assert self.market_time is not None, "market_time must be set before calling buy()"
+        order_time = self.current_time
         assert quantity > 0, f"quantity must be > 0, got {quantity}"
         
         # Determine order type
@@ -2495,8 +2492,8 @@ class Broker(ABC):
             order_id=order_id,
             deal_id=0,  # Auto-deal marker
             order_type=order_type,
-            create_time=self.market_time,
-            modify_time=self.market_time,
+            create_time=order_time,
+            modify_time=order_time,
             side=OrderSide.BUY,
             price=order_price,
             trigger_price=self.format_price(trigger_price) if trigger_price is not None else None,
@@ -2534,7 +2531,7 @@ class Broker(ABC):
         Returns:
             List with single order
         """
-        assert self.market_time is not None, "market_time must be set before calling sell()"
+        order_time = self.current_time
         assert quantity > 0, f"quantity must be > 0, got {quantity}"
         
         # Determine order type
@@ -2557,8 +2554,8 @@ class Broker(ABC):
             order_id=order_id,
             deal_id=0,  # Auto-deal marker
             order_type=order_type,
-            create_time=self.market_time,
-            modify_time=self.market_time,
+            create_time=order_time,
+            modify_time=order_time,
             side=OrderSide.SELL,
             price=order_price,
             trigger_price=self.format_price(trigger_price) if trigger_price is not None else None,
