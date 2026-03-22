@@ -161,7 +161,7 @@ class Supervisor:
 
     def _remove_pid(self, task_id: int) -> None:
         try:
-            self._get_redis().hdel(SUPERVISOR_PIDS_KEY, [str(task_id)])
+            self._get_redis().hdel(SUPERVISOR_PIDS_KEY, str(task_id))
         except Exception as e:
             logger.warning(f"Failed to remove PID for task {task_id}: {e}")
 
@@ -609,7 +609,7 @@ def _adopt_process(pid: int) -> Optional[Any]:
         def join(self, timeout=None):
             pass  # Cannot join a non-child process
 
-    return OrphanProcess()  # type: ignore[return-value]
+    return OrphanProcess(pid)  # type: ignore[return-value]
 
 
 def _sigterm_process(process, task_id: int) -> None:

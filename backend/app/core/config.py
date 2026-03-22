@@ -760,6 +760,9 @@ SUPERVISOR_LOCK_KEY = "r2d2:instance_lock"
 # Hash: task_id (str) → pid (str) — tracking live trading process PIDs
 SUPERVISOR_PIDS_KEY = "r2d2:supervisor:pids"
 
+# Redis string key storing the standalone QuotesServer PID
+QUOTES_SERVICE_PID_KEY = "r2d2:quotes_service:pid"
+
 # Per-task supervisor error log: list of JSON entries
 SUPERVISOR_ERRORS_KEY = "trading_tasks:supervisor_errors:{task_id}"
 

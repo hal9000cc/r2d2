@@ -1,10 +1,14 @@
 from datetime import datetime, UTC
 from typing import Optional, Dict, List, Tuple, Callable, TypeVar, Any
 import redis.asyncio as redis
+import redis as redis_sync
 import numpy as np
 import msgpack
 import logging
 import multiprocessing
+import os
+import signal
+import time
 from pathlib import Path
 import clickhouse_connect
 import ccxt.async_support as ccxt
@@ -26,7 +30,13 @@ from .constants import (
     WS_RECONNECT_MAX_DELAY,
 )
 from .serialization import encode_bar_message, build_bar_channel
-from app.core.config import QUOTES_FETCH_RETRY_ATTEMPTS, QUOTES_FETCH_RETRY_DELAY, build_ccxt_exchange_config
+from app.core.config import (
+    QUOTES_FETCH_RETRY_ATTEMPTS,
+    QUOTES_FETCH_RETRY_DELAY,
+    QUOTES_SERVICE_PID_KEY,
+    build_ccxt_exchange_config,
+    redis_params as get_runtime_redis_params,
+)
 
 T = TypeVar('T')
 
@@ -50,6 +60,99 @@ def summarize_exchange_result(result: Any) -> str:
 _service_process: Optional[multiprocessing.Process] = None
 _stop_event: Optional[multiprocessing.Event] = None
 _ready_event: Optional[multiprocessing.Event] = None
+
+
+def _get_sync_redis_client(redis_params: Dict) -> redis_sync.Redis:
+    """Create a synchronous Redis client for startup/shutdown coordination."""
+    return redis_sync.Redis(
+        host=redis_params["host"],
+        port=redis_params["port"],
+        db=redis_params["db"],
+        password=redis_params.get("password"),
+        decode_responses=True,
+        socket_connect_timeout=5,
+    )
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Return True when the given PID exists and can be signalled."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _read_stored_service_pid(redis_params: Dict) -> Optional[int]:
+    """Read the stored QuotesServer PID from Redis."""
+    try:
+        raw_pid = _get_sync_redis_client(redis_params).get(QUOTES_SERVICE_PID_KEY)
+        return int(raw_pid) if raw_pid else None
+    except Exception as exc:
+        logger.warning("Failed to read QuotesServer PID from Redis: %s", exc)
+        return None
+
+
+def _store_service_pid(redis_params: Dict, pid: int) -> None:
+    """Persist QuotesServer PID in Redis for orphan detection."""
+    try:
+        _get_sync_redis_client(redis_params).set(QUOTES_SERVICE_PID_KEY, str(pid))
+    except Exception as exc:
+        logger.warning("Failed to store QuotesServer PID %s in Redis: %s", pid, exc)
+
+
+def _clear_stored_service_pid(redis_params: Dict, expected_pid: Optional[int] = None) -> None:
+    """Remove the QuotesServer PID key if it is stale or matches expected_pid."""
+    try:
+        client = _get_sync_redis_client(redis_params)
+        current = client.get(QUOTES_SERVICE_PID_KEY)
+        if current is None:
+            return
+        if expected_pid is None or current == str(expected_pid):
+            client.delete(QUOTES_SERVICE_PID_KEY)
+    except Exception as exc:
+        logger.warning("Failed to clear QuotesServer PID from Redis: %s", exc)
+
+
+def _terminate_stale_quotes_service(redis_params: Dict, timeout: float = 5.0) -> None:
+    """
+    Stop an orphan QuotesServer process recorded in Redis before starting a new one.
+
+    If the stored PID is already dead, only the Redis key is cleared.
+    """
+    stored_pid = _read_stored_service_pid(redis_params)
+    if stored_pid is None:
+        return
+
+    if _service_process is not None and _service_process.is_alive() and _service_process.pid == stored_pid:
+        return
+
+    if not _is_pid_alive(stored_pid):
+        logger.info("Removing stale QuotesServer PID from Redis: PID=%s is not alive", stored_pid)
+        _clear_stored_service_pid(redis_params, expected_pid=stored_pid)
+        return
+
+    logger.warning("Found orphan QuotesServer process PID=%s, stopping it before restart", stored_pid)
+
+    try:
+        os.kill(stored_pid, signal.SIGTERM)
+    except Exception as exc:
+        logger.warning("Failed to send SIGTERM to orphan QuotesServer PID=%s: %s", stored_pid, exc)
+    else:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not _is_pid_alive(stored_pid):
+                break
+            time.sleep(0.1)
+
+    if _is_pid_alive(stored_pid):
+        logger.error("Orphan QuotesServer PID=%s did not stop gracefully, sending SIGKILL", stored_pid)
+        try:
+            os.kill(stored_pid, signal.SIGKILL)
+        except Exception as exc:
+            logger.warning("Failed to send SIGKILL to orphan QuotesServer PID=%s: %s", stored_pid, exc)
+
+    _clear_stored_service_pid(redis_params, expected_pid=stored_pid)
 
 
 async def retry_async(
@@ -1530,6 +1633,8 @@ def start_quotes_service(
     if _service_process is not None and _service_process.is_alive():
         logger.warning("Quotes service is already running")
         return False
+
+    _terminate_stale_quotes_service(redis_params)
     
     _stop_event = multiprocessing.Event()
     _ready_event = multiprocessing.Event()
@@ -1550,6 +1655,8 @@ def start_quotes_service(
     )
     _service_process.start()
     logger.info("Quotes service process started")
+    if _service_process.pid is not None:
+        _store_service_pid(redis_params, _service_process.pid)
     
     # Wait for service to be ready if requested
     if wait_ready:
@@ -1573,13 +1680,16 @@ def stop_quotes_service(timeout: float = 5.0) -> bool:
         True if service stopped successfully, False otherwise
     """
     global _service_process, _stop_event, _ready_event
-    
+
+    tracked_pid = _service_process.pid if _service_process is not None else None
+
     if _service_process is None or not _service_process.is_alive():
         logger.warning("Quotes service is not running")
         return False
     
     logger.info("Stopping quotes service...")
-    _stop_event.set()
+    if _stop_event is not None:
+        _stop_event.set()
     
     _service_process.join(timeout=timeout)
     
@@ -1595,6 +1705,13 @@ def stop_quotes_service(timeout: float = 5.0) -> bool:
     _service_process = None
     _stop_event = None
     _ready_event = None
+
+    # Best-effort cleanup of the tracked PID after graceful or forced stop.
+    try:
+        _clear_stored_service_pid(get_runtime_redis_params(), expected_pid=tracked_pid)
+    except Exception as exc:
+        logger.warning("Failed to clear stored QuotesServer PID after stop: %s", exc)
+
     logger.info("Quotes service stopped")
     return True
 

@@ -416,6 +416,7 @@ class QuotesProxyStrategy(Strategy):
         self.results.append({
             'bar_count': self.bar_count,
             'current_time': self.broker.current_time,
+            'proxy_len': len(self.quotes),
             'primary_len': len(primary.close),
             'primary_last_close': float(primary.close[-1]),
             'higher_len': len(higher_tf.close),
@@ -475,6 +476,9 @@ class TestQuotesProxy:
 
         for r in strategy.results[:5] + strategy.results[-5:]:
             expected_len = history_size + r['bar_count'] + 1
+            assert r['proxy_len'] == expected_len, (
+                f"Bar {r['bar_count']}: proxy_len {r['proxy_len']} != {expected_len}"
+            )
             assert r['primary_len'] == expected_len, (
                 f"Bar {r['bar_count']}: primary_len {r['primary_len']} != {expected_len}"
             )

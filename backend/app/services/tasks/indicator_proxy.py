@@ -1005,6 +1005,15 @@ class QuotesProxy:
     
     def set_quotes(self, quotes_provider: QuotesProvider):
         self.quotes_provider = quotes_provider
+
+    def __len__(self) -> int:
+        """
+        Return the number of currently available primary bars.
+
+        This mirrors len(self.quotes()) for strategies that treat the
+        proxy as the current quotes collection.
+        """
+        return len(self())
     
     def __call__(self, symbol: Optional[str] = None, timeframe: Optional[str] = None) -> ta.Quotes:
         """

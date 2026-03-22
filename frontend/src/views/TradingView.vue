@@ -182,7 +182,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ResizablePanel from '../components/ResizablePanel.vue'
 import ChartPanel from '../components/ChartPanel.vue'
@@ -200,6 +200,7 @@ import { useSupervisor } from '../composables/useSupervisor'
 
 const route = useRoute()
 const router = useRouter()
+const timeframesComposable = inject('timeframes', null)
 
 // Trading results composable (manages trades/deals/orders/stats Maps)
 const {
@@ -329,6 +330,22 @@ const currentTimeframe = ref(null)
 const navFormRef = ref(null)
 const chartPanelRef = ref(null)
 const taskListRef = ref(null)
+
+function normalizeTaskTimeframe(timeframe) {
+  if (!timeframe) return null
+  if (typeof timeframe === 'string') {
+    return timeframesComposable?.getTimeframe(timeframe) || null
+  }
+  return timeframe
+}
+
+function normalizeTask(task) {
+  if (!task) return null
+  return {
+    ...task,
+    timeframe: normalizeTaskTimeframe(task.timeframe)
+  }
+}
 
 // Tabs with badges: errors count, supervisor errors count, unread messages count
 const tabsWithBadge = computed(() => {
@@ -674,10 +691,11 @@ async function handleStart(formData) {
         timeframe: formData.timeframe?.name || ''
       })
 
-      currentTask.value = updatedTask
-      currentSource.value = updatedTask.source || null
-      currentSymbol.value = updatedTask.symbol || null
-      currentTimeframe.value = updatedTask.timeframe || null
+      const normalizedTask = normalizeTask(updatedTask)
+      currentTask.value = normalizedTask
+      currentSource.value = normalizedTask.source || null
+      currentSymbol.value = normalizedTask.symbol || null
+      currentTimeframe.value = normalizedTask.timeframe || null
       isReadonly.value = true
     }
 
@@ -727,28 +745,30 @@ function handleTaskSelected(task) {
   errors.value = []
   lastErrorId.value = 0
 
-  currentTaskId.value = task.id
-  currentTask.value = task
-  currentResultId.value = task.result_id || null
-  isRunning.value = task.isRunning || false
+  const normalizedTask = normalizeTask(task)
+
+  currentTaskId.value = normalizedTask.id
+  currentTask.value = normalizedTask
+  currentResultId.value = normalizedTask.result_id || null
+  isRunning.value = normalizedTask.isRunning || false
   isReadonly.value = true
 
-  currentSource.value = task.source || null
-  currentSymbol.value = task.symbol || null
-  currentTimeframe.value = task.timeframe || null
+  currentSource.value = normalizedTask.source || null
+  currentSymbol.value = normalizedTask.symbol || null
+  currentTimeframe.value = normalizedTask.timeframe || null
 
   if (navFormRef.value) {
     navFormRef.value.setFormData({
-      source: task.source || '',
-      symbol: task.symbol || '',
-      timeframe: task.timeframe || ''
+      source: normalizedTask.source || '',
+      symbol: normalizedTask.symbol || '',
+      timeframe: normalizedTask.timeframe || ''
     })
   }
 
   // useTrading composable auto-manages WS connection via taskId watcher
 
   // Load trading results
-  if (task.result_id) {
+  if (normalizedTask.result_id) {
     loadTradingResults()
   }
 }
