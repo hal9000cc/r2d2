@@ -8,10 +8,20 @@ from app.services.quotes.timeframe import Timeframe
 from app.services.quotes.client import QuotesClient
 from app.services.quotes.exceptions import R2D2QuotesExceptionDataNotReceived
 from app.core.datetime_utils import parse_utc_datetime, datetime64_to_iso
-from app.core.config import SYMBOLS_CACHE_TTL_SECONDS, build_ccxt_exchange_config
+from app.core.config import SYMBOLS_CACHE_TTL_SECONDS, build_ccxt_exchange_config, get_exchange_api_urls
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _build_exchange_debug_context(source: str, with_auth: bool = False) -> Dict[str, Union[str, bool, List[str]]]:
+    """Build safe diagnostic context for exchange client creation."""
+    api_urls = get_exchange_api_urls(source)
+    return {
+        "source": source,
+        "with_auth": with_auth,
+        "custom_api_urls": sorted(api_urls.keys()),
+    }
 
 router = APIRouter(prefix="/api/v1/common", tags=["common"])
 
@@ -123,14 +133,27 @@ def _load_source_symbols(source: str) -> List[SymbolInfo]:
     """
     # Create exchange instance
     exchange_class = getattr(ccxt, source)
-    logger.info("Exchange client create request: exchange=%s auth=%s", source, False)
-    exchange = exchange_class(build_ccxt_exchange_config(source))
-    logger.info("Exchange client create result: exchange=%s client=%s", source, exchange_class.__name__)
+    debug_context = _build_exchange_debug_context(source, with_auth=False)
+    logger.debug("Exchange client create request: %s", debug_context)
+    try:
+        exchange = exchange_class(build_ccxt_exchange_config(source))
+    except Exception:
+        logger.exception("Exchange client create failed: %s", debug_context)
+        raise
+    logger.debug(
+        "Exchange client create result: source=%s client=%s",
+        source,
+        exchange_class.__name__,
+    )
     
     # Load markets to get symbols and fee information
-    logger.info("Exchange request: method=load_markets exchange=%s", source)
-    markets = exchange.load_markets()
-    logger.info("Exchange result: method=load_markets exchange=%s markets=%s", source, len(markets))
+    logger.debug("Exchange request: method=load_markets source=%s", source)
+    try:
+        markets = exchange.load_markets()
+    except Exception:
+        logger.exception("Exchange load_markets failed: %s", debug_context)
+        raise
+    logger.debug("Exchange result: method=load_markets source=%s markets=%s", source, len(markets))
     
     # Build list of SymbolInfo objects with fee information
     symbol_infos = []

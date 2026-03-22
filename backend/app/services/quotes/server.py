@@ -1043,7 +1043,7 @@ class SubscriptionManager:
 
         while True:
             try:
-                logger.info(
+                logger.debug(
                     "Exchange request: method=watch_ohlcv exchange=%s symbol=%s timeframe=%s",
                     source,
                     symbol,
@@ -1051,7 +1051,7 @@ class SubscriptionManager:
                 )
                 candles = await exchange.watch_ohlcv(symbol, timeframe_str)
                 reconnect_delay = WS_RECONNECT_DELAY  # reset on successful response
-                logger.info(
+                logger.debug(
                     "Exchange result: method=watch_ohlcv exchange=%s symbol=%s timeframe=%s %s",
                     source,
                     symbol,
