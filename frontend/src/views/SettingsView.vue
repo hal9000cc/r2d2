@@ -203,6 +203,14 @@
                 <label class="form-label">Order Placement Timeout (s)</label>
                 <input v-model="form.broker.ORDER_PLACEMENT_TIMEOUT" type="text" class="form-input form-input-sm" />
               </div>
+              <div class="form-row">
+                <label class="form-label">Exchange Retry Attempts</label>
+                <input v-model="form.broker.EXCHANGE_RETRY_ATTEMPTS" type="text" class="form-input form-input-sm" />
+              </div>
+              <div class="form-row">
+                <label class="form-label">Exchange Retry Delay (s)</label>
+                <input v-model="form.broker.EXCHANGE_RETRY_DELAY" type="text" class="form-input form-input-sm" />
+              </div>
             </div>
           </div>
 
@@ -439,6 +447,8 @@ const form = reactive({
     BAR_WAIT_INTERVAL: '60.0',
     ORDER_WAIT_INTERVAL: '1.0',
     ORDER_PLACEMENT_TIMEOUT: '60.0',
+    EXCHANGE_RETRY_ATTEMPTS: '3',
+    EXCHANGE_RETRY_DELAY: '1.0',
   },
   others: {
     SYMBOLS_CACHE_TTL_SECONDS: '600',
