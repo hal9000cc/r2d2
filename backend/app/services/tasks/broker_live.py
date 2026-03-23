@@ -32,6 +32,8 @@ from app.core.config import (
     BAR_WAIT_INTERVAL,
     ORDER_WAIT_INTERVAL,
     ORDER_PLACEMENT_TIMEOUT,
+    EXCHANGE_RETRY_ATTEMPTS,
+    EXCHANGE_RETRY_DELAY,
     build_ccxt_exchange_config,
 )
 from app.core.datetime_utils import parse_utc_datetime, datetime64_to_iso
@@ -39,10 +41,6 @@ from app.core.logger import get_logger
 from app.services.tasks.tasks import Task
 
 logger = get_logger(__name__)
-
-EXCHANGE_INIT_RETRY_ATTEMPTS = 3
-EXCHANGE_INIT_RETRY_DELAY = 1.0
-
 
 def _summarize_exchange_result(result: Any) -> str:
     """Build a short human-readable summary for exchange responses."""
@@ -87,7 +85,43 @@ def _build_exchange_debug_context(exchange: Any) -> Dict[str, Any]:
     return context
 
 
-def _is_retryable_exchange_init_error(exc: Exception) -> bool:
+def _build_exchange_runtime_context(exchange: Any) -> Dict[str, Any]:
+    """Build runtime diagnostics for a concrete exchange request."""
+    context = _build_exchange_debug_context(exchange)
+
+    for attr_name, key in (
+        ("lastRestRequestTimestamp", "last_rest_request_timestamp"),
+        ("last_response_headers", "last_response_headers_present"),
+    ):
+        value = getattr(exchange, attr_name, None)
+        if value not in (None, "", {}, []):
+            if key == "last_response_headers_present":
+                context[key] = True
+            else:
+                context[key] = value
+
+    options = getattr(exchange, "options", None)
+    if isinstance(options, dict):
+        time_difference = options.get("timeDifference")
+        if time_difference not in (None, "", {}, []):
+            context["time_difference"] = time_difference
+    else:
+        time_difference = getattr(exchange, "timeDifference", None)
+        if time_difference not in (None, "", {}, []):
+            context["time_difference"] = time_difference
+
+    milliseconds_method = getattr(exchange, "milliseconds", None)
+    if callable(milliseconds_method):
+        try:
+            context["exchange_milliseconds"] = milliseconds_method()
+        except Exception as exc:
+            context["exchange_milliseconds_error"] = type(exc).__name__
+
+    context["local_wall_time_ms"] = int(time.time() * 1000)
+    return context
+
+
+def _is_retryable_exchange_error(exc: Exception) -> bool:
     """Return True for transient exchange initialization errors."""
     retryable_types = (
         ccxt.NetworkError,
@@ -108,6 +142,8 @@ def _is_retryable_exchange_init_error(exc: Exception) -> bool:
         "temporarily unavailable",
         "timed out",
         "timeout",
+        'retcode":10002',
+        "server timestamp or recv_window",
     )
     return any(fragment in message for fragment in retryable_fragments)
 
@@ -118,8 +154,8 @@ def _execute_exchange_operation_with_retry(
     operation_name: str,
     func: Callable[[], Any],
     exchange_name: str,
-    max_attempts: int = EXCHANGE_INIT_RETRY_ATTEMPTS,
-    retry_delay: float = EXCHANGE_INIT_RETRY_DELAY,
+    max_attempts: int = EXCHANGE_RETRY_ATTEMPTS,
+    retry_delay: float = EXCHANGE_RETRY_DELAY,
 ) -> Any:
     """Execute an exchange operation with latency diagnostics and retry."""
     last_error: Optional[Exception] = None
@@ -139,7 +175,7 @@ def _execute_exchange_operation_with_retry(
         except Exception as exc:
             elapsed = time.monotonic() - started_at
             last_error = exc
-            retryable = _is_retryable_exchange_init_error(exc)
+            retryable = _is_retryable_exchange_error(exc)
             logger.warning(
                 "Exchange failure: method=%s exchange=%s attempt=%s/%s elapsed=%.3fs retryable=%s error_type=%s error=%s",
                 operation_name,
@@ -243,6 +279,7 @@ class BrokerLive(Broker):
             time.monotonic() - create_started_at,
             json.dumps(_build_exchange_debug_context(self.exchange), ensure_ascii=False, sort_keys=True),
         )
+        assert self.exchange is not None
 
         _execute_exchange_operation_with_retry(
             exchange=self.exchange,
@@ -429,6 +466,7 @@ class BrokerLive(Broker):
         - STOP    → stop-market order (trigger at `price`, execute at market)
         """
         try:
+            assert self.exchange is not None
             ccxt_side = side.value  # "buy" or "sell"
             logger.info(
                 "Exchange request: method=create_order exchange=%s symbol=%s order_type=%s side=%s amount=%s price=%s",
@@ -495,6 +533,7 @@ class BrokerLive(Broker):
     def exchange_cancel_order(self, exchange_order_id: str, symbol: str) -> Dict:
         """Cancel an order on the exchange via ccxt."""
         try:
+            assert self.exchange is not None
             logger.info(
                 "Exchange request: method=cancel_order exchange=%s symbol=%s order_id=%s",
                 self.source,
@@ -530,23 +569,84 @@ class BrokerLive(Broker):
         Normalises the ``fee`` field from ccxt's ``{cost, currency}`` dict
         to a plain float as expected by the base Broker.
         """
-        try:
-            logger.info(
-                "Exchange request: method=fetch_my_trades exchange=%s symbol=%s since=%s markets_only=%s",
-                self.source,
-                symbol,
-                since,
-                markets_only,
+        raw_trades: Optional[List[Dict]] = None
+        last_error: Optional[Exception] = None
+        assert self.exchange is not None
+
+        for attempt in range(1, EXCHANGE_RETRY_ATTEMPTS + 1):
+            started_at = time.monotonic()
+            request_context = json.dumps(
+                _build_exchange_runtime_context(self.exchange),
+                ensure_ascii=False,
+                sort_keys=True,
             )
-            raw_trades = self.exchange.fetch_my_trades(symbol, since=since)
-            logger.info(
-                "Exchange result: method=fetch_my_trades exchange=%s items=%s",
-                self.source,
-                len(raw_trades),
-            )
-        except Exception as e:
+            try:
+                logger.info(
+                    "Exchange request: method=fetch_my_trades exchange=%s symbol=%s since=%s markets_only=%s attempt=%s/%s context=%s",
+                    self.source,
+                    symbol,
+                    since,
+                    markets_only,
+                    attempt,
+                    EXCHANGE_RETRY_ATTEMPTS,
+                    request_context,
+                )
+                raw_trades = self.exchange.fetch_my_trades(symbol, since=since)
+                elapsed = time.monotonic() - started_at
+                logger.info(
+                    "Exchange result: method=fetch_my_trades exchange=%s items=%s elapsed=%.3fs attempt=%s/%s context=%s",
+                    self.source,
+                    len(raw_trades),
+                    elapsed,
+                    attempt,
+                    EXCHANGE_RETRY_ATTEMPTS,
+                    json.dumps(
+                        _build_exchange_runtime_context(self.exchange),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                )
+                break
+            except Exception as e:
+                elapsed = time.monotonic() - started_at
+                last_error = e
+                retryable = _is_retryable_exchange_error(e)
+
+                if retryable and attempt < EXCHANGE_RETRY_ATTEMPTS:
+                    logger.warning(
+                        "Exchange retry: method=fetch_my_trades exchange=%s symbol=%s since=%s markets_only=%s attempt=%s/%s elapsed=%.3fs retry_delay=%.3fs error_type=%s error=%s context=%s",
+                        self.source,
+                        symbol,
+                        since,
+                        markets_only,
+                        attempt,
+                        EXCHANGE_RETRY_ATTEMPTS,
+                        elapsed,
+                        EXCHANGE_RETRY_DELAY,
+                        type(e).__name__,
+                        e,
+                        json.dumps(
+                            _build_exchange_runtime_context(self.exchange),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    )
+                    time.sleep(EXCHANGE_RETRY_DELAY)
+                    continue
+
+                self.logging(
+                    "exchange_fetch_my_trades failed: "
+                    f"{e}; elapsed={elapsed:.3f}s; attempt={attempt}/{EXCHANGE_RETRY_ATTEMPTS}; "
+                    f"context={json.dumps(_build_exchange_runtime_context(self.exchange), ensure_ascii=False, sort_keys=True)}",
+                    level="error",
+                    category=ErrorCategory.EXCHANGE,
+                )
+                return []
+
+        if raw_trades is None:
             self.logging(
-                f"exchange_fetch_my_trades failed: {e}",
+                "exchange_fetch_my_trades failed without result: "
+                f"last_error={last_error}; context={json.dumps(_build_exchange_runtime_context(self.exchange), ensure_ascii=False, sort_keys=True)}",
                 level="error",
                 category=ErrorCategory.EXCHANGE,
             )
@@ -960,6 +1060,7 @@ class BrokerLive(Broker):
         """Unsubscribe from bars and close exchange connection."""
         if self._subscribed and self._quotes_client is not None:
             try:
+                assert self._timeframe is not None
                 self._quotes_client.unsubscribe(
                     self.source, self.symbol, self._timeframe
                 )

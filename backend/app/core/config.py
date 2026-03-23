@@ -48,6 +48,7 @@ RESTART_QUOTES_SERVICE_KEYS: frozenset = frozenset({
 # Parameters that require restarting active trading tasks
 RESTART_TRADING_TASKS_KEYS: frozenset = frozenset({
     "BAR_WAIT_INTERVAL", "ORDER_WAIT_INTERVAL", "ORDER_PLACEMENT_TIMEOUT",
+    "EXCHANGE_RETRY_ATTEMPTS", "EXCHANGE_RETRY_DELAY",
 })
 
 # Parameters that require supervisor restart (read at process startup)
@@ -79,6 +80,8 @@ _CONFIG_DEFAULTS: Dict[str, str] = {
     "BAR_WAIT_INTERVAL": "60.0",
     "ORDER_WAIT_INTERVAL": "1.0",
     "ORDER_PLACEMENT_TIMEOUT": "60.0",
+    "EXCHANGE_RETRY_ATTEMPTS": "3",
+    "EXCHANGE_RETRY_DELAY": "1.0",
     "SUPERVISOR_POLL_INTERVAL": "3.0",
     "SUPERVISOR_MAX_RESTARTS": "3",
     "SUPERVISOR_CRASH_INTERVAL": "60.0",
@@ -326,6 +329,7 @@ def _write_env_file(values: Dict[str, str]) -> None:
         ]),
         ("# Broker", [
             "BAR_WAIT_INTERVAL", "ORDER_WAIT_INTERVAL", "ORDER_PLACEMENT_TIMEOUT",
+            "EXCHANGE_RETRY_ATTEMPTS", "EXCHANGE_RETRY_DELAY",
         ]),
         ("# Others", [
             "SYMBOLS_CACHE_TTL_SECONDS",
@@ -419,6 +423,8 @@ def read_config() -> dict:
             "BAR_WAIT_INTERVAL": get_val("BAR_WAIT_INTERVAL", "60.0"),
             "ORDER_WAIT_INTERVAL": get_val("ORDER_WAIT_INTERVAL", "1.0"),
             "ORDER_PLACEMENT_TIMEOUT": get_val("ORDER_PLACEMENT_TIMEOUT", "60.0"),
+            "EXCHANGE_RETRY_ATTEMPTS": get_val("EXCHANGE_RETRY_ATTEMPTS", "3"),
+            "EXCHANGE_RETRY_DELAY": get_val("EXCHANGE_RETRY_DELAY", "1.0"),
         },
         "others": {
             "SYMBOLS_CACHE_TTL_SECONDS": get_val("SYMBOLS_CACHE_TTL_SECONDS", "600"),
@@ -586,6 +592,8 @@ QUOTES_FETCH_RETRY_DELAY=1
 BAR_WAIT_INTERVAL=60.0
 ORDER_WAIT_INTERVAL=1.0
 ORDER_PLACEMENT_TIMEOUT=60.0
+EXCHANGE_RETRY_ATTEMPTS=3
+EXCHANGE_RETRY_DELAY=1.0
 
 # Symbols cache TTL (time-to-live) in seconds
 SYMBOLS_CACHE_TTL_SECONDS=600
@@ -694,6 +702,8 @@ SYMBOLS_CACHE_TTL_SECONDS = int(os.getenv("SYMBOLS_CACHE_TTL_SECONDS", "3600"))
 BAR_WAIT_INTERVAL = float(os.getenv("BAR_WAIT_INTERVAL", "60.0"))
 ORDER_WAIT_INTERVAL = float(os.getenv("ORDER_WAIT_INTERVAL", "1.0"))
 ORDER_PLACEMENT_TIMEOUT = float(os.getenv("ORDER_PLACEMENT_TIMEOUT", "60.0"))
+EXCHANGE_RETRY_ATTEMPTS = int(os.getenv("EXCHANGE_RETRY_ATTEMPTS", "3"))
+EXCHANGE_RETRY_DELAY = float(os.getenv("EXCHANGE_RETRY_DELAY", "1.0"))
 
 # Supervisor settings
 SUPERVISOR_POLL_INTERVAL = float(os.getenv("SUPERVISOR_POLL_INTERVAL", "3.0"))

@@ -1170,10 +1170,10 @@ class SubscriptionManager:
         msg = encode_bar_message(SUB_MSG_MARKET_SNAPSHOT, bar_data=bar_data)
         await self._server.redis_client.publish(channel, msg)
 
-        logger.debug(
-            "Published market snapshot for %s:%s:%s at %d",
-            source, symbol, timeframe_str, forming_candle[0],
-        )
+        # logger.debug(
+        #     "Published market snapshot for %s:%s:%s at %d",
+        #     source, symbol, timeframe_str, forming_candle[0],
+        # )
 
     async def _watch_ohlcv_loop(
         self,
@@ -1198,21 +1198,21 @@ class SubscriptionManager:
 
         while True:
             try:
-                logger.debug(
-                    "Exchange request: method=watch_ohlcv exchange=%s symbol=%s timeframe=%s",
-                    source,
-                    symbol,
-                    timeframe_str,
-                )
+                # logger.debug(
+                #     "Exchange request: method=watch_ohlcv exchange=%s symbol=%s timeframe=%s",
+                #     source,
+                #     symbol,
+                #     timeframe_str,
+                # )
                 candles = await exchange.watch_ohlcv(symbol, timeframe_str)
                 reconnect_delay = WS_RECONNECT_DELAY  # reset on successful response
-                logger.debug(
-                    "Exchange result: method=watch_ohlcv exchange=%s symbol=%s timeframe=%s %s",
-                    source,
-                    symbol,
-                    timeframe_str,
-                    summarize_exchange_result(candles),
-                )
+                # logger.debug(
+                #     "Exchange result: method=watch_ohlcv exchange=%s symbol=%s timeframe=%s %s",
+                #     source,
+                #     symbol,
+                #     timeframe_str,
+                #     summarize_exchange_result(candles),
+                # )
 
                 if not candles:
                     continue

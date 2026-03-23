@@ -5,8 +5,9 @@ import pytest
 
 from app.services.tasks.broker_live import (
     _build_exchange_debug_context,
+    _build_exchange_runtime_context,
     _execute_exchange_operation_with_retry,
-    _is_retryable_exchange_init_error,
+    _is_retryable_exchange_error,
 )
 
 
@@ -18,6 +19,7 @@ class DummyExchange:
     options = {
         "defaultType": "spot",
         "recvWindow": 10000,
+        "timeDifference": 321,
     }
     urls = {
         "api": {
@@ -25,6 +27,10 @@ class DummyExchange:
             "private": "https://example.test/private",
         }
     }
+    lastRestRequestTimestamp = 1234567890
+
+    def milliseconds(self):
+        return 9876543210
 
 
 def test_build_exchange_debug_context_returns_safe_fields_only():
@@ -41,10 +47,21 @@ def test_build_exchange_debug_context_returns_safe_fields_only():
     assert "secret" not in context
 
 
-def test_is_retryable_exchange_init_error_detects_transient_ccxt_errors():
-    assert _is_retryable_exchange_init_error(ccxt.NetworkError("boom")) is True
-    assert _is_retryable_exchange_init_error(Exception("Remote end closed connection without response")) is True
-    assert _is_retryable_exchange_init_error(Exception("invalid nonce")) is False
+def test_build_exchange_runtime_context_includes_timing_fields():
+    context = _build_exchange_runtime_context(DummyExchange())
+
+    assert context["exchange_id"] == "dummy"
+    assert context["last_rest_request_timestamp"] == 1234567890
+    assert context["time_difference"] == 321
+    assert context["exchange_milliseconds"] == 9876543210
+    assert isinstance(context["local_wall_time_ms"], int)
+
+
+def test_is_retryable_exchange_error_detects_transient_ccxt_errors():
+    assert _is_retryable_exchange_error(ccxt.NetworkError("boom")) is True
+    assert _is_retryable_exchange_error(Exception("Remote end closed connection without response")) is True
+    assert _is_retryable_exchange_error(Exception('bybit {"retCode":10002,"retMsg":"invalid request, please check your server timestamp or recv_window param"}')) is True
+    assert _is_retryable_exchange_error(Exception("invalid nonce")) is False
 
 
 def test_execute_exchange_operation_with_retry_retries_then_succeeds():
